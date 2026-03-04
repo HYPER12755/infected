@@ -135,7 +135,7 @@ export class ShellModule implements Module {
         if (!executionInfo) {
           throw new ResourceNotFoundError('execution', args.execution_id);
         }
-        const structuredContent: Record<string, unknown> = executionInfo;
+        const structuredContent = executionInfo as Record<string, unknown>;
         return {
           content: [{ type: 'text', text: JSON.stringify(executionInfo, null, 2) }],
           structuredContent,
@@ -160,7 +160,7 @@ export class ShellModule implements Module {
           offset: args.offset,
           session_id: args.session_id,
         });
-        const structuredContent: Record<string, unknown> = result;
+        const structuredContent = result as Record<string, unknown>;
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           structuredContent,
