@@ -19,6 +19,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@types/inquirer": "^9.0.9",
     "@types/cheerio": "^0.22.35",
     "@types/express": "^4.17.21",
     "@types/minimatch": "^5.1.2",
