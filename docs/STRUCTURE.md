@@ -88,6 +88,9 @@ Contains the implementations of individual server modules. Each module is a self
 - **`sequentialthinking/`**: Implements the Sequential Thinking module for step-by-step reasoning.
   - **`index.ts`**: The main entry point for the Sequential Thinking module, registering the `sequentialthinking` tool.
   - **`lib.ts`**: Contains the core `SequentialThinkingServer` logic for processing thoughts, managing thought history, and emitting real-time notifications.
+- **`ssh/`**: Implements the ShellKeeper-inspired terminal module for persistent PTY sessions and SSH-friendly tooling.
+  - **`index.ts`**: Registers tools such as `terminal_execute`, `terminal_new_session`, and helpers that keep a PTY session alive across commands.
+  - Provides clean command output, structured responses, and session utilities so agents can maintain long-lived shells or SSH bridges.
 - **`shell/`**: Implements the Shell module for executing system commands.
   - **`entrypoint.ts`**: The original entry point of the `mcp-shell-server`, now integrated as part of the Shell module.
   - **`index.ts`**: The main entry point for the Shell module, registering tools like `shell_execute`, `process_get_execution`, etc. It integrates with `ProcessManager` for real-time output and `SecurityManager` for command allowlisting.
