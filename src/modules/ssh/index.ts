@@ -766,7 +766,7 @@ export default class SshModule implements IUnifiedPlugin {
         `test -d ${this.escapeShellArg(finalRemotePath)} && echo "DIR" || echo "FILE"`,
         5000
       );
-      if (dirCheck.trim() === 'DIR') {
+      if (dirCheck.output.trim() === 'DIR') {
         const candidate = finalRemotePath.endsWith('/')
           ? `${finalRemotePath}${path.basename(localPath)}`
           : `${finalRemotePath}/${path.basename(localPath)}`;
@@ -782,7 +782,7 @@ export default class SshModule implements IUnifiedPlugin {
         `test -f ${this.escapeShellArg(finalRemotePath)} && echo "EXISTS" || echo "OK"`,
         5000
       );
-      if (fileStatus.trim() === 'EXISTS') {
+      if (fileStatus.output.trim() === 'EXISTS') {
         const ext = path.extname(finalRemotePath);
         const name = path.basename(finalRemotePath, ext);
         const dir = path.dirname(finalRemotePath);
@@ -825,7 +825,7 @@ export default class SshModule implements IUnifiedPlugin {
     );
 
     return {
-      message: `File uploaded successfully: ${localPath} -> ${finalRemotePath}\n${verify}`,
+      message: `File uploaded successfully: ${localPath} -> ${finalRemotePath}\n${verify.output}`,
       remotePath: finalRemotePath,
       size: stats.size,
     };
@@ -841,7 +841,7 @@ export default class SshModule implements IUnifiedPlugin {
       remotePath
     )} 2>/dev/null || stat -c%s ${this.escapeShellArg(remotePath)} 2>/dev/null`;
     const sizeOutput = await this.executeCommand(session, sizeCheckCmd, 10000);
-    const fileSize = parseInt(sizeOutput.trim(), 10);
+    const fileSize = parseInt(sizeOutput.output.trim(), 10);
     if (Number.isNaN(fileSize) || fileSize <= 0) {
       throw new Error(`Failed to determine remote file size for ${remotePath}`);
     }
@@ -853,7 +853,7 @@ export default class SshModule implements IUnifiedPlugin {
 
     const encodeCmd = `base64 ${this.escapeShellArg(remotePath)}`;
     const base64Content = await this.executeCommand(session, encodeCmd, timeout);
-    const cleaned = base64Content.replace(/\s/g, '');
+    const cleaned = base64Content.output.replace(/\s/g, '');
     const buffer = Buffer.from(cleaned, 'base64');
 
     await fsPromises.mkdir(path.dirname(localPath), { recursive: true });
