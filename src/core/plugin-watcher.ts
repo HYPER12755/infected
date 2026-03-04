@@ -28,7 +28,9 @@ export class PluginWatcher extends EventEmitter {
       .on('add', (filePath: string) => this.emit('pluginAdded', filePath))
       .on('change', (filePath: string) => this.emit('pluginChanged', filePath))
       .on('unlink', (filePath: string) => this.emit('pluginRemoved', filePath))
-      .on('error', (error: Error) => logger.error(`PluginWatcher: Watcher error: ${error.message}`));
+      .on('error', (error: Error) => {
+        logger.error(`PluginWatcher: Watcher error: ${error.message}`);
+      });
   }
 
   public async start(): Promise<void> {

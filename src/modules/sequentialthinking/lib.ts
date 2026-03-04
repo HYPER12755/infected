@@ -82,7 +82,7 @@ export class SequentialThinkingServer {
           progress: input.thoughtNumber / input.totalThoughts,
           message: `Thought ${input.thoughtNumber}/${input.totalThoughts}: ${input.thought.substring(0, 100)}...`,
         };
-        this.processManager.backgroundProcessCallbacks.onOutputData?.(executionId, JSON.stringify(notification), false);
+      this.processManager.sendBackgroundProcessOutput(executionId, JSON.stringify(notification), false);
       }
 
       return {

@@ -149,6 +149,11 @@ export class ProcessManager {
     this.backgroundProcessCallbacks = callbacks;
   }
 
+  // Emit background process output notifications if configured
+  sendBackgroundProcessOutput(executionId: string, data: string, isStderr: boolean = false): void {
+    this.backgroundProcessCallbacks.onOutputData?.(executionId, data, isStderr);
+  }
+
   // Issue #13: Streaming コンポーネントの初期化
   private initializeStreamingComponents(): void {
     if (!this.fileManager) {

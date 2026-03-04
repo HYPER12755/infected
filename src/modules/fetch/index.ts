@@ -41,7 +41,15 @@ export class FetchModule implements Module {
     const turndownService = new TurndownService();
 
     // Helper to validate network access
-    const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch']): void => {
+type RobotsParserResponse = {
+  isAllowed(targetUrl: string, userAgent: string): boolean;
+};
+
+type RobotsParserFactory = (url: string, content: string) => RobotsParserResponse;
+
+const createRobotsParser = robotsParser as unknown as RobotsParserFactory;
+
+const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch']): void => {
       const parsedUrl = new URL(url);
       const hostname = parsedUrl.hostname;
 
@@ -78,7 +86,7 @@ export class FetchModule implements Module {
       try {
         const robotsTxtUrl = new URL('/robots.txt', targetUrl).toString();
         const robotsContent = await fetchRobotsTxt(robotsTxtUrl, timeout);
-        const robots = robotsParser(robotsTxtUrl, robotsContent);
+        const robots = createRobotsParser(robotsTxtUrl, robotsContent);
         const isAllowed =
           typeof robots?.isAllowed === 'function' ? robots.isAllowed(targetUrl, '*') : true;
         if (isAllowed === false) {

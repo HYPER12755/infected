@@ -32,12 +32,12 @@ export class MemoryModule implements Module {
       {
         title: "Create Entities",
         description: "Create multiple new entities in the knowledge graph",
-        inputSchema: {
+        inputSchema: z.object({
           entities: z.array(EntitySchema)
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           entities: z.array(EntitySchema)
-        }
+        })
       },
       async ({ entities }) => {
         const result = await knowledgeGraphManager.createEntities(entities);
@@ -54,12 +54,12 @@ export class MemoryModule implements Module {
       {
         title: "Create Relations",
         description: "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
-        inputSchema: {
+        inputSchema: z.object({
           relations: z.array(RelationSchema)
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           relations: z.array(RelationSchema)
-        }
+        })
       },
       async ({ relations }) => {
         const result = await knowledgeGraphManager.createRelations(relations);
@@ -76,18 +76,18 @@ export class MemoryModule implements Module {
       {
         title: "Add Observations",
         description: "Add new observations to existing entities in the knowledge graph",
-        inputSchema: {
+        inputSchema: z.object({
           observations: z.array(z.object({
             entityName: z.string().describe("The name of the entity to add the observations to"),
             contents: z.array(z.string()).describe("An array of observation contents to add")
           }))
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           results: z.array(z.object({
             entityName: z.string(),
             addedObservations: z.array(z.string())
           }))
-        }
+        })
       },
       async ({ observations }) => {
         const result = await knowledgeGraphManager.addObservations(observations);
@@ -104,13 +104,13 @@ export class MemoryModule implements Module {
       {
         title: "Delete Entities",
         description: "Delete multiple entities and their associated relations from the knowledge graph",
-        inputSchema: {
+        inputSchema: z.object({
           entityNames: z.array(z.string()).describe("An array of entity names to delete")
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           success: z.boolean(),
           message: z.string()
-        }
+        })
       },
       async ({ entityNames }) => {
         await knowledgeGraphManager.deleteEntities(entityNames);
@@ -127,16 +127,16 @@ export class MemoryModule implements Module {
       {
         title: "Delete Observations",
         description: "Delete specific observations from entities in the knowledge graph",
-        inputSchema: {
+        inputSchema: z.object({
           deletions: z.array(z.object({
             entityName: z.string().describe("The name of the entity containing the observations"),
             observations: z.array(z.string()).describe("An array of observations to delete")
           }))
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           success: z.boolean(),
           message: z.string()
-        }
+        })
       },
       async ({ deletions }) => {
         await knowledgeGraphManager.deleteObservations(deletions);
@@ -153,13 +153,13 @@ export class MemoryModule implements Module {
       {
         title: "Delete Relations",
         description: "Delete multiple relations from the knowledge graph",
-        inputSchema: {
+        inputSchema: z.object({
           relations: z.array(RelationSchema).describe("An array of relations to delete")
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           success: z.boolean(),
           message: z.string()
-        }
+        })
       },
       async ({ relations }) => {
         await knowledgeGraphManager.deleteRelations(relations);
@@ -176,11 +176,11 @@ export class MemoryModule implements Module {
       {
         title: "Read Graph",
         description: "Read the entire knowledge graph",
-        inputSchema: {},
-        outputSchema: {
+        inputSchema: z.object({}),
+        outputSchema: z.object({
           entities: z.array(EntitySchema),
           relations: z.array(RelationSchema)
-        }
+        })
       },
       async () => {
         const graph = await knowledgeGraphManager.readGraph();
@@ -197,13 +197,13 @@ export class MemoryModule implements Module {
       {
         title: "Search Nodes",
         description: "Search for nodes in the knowledge graph based on a query",
-        inputSchema: {
+        inputSchema: z.object({
           query: z.string().describe("The search query to match against entity names, types, and observation content")
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           entities: z.array(EntitySchema),
           relations: z.array(RelationSchema)
-        }
+        })
       },
       async ({ query }) => {
         const graph = await knowledgeGraphManager.searchNodes(query);
@@ -220,13 +220,13 @@ export class MemoryModule implements Module {
       {
         title: "Open Nodes",
         description: "Open specific nodes in the knowledge graph by their names",
-        inputSchema: {
+        inputSchema: z.object({
           names: z.array(z.string()).describe("An array of entity names to retrieve")
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           entities: z.array(EntitySchema),
           relations: z.array(RelationSchema)
-        }
+        })
       },
       async ({ names }) => {
         const graph = await knowledgeGraphManager.openNodes(names);

@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
 import { Module, InfectedConfig, ManagerInstances } from '../../types/index.js'; // Our core types, include ManagerInstances
-import { ExecutionInfo, ExecutionStatusSchema, ExecutionModeSchema, ProcessSignalSchema } from '../../types/shell-server'; // Adapted to shell-server types
+import { ExecutionInfo, ExecutionStatusSchema, ExecutionModeSchema, ProcessSignalSchema } from '../../types/shell-server/index.js'; // Adapted to shell-server types
 import { z } from 'zod';
 import logger from '../../core/logger.js';
 import { ShellTools } from './shell-tools.js'; // Adapted import
@@ -106,7 +106,8 @@ export class ShellModule implements Module {
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
         inputSchema: shellExecuteSchema,
       },
-      async (args: z.infer<typeof shellExecuteSchema>) => {
+      async (rawArgs: unknown) => {
+        const args = shellExecuteSchema.parse(rawArgs);
         const allowlist = config.shell?.allowlist;
         const commandExecutable = args.command.trim().split(' ')[0];
 
