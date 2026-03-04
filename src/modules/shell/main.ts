@@ -1,4 +1,4 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'; // Adapted SDK import
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'; // Adapted SDK import
 import {
   CallToolRequestSchema,
@@ -48,7 +48,7 @@ const DISABLED_TOOLS: string[] = (process.env['MCP_DISABLED_TOOLS'] || '')
   .filter((t) => t.length > 0);
 
 export class MCPShellServer {
-  private server: Server;
+  private server: McpServer;
   private processManager: ProcessManager;
   private terminalManager: TerminalManager;
   private fileManager: FileManager;
@@ -59,7 +59,7 @@ export class MCPShellServer {
   private shellTools: ShellTools;
 
   constructor() {
-    this.server = new Server(
+    this.server = new McpServer(
       {
         name: 'mcp-shell-server',
         version: '2.0.0',
@@ -129,7 +129,7 @@ export class MCPShellServer {
 
   private setupHandlers(): void {
     // ツールリストの提供
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    this.server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         // Shell Operations
         {
@@ -222,7 +222,7 @@ export class MCPShellServer {
     }));
 
     // ツール実行ハンドラー
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    this.server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const { name, arguments: args } = request.params;
         if (DISABLED_TOOLS.includes(name)) {
