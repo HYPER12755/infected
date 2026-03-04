@@ -1,0 +1,26 @@
+{
+  "id": "skill.devops-automation",
+  "name": "DevOps / Automation",
+  "version": "1.0.0",
+  "description": "Capabilities for deployment workflows, CI/CD setup, and environment configuration.",
+  "type": "skill",
+  "entry": "index.js",
+  "inputs": {
+    "taskDescription": {
+      "type": "string",
+      "description": "Description of the DevOps or automation task to perform."
+    }
+  },
+  "outputs": {
+    "result": {
+      "type": "string",
+      "description": "Result of the DevOps/automation task."
+    }
+  },
+  "configSchema": {},
+  "steps": [
+    "Clarify the target environment and deployment goal.",
+    "Prepare configuration inputs, credentials, and automation scripts.",
+    "Execute the workflow and validate deployment results with logs and health checks."
+  ]
+}

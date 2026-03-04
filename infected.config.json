@@ -1,0 +1,56 @@
+{
+  "transport": "http",
+  "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
+  "port": 3001,
+  "toolsDir": "./tools",
+  "promptsDir": "./prompts",
+  "pluginsDir": "./plugins",
+  "hotReload": true,
+  "shell": {
+    "allowlist": []
+  },
+  "memory": {
+    "filePath": ".infected/memory.jsonl"
+  },
+  "fetch": {
+    "domainWhitelist": [],
+    "blockLocalNetwork": false
+  },
+  "plugins": [
+    {
+      "name": "./plugins/example-plugin",
+      "config": {
+        "greeting": "Hello from config!"
+      }
+    }
+  ],
+  "cache": {
+    "enabled": true,
+    "defaultTTL": 300000,
+    "maxSize": 1000
+  },
+  "auth": {
+    "enabled": false,
+    "apiKey": [],
+    "randomAuthTokenEnabled": false,
+    "randomAuthTokenAdvanced": {
+      "enabled": false,
+      "tokenCount": 1,
+      "tokenLength": 32,
+      "prefix": "",
+      "includeTimestamp": false
+    }
+  },
+  "permissions": {
+    "defaultPolicy": "allow",
+    "toolAllowlist": [],
+    "toolBlocklist": []
+  },
+  "llmSecurity": {
+    "enabled": false,
+    "provider": "",
+    "model": "",
+    "elicitationEnabled": false,
+    "skipSafeCommands": true
+  }
+}

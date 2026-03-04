@@ -1,0 +1,26 @@
+{
+  "id": "skill.codebase-investigator",
+  "name": "Codebase Investigator",
+  "version": "1.0.0",
+  "description": "Debugs codebase issues by detecting errors, analyzing files, and suggesting causes.",
+  "type": "skill",
+  "entry": "index.js",
+  "inputs": {
+    "problemDescription": {
+      "type": "string",
+      "description": "Description of the problem to investigate."
+    }
+  },
+  "outputs": {
+    "analysisReport": {
+      "type": "string",
+      "description": "Report detailing the investigation findings and suggested solutions."
+    }
+  },
+  "configSchema": {},
+  "steps": [
+    "Collect a detailed description of the bug, error messages, and relevant files.",
+    "Trace through the related files and logs to identify suspicious code regions or dependencies.",
+    "Document the suspected root cause, required fixes, and any testing steps."
+  ]
+}

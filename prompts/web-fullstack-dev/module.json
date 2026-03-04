@@ -1,0 +1,26 @@
+{
+  "id": "skill.web-fullstack-dev",
+  "name": "Web Full-Stack Developer",
+  "version": "1.0.0",
+  "description": "Capabilities for UI/UX design, backend logic, API integration, and performance optimization.",
+  "type": "skill",
+  "entry": "index.js",
+  "inputs": {
+    "featureDescription": {
+      "type": "string",
+      "description": "Description of the web feature to implement."
+    }
+  },
+  "outputs": {
+    "status": {
+      "type": "string",
+      "description": "Status of the web feature implementation."
+    }
+  },
+  "configSchema": {},
+  "steps": [
+    "Confirm the UI/UX goals, backend APIs, and performance targets for the feature.",
+    "Implement the frontend markup/styles, business logic, data fetching, and optimizations.",
+    "Run integration tests, capture performance metrics, and summarize the completed status."
+  ]
+}

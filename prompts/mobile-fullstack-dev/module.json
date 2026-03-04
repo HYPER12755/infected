@@ -1,0 +1,26 @@
+{
+  "id": "skill.mobile-fullstack-dev",
+  "name": "Mobile Full-Stack Developer",
+  "version": "1.0.0",
+  "description": "Capabilities for mobile UI development, backend integration, and state management.",
+  "type": "skill",
+  "entry": "index.js",
+  "inputs": {
+    "featureDescription": {
+      "type": "string",
+      "description": "Description of the mobile feature to implement."
+    }
+  },
+  "outputs": {
+    "status": {
+      "type": "string",
+      "description": "Status of the mobile feature implementation."
+    }
+  },
+  "configSchema": {},
+  "steps": [
+    "Define the desired mobile feature, user flows, and APIs to integrate.",
+    "Translate requirements into UI components, state transitions, and backend calls.",
+    "Validate the implementation through emulator/device testing and adjust the status summary."
+  ]
+}
