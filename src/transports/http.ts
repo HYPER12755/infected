@@ -114,56 +114,61 @@ export function httpStreamTransportFactory(mcpServer: McpServer) {
   const router = express.Router();
   const transportMap: Record<string, StreamableHTTPServerTransport> = {};
   const sessionMetadata = new Map<string, SessionMetadata>();
+  let sharedTransport: StreamableHTTPServerTransport | undefined;
+  const pendingMetadata: SessionMetadata[] = [];
 
   const initializeTransport = async (req: express.Request): Promise<{
     transport: StreamableHTTPServerTransport;
     metadataSnapshot: SessionMetadata;
   }> => {
     const clientInfo = clientSnapshotFromRequest(req);
-    let metadata: SessionMetadata | undefined;
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sessionId) => {
-        transportMap[sessionId] = transport;
-        const baseMetadata: SessionMetadata = {
-          ip: req.ip,
-          userAgent: req.headers['user-agent'] as string | undefined,
-          host: req.headers['host'] as string | undefined,
-          origin: req.headers['origin'] as string | undefined,
-          apiKey: maskApiKey(req.headers['x-api-key'] as string | undefined),
-          createdAt: new Date().toISOString(),
-          ...clientInfo,
-        };
-        sessionMetadata.set(sessionId, baseMetadata);
-        metadata = baseMetadata;
-        logger.info('MCP http session initialized', {
-          component: 'http-transport',
-          sessionId,
-          method: req.method,
-          path: req.path,
-          ...baseMetadata,
-        });
-      },
-    });
-
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) {
-        const meta = sessionMetadata.get(sid);
-        logger.info('MCP http session closed', {
-          component: 'http-transport',
-          sessionId: sid,
-          closedAt: new Date().toISOString(),
-          ...meta,
-        });
-        delete transportMap[sid];
-        sessionMetadata.delete(sid);
-      }
+    const metadata: SessionMetadata = {
+      ip: req.ip,
+      userAgent: req.headers['user-agent'] as string | undefined,
+      host: req.headers['host'] as string | undefined,
+      origin: req.headers['origin'] as string | undefined,
+      apiKey: maskApiKey(req.headers['x-api-key'] as string | undefined),
+      createdAt: new Date().toISOString(),
+      ...clientInfo,
     };
+    pendingMetadata.push(metadata);
 
-    await mcpServer.connect(transport);
-    return { transport, metadataSnapshot: metadata ?? { ip: req.ip, createdAt: new Date().toISOString() } };
+    let transport = sharedTransport;
+    if (!transport) {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sessionId) => {
+          transportMap[sessionId] = transport!;
+          const baseMetadata = pendingMetadata.shift() ?? metadata;
+          sessionMetadata.set(sessionId, baseMetadata);
+          logger.info('MCP http session initialized', {
+            component: 'http-transport',
+            sessionId,
+            method: req.method,
+            path: req.path,
+            ...baseMetadata,
+          });
+        },
+      });
+      sharedTransport = transport;
+      transport.onclose = () => {
+        const sid = transport!.sessionId;
+        if (sid) {
+          const meta = sessionMetadata.get(sid);
+          logger.info('MCP http session closed', {
+            component: 'http-transport',
+            sessionId: sid,
+            closedAt: new Date().toISOString(),
+            ...meta,
+          });
+          delete transportMap[sid];
+          sessionMetadata.delete(sid);
+        }
+      };
+      await mcpServer.connect(transport);
+    }
+
+    return { transport, metadataSnapshot: metadata };
   };
 
   const handleMcpPost = async (req: express.Request, res: express.Response) => {
