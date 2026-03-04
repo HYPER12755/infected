@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'; // Adapted SDK import
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'; // Adapted SDK import
 import {
   CallToolRequestSchema,
@@ -49,7 +48,7 @@ const DISABLED_TOOLS: string[] = (process.env['MCP_DISABLED_TOOLS'] || '')
   .filter((t) => t.length > 0);
 
 export class MCPShellServer {
-  private server: McpServer;
+  private server: Server;
   private processManager: ProcessManager;
   private terminalManager: TerminalManager;
   private fileManager: FileManager;
@@ -60,7 +59,7 @@ export class MCPShellServer {
   private shellTools: ShellTools;
 
   constructor() {
-    this.server = new McpServer(
+    this.server = new Server(
       {
         name: 'mcp-shell-server',
         version: '2.0.0',

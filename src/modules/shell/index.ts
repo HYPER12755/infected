@@ -1,47 +1,23 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
+import type {
+  RequestHandlerExtra,
+  ServerRequest,
+  ServerNotification,
+} from '@modelcontextprotocol/sdk/types.js';
 import { Module, InfectedConfig, ManagerInstances } from '../../types/index.js'; // Our core types, include ManagerInstances
-import { ExecutionInfo, ExecutionStatusSchema, ExecutionModeSchema, ProcessSignalSchema } from '../../types/shell-server/index.js'; // Adapted to shell-server types
-import { z } from 'zod';
+import { ExecutionInfo } from '../../types/shell-server/index.js'; // Adapted to shell-server types
 import logger from '../../core/logger.js';
 import { ShellTools } from './shell-tools.js'; // Adapted import
 import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.js'; // Adapted custom errors
-import type { ShellExecuteParams } from '../../types/shell-server/schemas.js';
+import {
+  ShellExecuteParamsSchema,
+  ShellGetExecutionParamsSchema,
+  ProcessListParamsSchema,
+  ProcessKillParamsSchema,
+  ShellSetDefaultWorkdirParamsSchema,
+} from '../../types/shell-server/schemas.js';
 
-// Zod schema for shell_execute tool arguments
-const shellExecuteSchema = z.object({
-  command: z.string().describe('The shell command to execute.'),
-  executionMode: ExecutionModeSchema.default('foreground').describe('Execution mode: foreground, background, detached, or adaptive.'),
-  workingDirectory: z.string().optional().describe('Working directory for the command. Defaults to current server CWD.'),
-  environmentVariables: z.record(z.string(), z.string()).optional().describe('Additional environment variables for the command.'),
-  inputData: z.string().optional().describe('Input data to pipe to the command\'s stdin.'),
-  inputOutputId: z.string().optional().describe('Use output_id of a previous execution as input to this command.'),
-  timeoutSeconds: z.number().int().min(1).default(60).describe('Timeout for the command in seconds.'),
-  foregroundTimeoutSeconds: z.number().int().min(1).optional().describe('Timeout for foreground execution in adaptive mode.'),
-  maxOutputSize: z.number().int().min(0).default(10485760).describe('Maximum output size to capture in bytes (default 10MB).'),
-  captureStderr: z.boolean().default(true).describe('Capture stderr output.'),
-  createTerminal: z.boolean().default(false).describe('Create a new terminal session for the command (requires TerminalManager).'),
-});
-
-const processGetExecutionSchema = z.object({
-  executionId: z.string().describe('The ID of the command execution.'),
-});
-
-const processListExecutionsSchema = z.object({
-  status: ExecutionStatusSchema.optional().describe('Filter by execution status.'), // Using ExecutionStatus
-  commandPattern: z.string().optional().describe('Filter by command pattern (regex).'),
-  limit: z.number().int().min(1).default(50).describe('Maximum number of executions to return.'),
-  offset: z.number().int().min(0).default(0).describe('Offset for pagination.'),
-});
-
-const processKillSchema = z.object({
-  processId: z.number().int().describe('The process ID to kill.'),
-  signal: ProcessSignalSchema.default('TERM').describe('The signal to send to the process (TERM, KILL, INT, INT, HUP, USR1, USR2).'), // Corrected signal type
-  force: z.boolean().default(false).describe('Force kill with SIGKILL if TERM fails.'),
-});
-
-const shellSetDefaultWorkdirSchema = z.object({
-  workingDirectory: z.string().describe('The new default working directory.'),
-});
+type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 
 export class ShellModule implements Module {
@@ -100,80 +76,46 @@ export class ShellModule implements Module {
       },
     });
 
-    this.deregisterFunctions.push(server.registerTool( // Store deregister function
+    this.deregisterFunctions.push(server.registerTool(
       'shell_execute',
       {
         title: 'Shell Execute',
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
-        inputSchema: shellExecuteSchema,
+        inputSchema: ShellExecuteParamsSchema,
       },
-      async (rawArgs: unknown) => {
-        const args = shellExecuteSchema.parse(rawArgs);
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ShellExecuteParamsSchema.parse(rawArgs);
         const allowlist = config.shell?.allowlist;
         const commandExecutable = args.command.trim().split(' ')[0];
 
         if (allowlist && allowlist.length > 0 && !allowlist.includes(commandExecutable)) {
           logger.warn(`Attempted to execute disallowed command: ${commandExecutable}`);
           return {
-            content: [{ type: "text", text: `Error: Command '${commandExecutable}' is not allowed by the server's allowlist.` }],
+            content: [{ type: 'text', text: `Error: Command '${commandExecutable}' is not allowed by the server's allowlist.` }],
             structuredContent: { error: `Command '${commandExecutable}' is not allowed.` },
             isError: true,
           };
         }
 
         try {
-          const shellParams: ShellExecuteParams = {
-            command: args.command,
-            execution_mode: args.executionMode,
-            timeout_seconds: args.timeoutSeconds,
-            max_output_size: args.maxOutputSize,
-            capture_stderr: args.captureStderr,
-            create_terminal: args.createTerminal,
-          };
-          if (args.workingDirectory) {
-            shellParams.working_directory = args.workingDirectory;
-          }
-          if (args.environmentVariables) {
-            shellParams.environment_variables = args.environmentVariables;
-          }
-          if (args.inputData) {
-            shellParams.input_data = args.inputData;
-          }
-          if (args.inputOutputId) {
-            shellParams.input_output_id = args.inputOutputId;
-          }
-          if (args.foregroundTimeoutSeconds !== undefined) {
-            shellParams.foreground_timeout_seconds = args.foregroundTimeoutSeconds;
-          }
-
-          const executionInfo = await this.shellTools.executeShell(shellParams);
+          const executionInfo = await this.shellTools.executeShell(args);
           logger.info(`shell_execute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
-          const executionDetails = executionInfo as unknown as ExecutionInfo;
-          
           return {
-            content: [{ type: "text", text: `Command execution started. ID: ${executionInfo.execution_id}. Status: ${executionInfo.status}.` }],
-            structuredContent: {
-              execution_id: executionDetails.execution_id,
-              status: executionDetails.status,
-              message: executionDetails.message,
-              output_id: executionDetails.output_id,
-              truncated: executionDetails.output_truncated,
-              next_steps: executionDetails.next_steps,
-              guidance: executionDetails.guidance,
-            },
+            content: [{ type: 'text', text: `Command execution started. ID: ${executionInfo.execution_id}. Status: ${executionInfo.status}.` }],
+            structuredContent: executionInfo,
           };
         } catch (error) {
-          if (error instanceof MCPShellError) { // Use MCPShellError
+          if (error instanceof MCPShellError) {
             logger.error(`shell_execute failed: ${error.message}`, { details: error.details });
             return {
-              content: [{ type: "text", text: `Error: ${error.message}` }],
+              content: [{ type: 'text', text: `Error: ${error.message}` }],
               structuredContent: { error: error.message, details: error.details },
               isError: true,
             };
           }
           logger.error(`An unexpected error occurred during shell_execute: ${error}`);
           return {
-            content: [{ type: "text", text: `Error: An unexpected error occurred: ${error instanceof Error ? error.message : String(error)}` }],
+            content: [{ type: 'text', text: `Error: An unexpected error occurred: ${error instanceof Error ? error.message : String(error)}` }],
             structuredContent: { error: `An unexpected error occurred: ${error instanceof Error ? error.message : String(error)}` },
             isError: true,
           };
@@ -182,15 +124,15 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: shell_execute tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool( // Store deregister function
+    this.deregisterFunctions.push(server.registerTool(
       'process_get_execution',
       {
         title: 'Get Execution Details',
         description: 'Retrieves detailed information about a specific command execution.',
-        inputSchema: processGetExecutionSchema,
+        inputSchema: ShellGetExecutionParamsSchema,
       },
-      async (rawArgs: unknown) => {
-        const args = processGetExecutionSchema.parse(rawArgs);
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ShellGetExecutionParamsSchema.parse(rawArgs);
         const executionInfo = await this.shellTools.getExecution({
           execution_id: args.executionId,
         });
@@ -198,74 +140,79 @@ export class ShellModule implements Module {
           throw new ResourceNotFoundError('execution', args.executionId);
         }
         return {
-          content: [{ type: "text", text: JSON.stringify(executionInfo, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(executionInfo, null, 2) }],
           structuredContent: executionInfo,
         };
       }
     ));
     logger.info('  ShellModule: process_get_execution tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool( // Store deregister function
+    this.deregisterFunctions.push(server.registerTool(
       'process_list_executions',
       {
         title: 'List Command Executions',
         description: 'Lists active and completed command executions with filtering and pagination.',
-        inputSchema: processListExecutionsSchema,
+        inputSchema: ProcessListParamsSchema,
       },
-      async (rawArgs: unknown) => {
-        const args = processListExecutionsSchema.parse(rawArgs);
-        const normalizedStatus: 'running' | 'completed' | 'failed' | undefined =
-          args.status === 'timeout' ? 'failed' : args.status;
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ProcessListParamsSchema.parse(rawArgs);
+        const statusFilter =
+          args.status_filter === 'all'
+            ? undefined
+            : args.status_filter === 'timeout'
+            ? 'failed'
+            : args.status_filter;
         const result = await this.shellTools.listProcesses({
-          status_filter: normalizedStatus,
-          command_pattern: args.commandPattern,
+          status_filter: statusFilter,
+          command_pattern: args.command_pattern,
           limit: args.limit,
           offset: args.offset,
+          session_id: args.session_id,
         });
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
         };
       }
     ));
     logger.info('  ShellModule: process_list_executions tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool( // Store deregister function
+    this.deregisterFunctions.push(server.registerTool(
       'process_kill',
       {
         title: 'Kill Process',
         description: 'Sends a signal to terminate a running process by its process ID.',
-        inputSchema: processKillSchema,
+        inputSchema: ProcessKillParamsSchema,
       },
-      async (rawArgs: unknown) => {
-        const args = processKillSchema.parse(rawArgs);
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ProcessKillParamsSchema.parse(rawArgs);
         const result = await this.shellTools.killProcess({
-          process_id: args.processId,
+          process_id: args.process_id,
           signal: args.signal,
           force: args.force,
         });
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
         };
       }
     ));
     logger.info('  ShellModule: process_kill tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool( // Store deregister function
+    this.deregisterFunctions.push(server.registerTool(
       'shell_set_default_workdir',
       {
         title: 'Set Default Working Directory',
         description: 'Sets the default working directory for subsequent shell commands.',
-        inputSchema: shellSetDefaultWorkdirSchema,
+        inputSchema: ShellSetDefaultWorkdirParamsSchema,
       },
-      async (rawArgs: unknown) => {
-        const args = shellSetDefaultWorkdirSchema.parse(rawArgs);
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ShellSetDefaultWorkdirParamsSchema.parse(rawArgs);
         const result = await this.shellTools.setDefaultWorkingDirectory({
-          working_directory: args.workingDirectory,
+          working_directory: args.working_directory,
         });
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
         };
       }

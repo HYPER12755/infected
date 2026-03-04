@@ -1,4 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"; // Adapted SDK import
+import type {
+  RequestHandlerExtra,
+  ServerRequest,
+  ServerNotification,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from "zod";
 import { Module, InfectedConfig, ManagerInstances } from '../../types/index.js'; // Adjusted path for types and ManagerInstances
 import logger from '../../core/logger.js'; // Import the new logger
@@ -76,6 +81,18 @@ const openNodesSchema = z.object({
 
 const emptySchema = z.object({});
 
+type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+function createZodToolHandler<Schema extends z.ZodTypeAny>(
+  schema: Schema,
+  handler: (args: z.infer<Schema>) => Promise<any>
+) {
+  return async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+    const args = schema.parse(rawArgs);
+    return handler(args);
+  };
+}
+
 export class MemoryModule implements Module {
   name = 'memory';
   private deregisterFunctions: any[] = []; // Store SDK tool handles/deregister functions
@@ -98,14 +115,13 @@ export class MemoryModule implements Module {
         inputSchema: createEntitiesSchema,
         outputSchema: createEntitiesSchema
       },
-      async (rawArgs: unknown) => {
-        const args = createEntitiesSchema.parse(rawArgs);
+      createZodToolHandler(createEntitiesSchema, async (args) => {
         const result = await knowledgeGraphManager.createEntities(args.entities);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
           structuredContent: { entities: result }
         };
-      }
+      })
     ));
 
     // Register create_relations tool
@@ -117,14 +133,13 @@ export class MemoryModule implements Module {
         inputSchema: createRelationsSchema,
         outputSchema: createRelationsSchema
       },
-      async (rawArgs: unknown) => {
-        const args = createRelationsSchema.parse(rawArgs);
+      createZodToolHandler(createRelationsSchema, async (args) => {
         const result = await knowledgeGraphManager.createRelations(args.relations);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
           structuredContent: { relations: result }
         };
-      }
+      })
     ));
 
     // Register add_observations tool
@@ -136,14 +151,13 @@ export class MemoryModule implements Module {
         inputSchema: observationInputSchema,
         outputSchema: observationResultsSchema
       },
-      async (rawArgs: unknown) => {
-        const args = observationInputSchema.parse(rawArgs);
+      createZodToolHandler(observationInputSchema, async (args) => {
         const result = await knowledgeGraphManager.addObservations(args.observations);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
           structuredContent: { results: result }
         };
-      }
+      })
     ));
 
     // Register delete_entities tool
@@ -155,14 +169,13 @@ export class MemoryModule implements Module {
         inputSchema: deleteEntitiesSchema,
         outputSchema: deleteSuccessSchema
       },
-      async (rawArgs: unknown) => {
-        const args = deleteEntitiesSchema.parse(rawArgs);
+      createZodToolHandler(deleteEntitiesSchema, async (args) => {
         await knowledgeGraphManager.deleteEntities(args.entityNames);
         return {
           content: [{ type: "text" as const, text: "Entities deleted successfully" }],
           structuredContent: { success: true, message: "Entities deleted successfully" }
         };
-      }
+      })
     ));
 
     // Register delete_observations tool
@@ -174,14 +187,13 @@ export class MemoryModule implements Module {
         inputSchema: deleteObservationsSchema,
         outputSchema: deleteSuccessSchema
       },
-      async (rawArgs: unknown) => {
-        const args = deleteObservationsSchema.parse(rawArgs);
+      createZodToolHandler(deleteObservationsSchema, async (args) => {
         await knowledgeGraphManager.deleteObservations(args.deletions);
         return {
           content: [{ type: "text" as const, text: "Observations deleted successfully" }],
           structuredContent: { success: true, message: "Observations deleted successfully" }
         };
-      }
+      })
     ));
 
     // Register delete_relations tool
@@ -193,14 +205,13 @@ export class MemoryModule implements Module {
         inputSchema: deleteRelationsSchema,
         outputSchema: deleteSuccessSchema
       },
-      async (rawArgs: unknown) => {
-        const args = deleteRelationsSchema.parse(rawArgs);
+      createZodToolHandler(deleteRelationsSchema, async (args) => {
         await knowledgeGraphManager.deleteRelations(args.relations);
         return {
           content: [{ type: "text" as const, text: "Relations deleted successfully" }],
           structuredContent: { success: true, message: "Relations deleted successfully" }
         };
-      }
+      })
     ));
 
     // Register read_graph tool
@@ -212,14 +223,13 @@ export class MemoryModule implements Module {
         inputSchema: emptySchema,
         outputSchema: graphSchema
       },
-      async (_rawArgs: unknown) => {
-        emptySchema.parse(_rawArgs);
+      createZodToolHandler(emptySchema, async () => {
         const graph = await knowledgeGraphManager.readGraph();
         return {
           content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
           structuredContent: { ...graph }
         };
-      }
+      })
     ));
 
     // Register search_nodes tool
@@ -231,14 +241,13 @@ export class MemoryModule implements Module {
         inputSchema: searchNodesSchema,
         outputSchema: graphSchema
       },
-      async (rawArgs: unknown) => {
-        const args = searchNodesSchema.parse(rawArgs);
+      createZodToolHandler(searchNodesSchema, async (args) => {
         const graph = await knowledgeGraphManager.searchNodes(args.query);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
           structuredContent: { ...graph }
         };
-      }
+      })
     ));
 
     // Register open_nodes tool
@@ -250,14 +259,13 @@ export class MemoryModule implements Module {
         inputSchema: openNodesSchema,
         outputSchema: graphSchema
       },
-      async (rawArgs: unknown) => {
-        const args = openNodesSchema.parse(rawArgs);
+      createZodToolHandler(openNodesSchema, async (args) => {
         const graph = await knowledgeGraphManager.openNodes(args.names);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
           structuredContent: { ...graph }
         };
-      }
+      })
     ));
   }
 

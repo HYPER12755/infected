@@ -21,6 +21,22 @@ function maskApiKey(key: string | undefined): string | undefined {
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+function normalizeHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return undefined;
+}
+
 function extractSessionId(req: express.Request): string | undefined {
   const queryValue = req.query[SESSION_QUERY];
   if (typeof queryValue === 'string' && queryValue.trim().length > 0) {
@@ -68,11 +84,11 @@ export function SSETransportFactory(mcpServer: McpServer) {
     const transport = new SSEServerTransport('/messages', res);
     transportMap.set(transport.sessionId, transport);
     sessionMetadata.set(transport.sessionId, {
-      ip: req.ip,
-      userAgent: req.headers['user-agent'] as string | undefined,
-      host: req.headers['host'] as string | undefined,
-      origin: req.headers['origin'] as string | undefined,
-      apiKey: maskApiKey(req.headers['x-api-key'] as string | undefined),
+      ip: req.ip ?? 'unknown',
+      userAgent: normalizeHeaderValue(req.headers['user-agent']),
+      host: normalizeHeaderValue(req.headers['host']),
+      origin: normalizeHeaderValue(req.headers['origin']),
+      apiKey: maskApiKey(normalizeHeaderValue(req.headers['x-api-key'])),
       createdAt: new Date().toISOString(),
     });
 
@@ -93,9 +109,9 @@ export function SSETransportFactory(mcpServer: McpServer) {
     logger.info('New SSE connection established', {
       component: 'sse-transport',
       sessionId: transport.sessionId,
-      ip: req.ip,
-      userAgent: req.headers['user-agent'],
-      host: req.headers['host'],
+      ip: req.ip ?? 'unknown',
+      userAgent: normalizeHeaderValue(req.headers['user-agent']),
+      host: normalizeHeaderValue(req.headers['host']),
     });
 
     if (!sseConnected) {

@@ -336,7 +336,7 @@ export abstract class SafetyEvaluationCompletedResult extends SafetyEvaluationRe
     confirmationMessage?: string,
     userResponse?: Record<string, unknown>
   ) {
-    super(reasoning, llmEvaluationUsed, elicitationResult, confirmationMessage, userResponse);
+    super(reasoning, llmEvaluationUsed, elicitationResult);
     this.confirmation_message = confirmationMessage;
     this.user_response = userResponse;
   }
@@ -358,7 +358,7 @@ export class SafetyEvaluationAllowResult extends SafetyEvaluationCompletedResult
     confirmationMessage?: string,
     userResponse?: Record<string, unknown>
   ) {
-    super(reasoning, llmEvaluationUsed, elicitationResult, confirmationMessage, userResponse);
+    super(reasoning, llmEvaluationUsed, elicitationResult);
     this.suggested_alternatives = suggestedAlternatives;
     this.context_analysis = contextAnalysis;
     this.next_action = nextAction;
@@ -395,7 +395,7 @@ export class SafetyEvaluationDenyResult extends SafetyEvaluationCompletedResult 
     confirmationMessage?: string,
     userResponse?: Record<string, unknown>
   ) {
-    super(reasoning, llmEvaluationUsed, elicitationResult, confirmationMessage, userResponse);
+    super(reasoning, llmEvaluationUsed, elicitationResult);
     this.suggested_alternatives = suggestedAlternatives;
     this.next_action = nextAction;
   }
@@ -442,7 +442,7 @@ export class SafetyEvaluationAiAssistantConfirmResult extends SafetyEvaluationCo
     confirmationMessage?: string,
     userResponse?: Record<string, unknown>
   ) {
-    super(reasoning, llmEvaluationUsed, elicitationResult, confirmationMessage, userResponse);
+    super(reasoning, llmEvaluationUsed, elicitationResult);
     this.next_action = nextAction;
     this.suggested_alternatives = suggestedAlternatives;
     this.context_analysis = contextAnalysis;

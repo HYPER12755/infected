@@ -28,20 +28,21 @@ interface SessionMetadata {
 type ClientInfoSnapshot = Pick<SessionMetadata, 'clientName' | 'clientTitle' | 'clientVersion' | 'clientDescription' | 'websiteUrl'>;
 
 function extractSessionId(req: express.Request): string | undefined {
-  const header = req.headers[SESSION_HEADER];
-  if (Array.isArray(header) && header.length > 0) {
-    return header[0];
-  }
-  if (typeof header === 'string' && header.trim().length > 0) {
-    return header.trim();
+  const header = normalizeHeaderValue(req.headers[SESSION_HEADER]);
+  if (header) {
+    return header;
   }
 
   const queryValue = req.query[SESSION_QUERY];
   if (typeof queryValue === 'string' && queryValue.trim().length > 0) {
     return queryValue.trim();
   }
-  if (Array.isArray(queryValue) && queryValue.length > 0) {
-    return queryValue[0].trim();
+  if (Array.isArray(queryValue)) {
+    for (const candidate of queryValue) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
   }
 
   const bodySessionId = req.body?.params?.sessionId;
@@ -71,6 +72,22 @@ function maskApiKey(key: string | undefined): string | undefined {
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+function normalizeHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return undefined;
+}
+
 function clientSnapshotFromRequest(req: express.Request): ClientInfoSnapshot {
   const metadata = req.body?.params?.clientInfo;
   if (!metadata || typeof metadata !== 'object') {
@@ -94,16 +111,16 @@ function recordSessionActivity(
 ) {
   const existing = sessionMetadata.get(sessionId);
   const now = new Date().toISOString();
-  sessionMetadata.set(sessionId, {
-    ...(existing ?? {
-      ip: req.ip,
-      createdAt: now,
-    }),
-    ip: req.ip || existing?.ip || 'unknown',
-    userAgent: (req.headers['user-agent'] as string | undefined) ?? existing?.userAgent,
-    host: (req.headers['host'] as string | undefined) ?? existing?.host,
-    origin: (req.headers['origin'] as string | undefined) ?? existing?.origin,
-    apiKey: maskApiKey(req.headers['x-api-key'] as string | undefined) ?? existing?.apiKey,
+    sessionMetadata.set(sessionId, {
+      ...(existing ?? {
+        ip: req.ip ?? 'unknown',
+        createdAt: now,
+      }),
+      ip: req.ip ?? existing?.ip ?? 'unknown',
+      userAgent: normalizeHeaderValue(req.headers['user-agent']) ?? existing?.userAgent,
+      host: normalizeHeaderValue(req.headers['host']) ?? existing?.host,
+      origin: normalizeHeaderValue(req.headers['origin']) ?? existing?.origin,
+      apiKey: maskApiKey(normalizeHeaderValue(req.headers['x-api-key'])) ?? existing?.apiKey,
     lastRequestAt: now,
     clientName: clientInfo?.clientName ?? existing?.clientName,
     clientTitle: clientInfo?.clientTitle ?? existing?.clientTitle,
@@ -203,11 +220,11 @@ export function httpStreamTransportFactory(mcpServer: McpServer) {
     const metadataMethod = req.method ?? 'POST';
     const metadataPath = req.path ?? (typeof req.url === 'string' ? req.url : '/');
     const metadata: SessionMetadata = {
-      ip: req.ip,
-      userAgent: req.headers['user-agent'] as string | undefined,
-      host: req.headers['host'] as string | undefined,
-      origin: req.headers['origin'] as string | undefined,
-      apiKey: maskApiKey(req.headers['x-api-key'] as string | undefined),
+      ip: req.ip ?? 'unknown',
+      userAgent: normalizeHeaderValue(req.headers['user-agent']),
+      host: normalizeHeaderValue(req.headers['host']),
+      origin: normalizeHeaderValue(req.headers['origin']),
+      apiKey: maskApiKey(normalizeHeaderValue(req.headers['x-api-key'])),
       createdAt: new Date().toISOString(),
       method: metadataMethod,
       path: metadataPath,

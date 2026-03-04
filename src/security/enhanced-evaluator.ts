@@ -179,7 +179,7 @@ export class EnhancedSafetyEvaluator {
       });
     }
 
-    return new CCCToMCPCMAdapter(server);
+    return new CCCToMCPCMAdapter(server.server);
   }
 
   /**
