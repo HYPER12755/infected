@@ -135,17 +135,18 @@ export class ShellModule implements Module {
             create_terminal: args.createTerminal,
           });
           logger.info(`shell_execute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
+          const executionDetails = executionInfo as unknown as ExecutionInfo;
           
           return {
             content: [{ type: "text", text: `Command execution started. ID: ${executionInfo.execution_id}. Status: ${executionInfo.status}.` }],
             structuredContent: {
-              execution_id: executionInfo.execution_id,
-              status: executionInfo.status,
-              message: (executionInfo as ExecutionInfo).message, // Cast to ExecutionInfo
-              output_id: (executionInfo as ExecutionInfo).output_id, // Cast to ExecutionInfo
-              truncated: (executionInfo as ExecutionInfo).output_truncated, // Cast to ExecutionInfo
-              next_steps: (executionInfo as ExecutionInfo).next_steps, // Cast to ExecutionInfo
-              guidance: (executionInfo as ExecutionInfo).guidance, // Cast to ExecutionInfo
+              execution_id: executionDetails.execution_id,
+              status: executionDetails.status,
+              message: executionDetails.message,
+              output_id: executionDetails.output_id,
+              truncated: executionDetails.output_truncated,
+              next_steps: executionDetails.next_steps,
+              guidance: executionDetails.guidance,
             },
           };
         } catch (error) {
@@ -175,7 +176,8 @@ export class ShellModule implements Module {
         description: 'Retrieves detailed information about a specific command execution.',
         inputSchema: processGetExecutionSchema,
       },
-      async (args: z.infer<typeof processGetExecutionSchema>) => {
+      async (rawArgs: unknown, _extra: unknown) => {
+        const args = processGetExecutionSchema.parse(rawArgs);
         const executionInfo = await this.shellTools.getExecution({
           execution_id: args.executionId,
         });
@@ -197,9 +199,12 @@ export class ShellModule implements Module {
         description: 'Lists active and completed command executions with filtering and pagination.',
         inputSchema: processListExecutionsSchema,
       },
-      async (args: z.infer<typeof processListExecutionsSchema>) => {
+      async (rawArgs: unknown, _extra: unknown) => {
+        const args = processListExecutionsSchema.parse(rawArgs);
+        const normalizedStatus: 'running' | 'completed' | 'failed' | undefined =
+          args.status === 'timeout' ? 'failed' : args.status;
         const result = await this.shellTools.listProcesses({
-          status_filter: args.status,
+          status_filter: normalizedStatus,
           command_pattern: args.commandPattern,
           limit: args.limit,
           offset: args.offset,
@@ -219,7 +224,8 @@ export class ShellModule implements Module {
         description: 'Sends a signal to terminate a running process by its process ID.',
         inputSchema: processKillSchema,
       },
-      async (args: z.infer<typeof processKillSchema>) => {
+      async (rawArgs: unknown, _extra: unknown) => {
+        const args = processKillSchema.parse(rawArgs);
         const result = await this.shellTools.killProcess({
           process_id: args.processId,
           signal: args.signal,
@@ -240,7 +246,8 @@ export class ShellModule implements Module {
         description: 'Sets the default working directory for subsequent shell commands.',
         inputSchema: shellSetDefaultWorkdirSchema,
       },
-      async (args: z.infer<typeof shellSetDefaultWorkdirSchema>) => {
+      async (rawArgs: unknown, _extra: unknown) => {
+        const args = shellSetDefaultWorkdirSchema.parse(rawArgs);
         const result = await this.shellTools.setDefaultWorkingDirectory({
           working_directory: args.workingDirectory,
         });
