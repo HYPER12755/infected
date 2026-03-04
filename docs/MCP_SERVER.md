@@ -19,10 +19,9 @@ The `InfectedServer` integrates with several key managers and loaders to provide
 *   **`McpServer` (from SDK)**: The foundational component that provides the MCP interface for tools, resources, and communication.
 *   **`ConfigManager`**: Manages the main project configuration (`infected.config.json`).
 *   **`McpShellConfigManager`**: Manages configuration specific to the MCP shell server, including enhanced security settings.
-*   **`ModuleManager`**: The central orchestrator for all unified modules (tools, plugins, skills). It handles module discovery, loading, unloading, hot-reloading (via `ModuleWatcher`), and validation against `IUnifiedModule` and `UnifiedModuleManifest` schemas. It also provides a robust registration mechanism for tools, wrapping them with security, caching, and monitoring.
+*   **`ModuleManager`**: The central orchestrator for all unified modules (tools and plugins). It handles module discovery, loading, unloading, hot-reloading (via `ModuleWatcher`), and validation against `IUnifiedModule` and `UnifiedModuleManifest` schemas. It also provides a robust registration mechanism for tools, wrapping them with security, caching, and monitoring.
 *   **`ToolLoader`**: Acts as an adapter, listening to `ModuleManager` events to dynamically register and deregister tools with the `McpServer`. It ensures tools are properly integrated and their lifecycle methods (`onLoad`, `execute`, `onUnload`) are managed.
 *   **`PluginLoader`**: Acts as an adapter, listening to `ModuleManager` events to dynamically initialize and shut down plugins. It ensures plugin lifecycle methods (`onLoad`, `onUnload`) are properly invoked.
-*   **`SkillLoader`**: Acts as an adapter, listening to `ModuleManager` events to dynamically initialize and shut down skills. It ensures skill lifecycle methods (`onLoad`, `execute`, `onUnload`) are properly invoked.
 *   **`ProcessManager`**: Manages background shell processes, including execution, monitoring, and output handling.
 *   **`TerminalManager`**: Manages interactive terminal sessions.
 *   **`FileManager`**: Provides file system access and management capabilities.
@@ -74,7 +73,7 @@ The server's behavior is heavily influenced by its configuration, managed by `Co
 *   `transport`: (stdio, http, sse)
 *   `port`: For HTTP/SSE transports.
 *   `hotReload`: Enables/disables automatic re-loading of modules and tools on file changes.
-*   `modules`: This field is primarily for listing initial built-in modules to load. External tools, plugins, and prompts are now automatically discovered from directories configured in `toolsDir`, `pluginsDir`, and `promptsDir` respectively.
+*   `modules`: This field is primarily for listing initial built-in modules to load. External tools and plugins are now automatically discovered from directories configured in `toolsDir` and `pluginsDir`.
 *   `toolsDir`: Directory where custom tools are located.
 *   `cache`: Configuration for tool caching.
 *   `auth`: API key authentication settings.
@@ -83,7 +82,7 @@ The server's behavior is heavily influenced by its configuration, managed by `Co
 
 ### Environment Overrides & Runtime Roots
 
-The `.env` file (see `.env.example`) lives under `INFECTED_INSTALL_ROOT` and shares many of the same keys as `infected.config.json` because `ConfigManager` merges the two sources. If you define `TRANSPORT`, `PORT`, `MODULES`, `HOT_RELOAD`, `TOOLS_DIR`, `SKILLS_DIR`, or `PLUGINS_DIR` in `.env`, you are overriding the corresponding property in `infected.config.json`. The `.env` file also exposes module-specific helpers such as `SHELL_ALLOWLIST`, `MEMORY_FILE_PATH`, and `FETCH_DOMAIN_WHITELIST` so they can be tuned without modifying the JSON file. Finally, the runtime roots `INFECTED_INSTALL_ROOT` and `INFECTED_WORKSPACE_ROOT` are set before tools/modules run, allowing helpers like `src/utils/runtime-roots.ts` to resolve working directories consistently. The workspace root is used for development (the local project directory) while the install root represents the directory where the global `infected` command was invoked, ensuring both environments share the same root resolution behavior.
+The `.env` file (see `.env.example`) lives under `INFECTED_INSTALL_ROOT` and shares many of the same keys as `infected.config.json` because `ConfigManager` merges the two sources. If you define `TRANSPORT`, `PORT`, `MODULES`, `HOT_RELOAD`, `TOOLS_DIR`, or `PLUGINS_DIR` in `.env`, you are overriding the corresponding property in `infected.config.json`. The `.env` file also exposes module-specific helpers such as `SHELL_ALLOWLIST`, `MEMORY_FILE_PATH`, and `FETCH_DOMAIN_WHITELIST` so they can be tuned without modifying the JSON file. Finally, the runtime roots `INFECTED_INSTALL_ROOT` and `INFECTED_WORKSPACE_ROOT` are set before tools/modules run, allowing helpers like `src/utils/runtime-roots.ts` to resolve working directories consistently. The workspace root is used for development (the local project directory) while the install root represents the directory where the global `infected` command was invoked, ensuring both environments share the same root resolution behavior.
 
 ## 6. Lifecycle
 
@@ -93,8 +92,8 @@ The `.env` file (see `.env.example`) lives under `INFECTED_INSTALL_ROOT` and sha
 2.  Initializes `ServiceContainer`, which instantiates all managers and module loaders.
 3.  Generates a random authentication token if enabled.
 4.  Configures `SecurityManager`, `ToolCacheManager`, and `PermissionManager` with their respective settings.
-5.  Starts the `ModuleManager`, which initiates module discovery, loading, and hot-reloading for all module types (tools, plugins, skills).
-6.  Starts the individual `ToolLoader`, `PluginLoader`, and `SkillLoader` adapters to listen for events from the `ModuleManager`.
+5.  Starts the `ModuleManager`, which initiates module discovery, loading, and hot-reloading for tools and plugins.
+6.  Starts the individual `ToolLoader` and `PluginLoader` adapters to listen for events from the `ModuleManager`.
 7.  Initializes and connects the configured transport (`stdio`, `http`, or `sse`).
 
 ### Shutdown (`cleanup()` method)
@@ -103,5 +102,5 @@ The `cleanup()` method is responsible for gracefully shutting down various compo
 
 1.  Cleans up `ProcessManager`, `TerminalManager`, and `FileManager` resources.
 2.  Performs `MonitoringManager` cleanup.
-3.  Stops the `ModuleManager` (which unloads all modules) and then stops the `ToolLoader`, `PluginLoader`, and `SkillLoader` (which stop listening for events).
+3.  Stops the `ModuleManager` (which unloads all modules) and then stops the `ToolLoader` and `PluginLoader` (which stop listening for events).
 4.  Stops the `ToolCacheManager`'s cleanup interval.

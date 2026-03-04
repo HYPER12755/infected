@@ -1,6 +1,6 @@
 # Developer's Guide: Extending the @infected/infected Server
 
-This guide provides comprehensive instructions on how to extend the `@infected/infected` server by creating custom tools, plugins, and skills using its new unified, dynamic module system. This system, orchestrated by the `ModuleManager` and `ModuleWatcher`, enables seamless integration of new functionalities conforming to the `IUnifiedModule` interface, often without requiring a full server restart due to hot-reloading capabilities. The server's modular and extensible design allows developers to seamlessly integrate new functionalities without modifying its core codebase.
+This guide provides comprehensive instructions on how to extend the `@infected/infected` server by creating custom tools and plugins using its new unified, dynamic module system. This system, orchestrated by the `ModuleManager` and `ModuleWatcher`, enables seamless integration of new functionalities conforming to the `IUnifiedModule` interface, often without requiring a full server restart due to hot-reloading capabilities. The server's modular and extensible design allows developers to seamlessly integrate new functionalities without modifying its core codebase.
 
 ## Quickstart (Recommended)
 
@@ -335,7 +335,7 @@ The `IUnifiedPlugin` interface requires:
     -   **`type` (string)**: Must be `'plugin'`.
     -   **`entry` (string)**: The relative path to the plugin's main file (e.g., `index.ts`).
     -   **`description` (string, optional)**: A clear, concise explanation of what the plugin does.
-    -   **`provides` (string[], optional)**: An array of strings describing what the plugin provides (e.g., "tools", "prompts").
+    -   **`provides` (string[], optional)**: An array of strings describing what the plugin provides (e.g., "tools", "resources").
     -   **`dependencies` (string[], optional)**: An array of strings representing IDs of other modules this plugin depends on.
 -   **`onLoad(context: UnifiedModuleContext): Promise<void>`**: An asynchronous method called when the plugin is loaded. This is where the plugin registers its tools, sets up event listeners, or performs any necessary initialization.
 -   **`onUnload?(): Promise<void>` (optional)**: An asynchronous method called when the plugin is being unloaded (e.g., during server shutdown or hot-reload). This is crucial for cleaning up resources, such as deregistering event listeners or closing connections.
@@ -455,147 +455,27 @@ Plugin-specific practical tips:
 - Put long-running setup behind lazy execution inside tools.
 - Fail loudly in `onLoad` with actionable errors so startup logs are useful.
 
-## 3. Creating Skills
+## 3. Extending the Platform
 
-Skills are now a specific `type: 'skill'` of unified modules. They are high-level capabilities that autonomous agents can utilize to perform complex workflows. They encapsulate specific functionalities, inputs, and outputs, providing a structured way for agents to interact with the server's ecosystem (tools, modules, data).
+The unified runtime now focuses on tools and plugins. Rather than a separate skill or prompt layer, high-level workflows should be implemented as orchestrations within tools/plugins that call other tools, manage state, or run complex processes.
 
-### Skill Structure
+### Placement & Discovery
 
-A skill is defined by a **subdirectory** containing an `index.ts` (or `index.js`) file that exports a **default class** implementing the `IUnifiedSkill` interface, and a `module.json` file for its manifest metadata.
+1.  Drop tool modules under the directory configured by `toolsDir` (defaults to `./tools`) and plugin modules under `pluginsDir` (defaults to `./plugins`).
+2.  Ensure each module exports a default class that implements the appropriate interface (`IUnifiedTool` or `IUnifiedPlugin`) and provides a minimal `manifest` (either in the class or via `module.json`) describing `id`, `name`, `version`, `type`, and `entry`.
+3.  Keep heavy orchestration logic inside plugin tools or commands rather than a special skill wrapper; plugins can coordinate multiple tools through the `UnifiedModuleContext` provided by the `ModuleManager`.
+4.  Hot-reloading is automatic: the `ModuleWatcher` observes `toolsDir` and `pluginsDir`, and the `ModuleManager` reloads changed modules without restarting the server.
 
-The `IUnifiedSkill` interface requires:
+### Supervisor Guidance
 
--   **`manifest: UnifiedModuleManifest`**: An object containing the skill's metadata, read directly from `module.json`. This includes:
-    -   **`id` (string)**: A unique identifier for the skill (e.g., `skill.my_skill_name`).
-    -   **`name` (string)**: A human-readable name for the skill.
-    -   **`version` (string)**: The skill's version.
-    -   **`type` (string)**: Must be `'skill'`.
-    -   **`entry` (string)**: The relative path to the skill's main file (e.g., `index.ts`).
-    -   **`description` (string, optional)**: A clear, concise explanation of what the skill does.
-    -   **`inputs` (Zod schema, optional)**: A Zod schema defining the expected input arguments for the skill's `execute` function.
-    -   **`outputs` (Zod schema, optional)**: A Zod schema defining the expected output of the skill.
-    -   **`capabilities` (string[], optional)**: An array of strings describing the skill's capabilities.
-    -   **`requiresTools` (string[], optional)**: An array of strings representing IDs of tools this skill requires.
--   **`onLoad(context: UnifiedModuleContext): Promise<void>`**: An asynchronous method called when the skill is loaded. This is where the skill can perform any setup or initialization.
--   **`execute(input: any, context: UnifiedModuleContext): Promise<any>`**: The core logic of your skill. It receives validated inputs and the `UnifiedModuleContext`, and returns a result. This is where the skill orchestrates tools or other logic.
--   **`onUnload?(): Promise<void>` (optional)**: An asynchronous method called when the skill is being unloaded (e.g., during server shutdown or hot-reload). Use this for cleanup.
--   **`onError?(error: Error, context: UnifiedModuleContext): Promise<void>` (optional)**: An asynchronous method called if an error occurs within the skill's lifecycle methods.
-
-The `UnifiedModuleContext` object provides access to the `McpServer` instance, `InfectedConfig`, `ManagerInstances`, `logger`, and the `ModuleManager` itself.
-
-### Example: `example-skill/module.json` and `example-skill/index.ts` (located in `infected/skills/example-skill/`)
-
-**`infected/skills/example-skill/module.json`:**
-```json
-{
-  "id": "skill.example_skill",
-  "name": "Example Skill",
-  "version": "1.0.0",
-  "type": "skill",
-  "entry": "index.ts",
-  "description": "Demonstrates a simple skill that processes text.",
-  "inputs": {
-    "text": { "type": "string", "description": "The text to process." },
-    "uppercase": { "type": "boolean", "optional": true, "description": "If true, convert text to uppercase." }
-  },
-  "outputs": {
-    "processedText": { "type": "string", "description": "The processed text." }
-  }
-}
-```
-
-**`infected/skills/example-skill/index.ts`:**
-```typescript
-import { IUnifiedSkill, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
-import { z } from 'zod';
-
-const ExampleSkillInputSchema = z.object({
-  text: z.string().describe("The text to process."),
-  uppercase: z.boolean().optional().describe("If true, convert text to uppercase.")
-});
-
-const ExampleSkillConfigSchema = z.object({
-  prefix: z.string().optional().describe("A prefix to add to the processed text.")
-});
-
-class ExampleSkill implements IUnifiedSkill {
-  public manifest: UnifiedModuleManifest; // This will be set by ModuleManager from module.json
-
-  constructor() {
-    this.manifest = {
-      id: "skill.example_skill",
-      name: "Example Skill",
-      version: "1.0.0",
-      type: "skill",
-      entry: "index.ts",
-      description: "Demonstrates a simple skill that processes text.",
-      inputs: {
-        text: { type: "string", description: "The text to process." },
-        uppercase: { type: "boolean", optional: true, description: "If true, convert text to uppercase." }
-      },
-      outputs: {
-        processedText: { type: "string", description: "The processed text." }
-      }
-    };
-  }
-
-  async onLoad(context: UnifiedModuleContext): Promise<void> {
-    context.logger.info(`Skill '${this.manifest.name}' loaded.`, { component: this.manifest.id });
-    // Perform any skill-specific setup here
-  }
-
-  async execute(input: z.infer<typeof ExampleSkillInputSchema>, context: UnifiedModuleContext): Promise<{ processedText: string }> {
-    context.logger.info(`Skill '${this.manifest.name}' executing with input:`, { input, component: this.manifest.id });
-
-    let processedText = input.text;
-    if (input.uppercase) {
-      processedText = processedText.toUpperCase();
-    }
-
-    // Access skill-specific config if defined in module.json and loaded via InfectedConfig
-    const skillConfig = ExampleSkillConfigSchema.parse(context.config.skills?.[this.manifest.id]?.config || {}); 
-    if (skillConfig?.prefix) {
-      processedText = `${skillConfig.prefix} ${processedText}`;
-    }
-
-    context.logger.info(`Skill '${this.manifest.name}' executed.`, { processedText, component: this.manifest.id });
-    return { processedText };
-  }
-
-  async onUnload(): Promise<void> {
-    // Perform any cleanup
-    console.log(`Skill '${this.manifest.name}' unloaded.`);
-  }
-
-  async onError(error: Error, context: UnifiedModuleContext): Promise<void> {
-    context.logger.error(`Skill '${this.manifest.name}' encountered an error: ${error.message}`, { error, component: this.manifest.id });
-  }
-}
-
-// Export the class
-export default ExampleSkill;
-```
-
-### Placement and Discovery
-
-1.  Create a new **subdirectory** for your skill (e.g., `infected/skills/my-new-skill/`).
-2.  Inside this directory, create an `index.ts` (or `index.js`) file that exports your skill class as default.
-3.  Create a `module.json` file in the same directory with the required `UnifiedModuleManifest` data.
-4.  The `ModuleManager` automatically discovers and loads modules from subdirectories within the directory configured by `promptsDir` in `infected.config.json` (defaults to `./prompts`).
-5.  **Hot-reloading is supported**: Changes to skill files (both `module.json` and `index.ts/js`) will be detected by the `ModuleWatcher`, and the `ModuleManager` will automatically unload and reload the skill without requiring a server restart.
-
-### Best Practices for Skills
-
--   **Unified Module Structure**: Always use the `IUnifiedSkill` interface and define module metadata in `module.json`.
--   **Clear Metadata**: Ensure your `module.json` provides accurate `name`, `description`, `inputs`, and `outputs` for discoverability and proper agent utilization.
--   **Orchestration**: Skills are meant to orchestrate tools and other modules. Avoid implementing complex logic directly within the skill; instead, leverage existing tools through `context.server.callTool()`.
--   **Robustness**: Implement `onUnload()` for cleanup and `onError()` for graceful error handling.
--   **Logging**: Use the `UnifiedModuleContext`'s `logger` for consistent and structured logging, always including a `component` property (e.g., `this.manifest.id`).
--   **Input Validation**: Although `UnifiedModuleManifest` defines input schemas, consider additional runtime validation within the `execute` method if complex logic is involved.
+- Treat plugins as the place for stateful helpers, connectors, or orchestration runners, and keep tools lightweight (stateless handlers for well-defined actions).
+- Reuse existing module interfaces for configuration, logging, and permissions; the `UnifiedModuleContext` gives you access to `server`, `config`, `managers`, and `logger`.
+- Validate inputs with Zod (as shown earlier for plugins) to keep tool invocations predictable and safe.
+- Instrument modules with structured logging and explicit `component` metadata to make troubleshooting easier when the module is reloaded.
 
 ## Next Steps
 
-With these guides, you have the foundation to expand the `@infected/infected` server's capabilities. Experiment with creating your own tools, plugins, and skills, contributing to a more powerful and versatile MCP ecosystem.
+With these guides, you have the foundation to expand the `@infected/infected` server's capabilities. Experiment with creating your own tools and plugins, contributing to a more powerful and versatile MCP ecosystem.
 
 ## Troubleshooting Checklist (Tools/Plugins)
 

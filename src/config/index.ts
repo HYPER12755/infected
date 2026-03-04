@@ -65,7 +65,6 @@ export class ConfigManager {
     if (process.env.PORT) envConfig.port = parseInt(process.env.PORT);
     if (process.env.HOT_RELOAD) envConfig.hotReload = process.env.HOT_RELOAD === 'true';
     if (process.env.TOOLS_DIR) envConfig.toolsDir = process.env.TOOLS_DIR;
-    if (process.env.PROMPTS_DIR) envConfig.promptsDir = process.env.PROMPTS_DIR;
     if (process.env.PLUGINS_DIR) envConfig.pluginsDir = process.env.PLUGINS_DIR;
     // Handle nested module configs
     if (process.env.SHELL_ALLOWLIST) {

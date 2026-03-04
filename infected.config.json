@@ -3,7 +3,6 @@
   "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
   "port": 3001,
   "toolsDir": "./tools",
-  "promptsDir": "./prompts",
   "pluginsDir": "./plugins",
   "hotReload": true,
   "shell": {

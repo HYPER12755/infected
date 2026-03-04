@@ -14,24 +14,8 @@ This document outlines the architecture and file organization of the `@infected/
 - **`GUIDE.md`**: Explains how to create plugins and external tools for the server, including robust examples.
 - **`tsconfig.json`**: TypeScript configuration file, specifying compiler options and project settings.
 - **`plugins/`**: Directory for dynamically loadable plugins. Each plugin resides in its own subdirectory and includes an `index.ts` (or `index.js`) and `module.json` for metadata, conforming to the `IUnifiedModule` interface.
-- **`prompts/`**: Directory for dynamically loadable prompts. Each prompt resides in its own subdirectory and includes an `index.ts` (or `index.js`) and `module.json` for metadata, conforming to the `IUnifiedModule` interface.
-  - **`builtin/`**: Contains the hardcoded, internal Core Bootstrap Skill.
-    - **`bootstrap-skill.ts`**: The implementation of the Core Bootstrap Skill.
-  - **`mobile-fullstack-dev/`**: An example skill for mobile full-stack development capabilities.
-    - **`index.ts`**: The main entry point for the Mobile Full-Stack Developer skill.
-    - **`module.json`**: Metadata and schema for the Mobile Full-Stack Developer skill.
-  - **`web-fullstack-dev/`**: An example skill for web full-stack development capabilities.
-    - **`index.ts`**: The main entry point for the Web Full-Stack Developer skill.
-    - **`module.json`**: Metadata and schema for the Web Full-Stack Developer skill.
-  - **`codebase-investigator/`**: An example skill for codebase investigation capabilities.
-    - **`index.ts`**: The main entry point for the Codebase Investigator skill.
-    - **`module.json`**: Metadata and schema for the Codebase Investigator skill.
-  - **`devops-automation/`**: An example skill for DevOps and automation capabilities.
-    - **`index.ts`**: The main entry point for the DevOps / Automation skill.
-    - **`module.json`**: Metadata and schema for the DevOps / Automation skill.
-  - **`workflow-orchestrator/`**: An example skill for workflow orchestration capabilities.
-    - **`index.ts`**: The main entry point for the Workflow Orchestrator skill.
-    - **`module.json`**: Metadata and schema for the Workflow Orchestrator skill.
+
+Extensions now live exclusively under `tools/` or `plugins/`; the legacy `prompts/` directory and the associated skill examples have been removed.
 
 - **`src/`**: The main source code directory for the unified server.
 
@@ -69,7 +53,6 @@ Contains core server functionalities and managers.
 - **`permission-manager.ts`**: Enforces tool execution permissions based on the `permissions` configuration.
 - **`process-manager.ts`**: Manages the execution of shell commands, including foreground, background, and detached modes, orchestrating real-time output streaming.
 - **`plugin-loader.ts`**: Acts as an adapter, listening to `ModuleManager` events to initialize and shut down plugins, ensuring their `onLoad` and `onUnload` lifecycle methods are invoked.
-- **`skill-loader.ts`**: Acts as an adapter, listening to `ModuleManager` events to initialize and shut down skills, ensuring their `onLoad` and `onUnload` lifecycle methods are invoked.
 - **`tool-loader.ts`**: Acts as an adapter, listening to `ModuleManager` events to register and deregister tools with the `McpServer`, wrapping their execution with security, caching, and monitoring.
 - **`tool-cache-manager.ts`**: Implements an in-memory caching system for tool execution results.
 
@@ -77,14 +60,14 @@ Contains core server functionalities and managers.
 
 This directory contains the core implementation of the new unified, dynamic module system.
 
--   **`module-manager.ts`**: The central orchestrator for all unified modules (tools, plugins, skills). It extends `EventEmitter` and is responsible for module discovery, loading, unloading, hot-reloading (debounced), and validation. It uses `ModuleWatcher` for file system events and provides methods for module access and tool registration with added security, caching, and monitoring wrappers.
+-   **`module-manager.ts`**: The central orchestrator for all unified modules (tools and plugins). It extends `EventEmitter` and is responsible for module discovery, loading, unloading, hot-reloading (debounced), and validation. It uses `ModuleWatcher` for file system events and provides methods for module access and tool registration with added security, caching, and monitoring wrappers.
 -   **`module-watcher.ts`**: A generic file system watcher that monitors specified directories for file `added`, `changed`, or `removed` events. It uses `fs.watch` with recursive monitoring and debounces events to prevent excessive notifications, providing a reliable source of file system changes to the `ModuleManager`.
 -   **`module-types.ts`**: Defines the foundational TypeScript interfaces and Zod schemas for the unified module system, including:
-    *   `ModuleType` (`tool`, `plugin`, `skill`).
+    *   `ModuleType` (`tool`, `plugin`).
     *   `UnifiedModuleContext`: The standardized context passed to all module lifecycle methods.
     *   `UnifiedModuleManifestSchema`: The Zod schema for `module.json` files, defining required metadata (`id`, `name`, `version`, `type`, `entry`) and optional properties.
-    *   `IUnifiedModule`, `IUnifiedTool`, `IUnifiedPlugin`, `IUnifiedSkill`: Base interfaces for all modules and their specific types, including lifecycle methods (`onLoad`, `onUnload`, `onError`) and an `execute` method for tools and skills.
-    *   Type guards (`isUnifiedTool`, `isUnifiedSkill`, `isUnifiedPlugin`) for safe type checking.
+    *   `IUnifiedModule`, `IUnifiedTool`, `IUnifiedPlugin`: Base interfaces for all modules and their specific types, including lifecycle methods (`onLoad`, `onUnload`, `onError`) and an `execute` method for tools.
+    *   Type guards (`isUnifiedTool`, `isUnifiedPlugin`) for safe type checking.
 
 ### `src/modules/`
 

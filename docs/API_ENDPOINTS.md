@@ -95,7 +95,6 @@ These endpoints are available for monitoring and management of the MCP server. I
           "transport": "http",
           "port": 3001,
           "toolsDir": "./tools",
-          "promptsDir": "./prompts",
           "auth": { "enabled": false },
           "permissions": { "defaultPolicy": "allow" },
           "cache": { "enabled": true },
@@ -142,29 +141,13 @@ These endpoints are available for monitoring and management of the MCP server. I
     *   **Authentication**: Requires API Key if `auth.enabled` is true.
     *   **Event Data**: Each event is a JSON object representing a log entry (timestamp, level, message, component, etc.).
 *   **`GET /api/modules`**
-    *   **Purpose**: Lists all currently loaded unified modules (tools, plugins, skills) with their core manifest data.
+    *   **Purpose**: Lists all currently loaded unified modules (tools and plugins) with their core manifest data.
     *   **Example Response**:
         ```json
         {
           "modules": [
-            { "id": "skill.codebase-investigator", "name": "Codebase Investigator", "type": "skill", "version": "1.0.0", "description": "Debugs codebase issues by detecting errors, analyzing files, and suggesting causes." },
             { "id": "tool.my_custom_tool", "name": "My Custom Tool", "type": "tool", "version": "0.1.0", "description": "A custom tool for specific tasks." },
             { "id": "plugin.my_utility_plugin", "name": "My Utility Plugin", "type": "plugin", "version": "1.2.0", "description": "Provides various utility functions." }
-          ]
-        }
-        ```
-*   **`GET /api/skills`**
-    *   **Purpose**: Lists all discovered and loaded skills with their metadata.
-    *   **Example Response**:
-        ```json
-        {
-          "skills": [
-            {
-              "name": "Codebase Investigator",
-              "version": "1.0.0",
-              "description": "Debugs codebase issues by detecting errors, analyzing files, and suggesting causes.",
-              "inputs": { /* ... */ }, "outputs": { /* ... */ }, "configSchema": {}
-            }
           ]
         }
         ```
@@ -190,7 +173,7 @@ These endpoints are available for monitoring and management of the MCP server. I
               "id": "plugin.my_test_plugin",
               "name": "My Test Plugin",
               "version": "1.0.0",
-              "description": "A test plugin with sample tools, prompts, and resources."
+              "description": "A test plugin with sample tools and resources."
             }
           ]
         }
@@ -198,15 +181,15 @@ These endpoints are available for monitoring and management of the MCP server. I
 *   **`POST /api/modules/:moduleId/reload`**
     *   **Purpose**: Reloads a specific module by its ID. Useful for applying changes to a module without restarting the entire server.
     *   **Path Parameters**:
-        *   `moduleId` (string, required): The unique ID of the module to reload (e.g., `skill.codebase-investigator`).
+    *   `moduleId` (string, required): The unique ID of the module to reload (e.g., `plugin.my_utility_plugin`).
     *   **Example Usage (using `curl`)**:
         ```bash
-        curl -X POST http://localhost:3001/api/modules/skill.codebase-investigator/reload
+        curl -X POST http://localhost:3001/api/modules/plugin.my_utility_plugin/reload
         ```
     *   **Example Response**:
         ```json
         {
-          "message": "Module 'skill.codebase-investigator' reloaded."
+          "message": "Module 'plugin.my_utility_plugin' reloaded."
         }
         ```
 

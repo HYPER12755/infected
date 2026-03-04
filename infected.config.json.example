@@ -4,11 +4,9 @@
   // List of modules to load. Agents can use tools from these modules.
   "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
   // Port for HTTP/SSE transport.
-  "port": 3000,
+  "port": 3001,
   // Directory where external tools are automatically discovered.
   "toolsDir": "./tools",
-  // Directory where external prompts are automatically discovered.
-  "promptsDir": "./prompts",
   // Directory where external plugins are automatically discovered.
   "pluginsDir": "./plugins",
 

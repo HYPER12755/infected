@@ -23,7 +23,6 @@ PORT=3001
 MODULES=shell,filesystem,memory,sequentialthinking,fetch
 HOT_RELOAD=true
 TOOLS_DIR=./tools
-SKILLS_DIR=./skills
 PLUGINS_DIR=./plugins
 
 # =============================================================================
@@ -83,8 +82,6 @@ Use this file for primary server configuration.
   "port": 3000,
   // Directory where external tools are automatically discovered.
   "toolsDir": "./tools",
-  // Directory where external skills are automatically discovered.
-  "promptsDir": "./prompts",
   // Directory where external plugins are automatically discovered.
   "pluginsDir": "./plugins",
 

@@ -15,7 +15,6 @@ export const InfectedConfigSchema = z.object({
   port: z.number().int().positive().default(3000),
   hotReload: z.boolean().default(false),
   toolsDir: z.string().default('./tools'),
-  promptsDir: z.string().default('./prompts'), // Directory where prompts are automatically discovered.
   pluginsDir: z.string().default('./plugins'),
   shell: z.object({
     allowlist: z.array(z.string()).default([]),

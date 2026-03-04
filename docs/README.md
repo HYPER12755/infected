@@ -5,9 +5,9 @@
 ## Professional snapshot
 | Pillar | Why it matters |
 | --- | --- |
-| **Unified module runtime** | Tools, plugins, and skills register through the same `ModuleManager`, enabling consistent lifecycle hooks, hot-reloading, and observability. |
+| **Unified module runtime** | Tools and plugins register through the same `ModuleManager`, enabling consistent lifecycle hooks, hot-reloading, and observability. |
 | **Security & compliance** | Structured logging, optional API-key auth, and the LLM security gate (with `skipSafeCommands`) keep agents accountable. |
-| **Extensibility** | Drop new modules under `tools/`, `plugins/`, or `prompts/`, and the server auto-registers them without restarting. |
+| **Extensibility** | Drop new modules under `tools/` or `plugins/`, and the server auto-registers them without restarting. |
 | **Documentation-driven** | The docs collection (see “Docs Workspace” below) acts as a single-word quick map for every facet of this platform. |
 
 ## Quick runway
@@ -34,7 +34,7 @@
 ## Docs workspace (clickable)
 | Doc | Description |
 | --- | --- |
-| [`GUIDE.md`](../docs/GUIDE.md) | How to author tools, plugins, and skills using the unified module model. |
+| [`GUIDE.md`](../docs/GUIDE.md) | How to author tools and plugins using the unified module model. |
 | [`CONFIGURATION_EXAMPLES.md`](../docs/CONFIGURATION_EXAMPLES.md) | Sample configs for transports, caching, LLM security, and auth. |
 | [`MCP_SERVER.md`](../docs/MCP_SERVER.md) | Runtime behavior, transports (STDIO/HTTP/SSE), health checks, and monitoring. |
 | [`OFFICIAL_MCP_SDK_OVERVIEW.md`](../docs/OFFICIAL_MCP_SDK_OVERVIEW.md) | How the platform integrates with the MCP SDK and downstream clients. |
@@ -43,7 +43,7 @@
 
 ## Tools & APIs
 - All tools are unified modules under `tools/` (the `ModuleManager` loads each `module.json`, wraps it with permissions, caching, logging, and timeout monitoring, and exposes it through the MCP tool registry). Plug-in adapters like `tools/github` simply register extra helpers on top of that shared infrastructure.
-- Build new plugins or skills by dropping a `module.json` bundle into `plugins/` or `prompts/`, implementing the module interface, and letting the hot-reload watcher load it automatically; then adjust `infected.config.json` or run `infected --configure` for transports, auth, or caching policy changes.
+- Build new plugins (and their tools) by dropping a `module.json` bundle into `plugins/`, implementing the module interface, and letting the hot-reload watcher load it automatically; then adjust `infected.config.json` or run `infected --configure` for transports, auth, or caching policy changes.
 - The `sequentialthinking` tool plus your task files (`plan.txt`, `plan2.txt`) help you capture multi-step flows that spawn further tool calls; combine them with scripted CLI tooling (e.g., shell tooling or automation scripts) to chain work items reliably.
 
 ## Support & hygiene
