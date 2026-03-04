@@ -1,0 +1,8 @@
+{
+  "id": "plugin.example_toolkit",
+  "name": "Example Plugin",
+  "version": "1.0.0",
+  "type": "plugin",
+  "entry": "index.ts",
+  "description": "Demonstration plugin registering a lightweight tool."
+}
