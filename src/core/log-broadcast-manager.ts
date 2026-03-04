@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { logEventEmitter } from './log-event-emitter.js';
 
-interface LogParams {
+interface LogParams extends Record<string, unknown> {
   level: string;
   message: string;
   timestamp: string;

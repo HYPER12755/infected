@@ -9,6 +9,7 @@ import { hostname, cpus, totalmem, freemem, uptime, loadavg } from 'node:os'; //
 import { hrtime } from 'node:process'; // For high-resolution time measurement
 import { ToolLoader } from './tool-loader.js'; // Import ToolLoader
 import { ToolCacheManager } from './tool-cache-manager.js'; // Import ToolCacheManager
+import type { ProcessMetrics } from './process-manager.js';
 
 // Promisified exec for internal use (moved outside class to workaround esbuild bug)
 const getExecAsync = async () => {

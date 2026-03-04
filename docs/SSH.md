@@ -288,13 +288,13 @@ The AI uses these tools automatically, but you can reference them for advanced u
 
 | Tool | Purpose | Key Features |
 |------|---------|--------------|
-| **`ssh_execute`** | Run commands in persistent session | Timeout config, exit code capture, clean output |
-| **`ssh_upload_file`** | Upload local → remote (max 10MB) | Auto-detect directory, handle duplicates, works through SSH |
-| **`ssh_download_file`** | Download remote → local (max 10MB) | Auto-create dirs, preserve permissions, verify integrity |
-| **`ssh_new_session`** | Create isolated session | Parallel operations, separate environments |
-| **`ssh_list_sessions`** | View all active sessions | Status, uptime, last command |
-| **`ssh_close_session`** | Clean up session | Free resources when done |
-| **`ssh_get_buffer`** | Debug raw output | Useful for troubleshooting |
+| **`terminal_execute`** | Run commands in persistent session | Timeout config, exit code capture, clean output |
+| **`terminal_upload_file`** | Upload local → remote (max 10MB) | Auto-detect directory, handle duplicates, works through SSH |
+| **`terminal_download_file`** | Download remote → local (max 10MB) | Auto-create dirs, preserve permissions, verify integrity |
+| **`terminal_new_session`** | Create isolated session | Parallel operations, separate environments |
+| **`terminal_list_sessions`** | View all active sessions | Status, uptime, last command |
+| **`terminal_close_session`** | Clean up session | Free resources when done |
+| **`terminal_get_buffer`** | Debug raw output | Useful for troubleshooting |
 
 **💡 Tip:** The AI handles these automatically based on your natural language requests!
 
@@ -341,7 +341,7 @@ The AI uses these tools automatically, but you can reference them for advanced u
 
 ```javascript
 // Increase timeout for long-running commands
-ssh_execute({
+terminal_execute({
   command: "npm install",
   timeout: 120000  // 2 minutes
 })
@@ -369,13 +369,13 @@ ssh user@server "echo Success"
 
 ```javascript
 // Check if in SSH session first
-ssh_execute({ command: "pwd" })  // Verify you're on remote server
+terminal_execute({ command: "pwd" })  // Verify you're on remote server
 
 // Ensure remote directory exists
-ssh_execute({ command: "mkdir -p /app/uploads" })
+terminal_execute({ command: "mkdir -p /app/uploads" })
 
 // Then upload
-ssh_upload_file({ local_path: "file.txt", remote_path: "/app/uploads/file.txt" })
+terminal_upload({ local_path: "file.txt", remote_path: "/app/uploads/file.txt" })
 ```
 </details>
 
@@ -384,13 +384,13 @@ ssh_upload_file({ local_path: "file.txt", remote_path: "/app/uploads/file.txt" }
 
 ```javascript
 // Verify remote file exists
-ssh_execute({ command: "ls -lh /path/to/file" })
+terminal_execute({ command: "ls -lh /path/to/file" })
 
 // Check permissions
-ssh_execute({ command: "cat /path/to/file | wc -l" })
+terminal_execute({ command: "cat /path/to/file | wc -l" })
 
 // Try download with absolute path
-ssh_download_file({ remote_path: "/full/path/to/file", local_path: "./" })
+terminal_download({ remote_path: "/full/path/to/file", local_path: "./" })
 ```
 </details>
 
@@ -399,13 +399,13 @@ ssh_download_file({ remote_path: "/full/path/to/file", local_path: "./" })
 
 ```javascript
 // List all sessions
-ssh_list_sessions()
+terminal_list_sessions()
 
 // Close problematic session
-ssh_close_session({ session_id: "stuck-session" })
+terminal_close_session({ session_id: "stuck-session" })
 
 // Create fresh session
-ssh_new_session({ session_id: "new-session" })
+terminal_new_session({ session_id: "new-session" })
 ```
 </details>
 

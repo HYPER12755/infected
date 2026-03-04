@@ -1,4 +1,5 @@
 import { InfectedConfig, InfectedConfigSchema } from './schema.js';
+export type { InfectedConfig } from './schema.js';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';

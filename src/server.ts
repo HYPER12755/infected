@@ -141,18 +141,18 @@ export class InfectedServer {
     processManager.setBackgroundProcessCallbacks({
       onComplete: async (executionId, executionInfo) => {
         logger.info(`Background process ${executionId} completed.`);
-        await this.server.notification({ method: 'notifications/message', params: { level: 'info', data: `Process ${executionId} completed.` } });
+        await this.server.server.notification({ method: 'notifications/message', params: { level: 'info', data: `Process ${executionId} completed.` } });
       },
       onError: async (executionId, executionInfo, error) => {
         logger.error(`Background process ${executionId} failed: ${error}`);
-        await this.server.notification({ method: 'notifications/message', params: { level: 'error', data: `Process ${executionId} failed: ${error}` } });
+        await this.server.server.notification({ method: 'notifications/message', params: { level: 'error', data: `Process ${executionId} failed: ${error}` } });
       },
       onTimeout: async (executionId, executionInfo) => {
         logger.warn(`Background process ${executionId} timed out.`);
-        await this.server.notification({ method: 'notifications/message', params: { level: 'warn', data: `Process ${executionId} timed out.` } });
+        await this.server.server.notification({ method: 'notifications/message', params: { level: 'warn', data: `Process ${executionId} timed out.` } });
       },
       onOutputData: async (executionId, data, isStderr) => {
-        await this.server.notification({
+        await this.server.server.notification({
           method: 'notifications/progress',
           params: {
             execution_id: executionId,

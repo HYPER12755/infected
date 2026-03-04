@@ -21,6 +21,7 @@
   "devDependencies": {
     "@types/inquirer": "^9.0.9",
     "@types/cheerio": "^0.22.35",
+    "@types/chokidar": "^2.1.7",
     "@types/express": "^4.17.21",
     "@types/minimatch": "^5.1.2",
     "@types/node": "^20.11.5",

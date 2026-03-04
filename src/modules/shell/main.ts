@@ -386,7 +386,7 @@ export class MCPShellServer {
     
     // MCPクライアントに通知を送信
     try {
-      await this.server.notification({
+      await this.server.server.notification({
         method: 'notifications/message',
         params: {
           level: 'info',
@@ -415,7 +415,7 @@ export class MCPShellServer {
     
     // MCPクライアントに通知を送信
     try {
-      await this.server.notification({
+      await this.server.server.notification({
         method: 'notifications/message',
         params: {
           level: 'error',
@@ -443,7 +443,7 @@ export class MCPShellServer {
     
     // MCPクライアントに通知を送信
     try {
-      await this.server.notification({
+      await this.server.server.notification({
         method: 'notifications/message',
         params: {
           level: 'warning',

@@ -68,27 +68,27 @@ export class ShellModule implements Module {
     managers.processManager.setBackgroundProcessCallbacks({
       onComplete: async (executionId, executionInfo) => {
         const message = `✅ Command '${executionInfo.command.substring(0, 50)}...' completed. ID: ${executionId}`;
-        await this.serverInstance.notification({
+        await this.serverInstance.server.notification({
           method: 'notifications/message',
           params: { level: 'info', data: message, execution_id: executionId, status: 'completed' },
         });
       },
       onError: async (executionId, executionInfo, error) => {
         const message = `❌ Command '${executionInfo.command.substring(0, 50)}...' failed. ID: ${executionId}`;
-        await this.serverInstance.notification({
+        await this.serverInstance.server.notification({
           method: 'notifications/message',
           params: { level: 'error', data: message, execution_id: executionId, status: 'failed', error: String(error) },
         });
       },
       onTimeout: async (executionId, executionInfo) => {
         const message = `⏰ Command '${executionInfo.command.substring(0, 50)}...' timed out. ID: ${executionId}`;
-        await this.serverInstance.notification({
+        await this.serverInstance.server.notification({
           method: 'notifications/message',
           params: { level: 'warn', data: message, execution_id: executionId, status: 'timeout' },
         });
       },
       onOutputData: async (executionId, data, isStderr) => {
-        await this.serverInstance.notification({
+        await this.serverInstance.server.notification({
           method: 'notifications/progress', // Use progress notification for streaming output
           params: {
             execution_id: executionId,

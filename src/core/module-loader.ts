@@ -176,11 +176,6 @@ export class ModuleManager {
     }
   }
 
-  private async reloadModule(moduleName: string): Promise<void> {
-    await this.unloadModule(moduleName);
-    await this.loadModule(moduleName);
-  }
-
   stopWatching(): void {
     if (this.watcher) {
       this.watcher.close();
@@ -197,4 +192,3 @@ export class ModuleManager {
     }));
   }
 }
-

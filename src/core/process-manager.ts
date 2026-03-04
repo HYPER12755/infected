@@ -61,7 +61,7 @@ export interface ExecutionOptions {
 }
 
 // Define ProcessMetrics interface (implicitly defined by its usage)
-interface ProcessMetrics {
+export interface ProcessMetrics {
   cpu_usage_percent?: number;
   memory_usage_mb?: number;
   io_read_bytes?: number;

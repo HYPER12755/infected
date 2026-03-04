@@ -41,6 +41,7 @@ export function SSETransportFactory(mcpServer: McpServer) {
   const sessionMetadata = new Map<string, SessionMetadata>();
   const router = express.Router();
   let sseConnected = false;
+  let sseConnectPromise: Promise<void> | null = null;
 
   router.get('/sse', async (req, res) => {
     const requestedSession = extractSessionId(req);
@@ -74,6 +75,8 @@ export function SSETransportFactory(mcpServer: McpServer) {
       });
       sessionMetadata.delete(transport.sessionId);
       transportMap.delete(transport.sessionId);
+      sseConnected = false;
+      sseConnectPromise = null;
     };
 
     logger.info('New SSE connection established', {
@@ -85,8 +88,22 @@ export function SSETransportFactory(mcpServer: McpServer) {
     });
 
     if (!sseConnected) {
-      await mcpServer.connect(transport);
-      sseConnected = true;
+      if (!sseConnectPromise) {
+        const currentPromise = (async () => {
+          await mcpServer.connect(transport);
+          sseConnected = true;
+        })();
+        sseConnectPromise = currentPromise;
+        try {
+          await currentPromise;
+        } finally {
+          if (sseConnectPromise === currentPromise) {
+            sseConnectPromise = null;
+          }
+        }
+      } else {
+        await sseConnectPromise;
+      }
     }
   });
 
