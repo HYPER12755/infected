@@ -1,4 +1,4 @@
-import type { ShellType, Dimensions, SafetyEvaluationResult, ExecutionInfo } from '../../types/shell-server/index'; // Adapted import
+import type { ShellType, Dimensions, SafetyEvaluationResult, ExecutionInfo } from '../../types/shell-server/index.js'; // Adapted import
 import logger from '../../core/logger.js'; // Use our central logger
 
 // Tool response type for safety evaluation
@@ -55,8 +55,8 @@ import type {
   AutoCleanupParams,
   CommandHistoryQueryParams,
   AdjustCriteriaParams as _AdjustCriteriaParams, // Disabled MCP tool type
-} from '../../types/shell-server/schemas';
-import type { TerminalOperateParams } from '../../types/shell-server/quick-schemas';
+} from '../../types/shell-server/schemas.js';
+import type { TerminalOperateParams } from '../../types/shell-server/quick-schemas.js';
 import { ProcessManager, ExecutionOptions } from '../../core/process-manager.js'; // Adapted import
 import { RemoteProcessService } from '../../core/remote-process-service.js'; // Adapted import
 import { TerminalManager } from '../../core/terminal-manager.js'; // Adapted import
@@ -155,6 +155,7 @@ export class ShellTools {
         maxOutputSize: params.max_output_size,
         captureStderr: params.capture_stderr,
         returnPartialOnTimeout: params.return_partial_on_timeout,
+        createTerminal: params.create_terminal ?? false,
       };
 
       // オプショナルなプロパティを追加（undefinedでない場合のみ）

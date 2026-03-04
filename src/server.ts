@@ -25,6 +25,7 @@ import { authenticationMiddleware, authorizationMiddleware, setAuthConfig } from
 import { ModuleManager } from './core/module-system/module-manager.js';
 import { ToolLoader } from './core/tool-loader.js';
 import { PluginLoader } from './core/plugin-loader.js';
+import { ToolCacheManager } from './core/tool-cache-manager.js';
 import { generateRandomTokens } from './auth/random-token-generator.js';
 import { LogBroadcastManager } from './core/log-broadcast-manager.js';
 

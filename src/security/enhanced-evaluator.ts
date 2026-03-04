@@ -1,4 +1,5 @@
 import type { 
+  EnhancedSecurityConfig,
   CommandHistoryEntry, 
   SimplifiedLLMEvaluationResult,
   FunctionCallHandlerRegistry,
@@ -8,7 +9,7 @@ import type {
   EvaluateCommandSecurityArgs,
   ReevaluateWithUserIntentArgs,
   ReevaluateWithAdditionalContextArgs
-} from '../types/shell-server/enhanced-security'; // Adapted import
+} from '../types/shell-server/enhanced-security.js'; // Adapted import
 import { SecurityManager } from './manager.js'; // Adapted import
 import { 
   SafetyEvaluationResult,
