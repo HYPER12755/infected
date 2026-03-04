@@ -1,14 +1,15 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
-import type {
-  RequestHandlerExtra,
-  ServerRequest,
-  ServerNotification,
-} from '@modelcontextprotocol/sdk/types.js';
+import type { ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { Module, InfectedConfig, ManagerInstances } from '../../types/index.js'; // Our core types, include ManagerInstances
 import { ExecutionInfo } from '../../types/shell-server/index.js'; // Adapted to shell-server types
 import logger from '../../core/logger.js';
 import { ShellTools } from './shell-tools.js'; // Adapted import
 import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.js'; // Adapted custom errors
+import type {
+  ShellGetExecutionParams,
+  ProcessListParams,
+} from '../../types/shell-server/schemas.js';
 import {
   ShellExecuteParamsSchema,
   ShellGetExecutionParamsSchema,
@@ -131,13 +132,12 @@ export class ShellModule implements Module {
         description: 'Retrieves detailed information about a specific command execution.',
         inputSchema: ShellGetExecutionParamsSchema,
       },
-      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
-        const args = ShellGetExecutionParamsSchema.parse(rawArgs);
+      async (args: ShellGetExecutionParams, _extra: ToolRequestExtra) => {
         const executionInfo = await this.shellTools.getExecution({
-          execution_id: args.executionId,
+          execution_id: args.execution_id,
         });
         if (!executionInfo) {
-          throw new ResourceNotFoundError('execution', args.executionId);
+          throw new ResourceNotFoundError('execution', args.execution_id);
         }
         return {
           content: [{ type: 'text', text: JSON.stringify(executionInfo, null, 2) }],
@@ -154,14 +154,8 @@ export class ShellModule implements Module {
         description: 'Lists active and completed command executions with filtering and pagination.',
         inputSchema: ProcessListParamsSchema,
       },
-      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
-        const args = ProcessListParamsSchema.parse(rawArgs);
-        const statusFilter =
-          args.status_filter === 'all'
-            ? undefined
-            : args.status_filter === 'timeout'
-            ? 'failed'
-            : args.status_filter;
+      async (args: ProcessListParams, _extra: ToolRequestExtra) => {
+        const statusFilter = args.status_filter === 'all' ? undefined : args.status_filter;
         const result = await this.shellTools.listProcesses({
           status_filter: statusFilter,
           command_pattern: args.command_pattern,

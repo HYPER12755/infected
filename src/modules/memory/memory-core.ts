@@ -8,9 +8,15 @@ import logger from '../../core/logger.js'; // Use our central logger
 export const defaultMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.jsonl');
 
 // Handle backward compatibility: migrate memory.json to memory.jsonl if needed
-export async function ensureMemoryFilePath(): Promise<string> {
+export async function ensureMemoryFilePath(customPath?: string): Promise<string> {
+  if (customPath && customPath.length > 0) {
+    return path.isAbsolute(customPath)
+      ? customPath
+      : path.join(path.dirname(fileURLToPath(import.meta.url)), customPath);
+  }
+
   if (process.env.MEMORY_FILE_PATH) {
-    // Custom path provided, use it as-is (with absolute path resolution)
+    // Custom path provided via environment variable, use it as-is (with absolute path resolution)
     return path.isAbsolute(process.env.MEMORY_FILE_PATH)
       ? process.env.MEMORY_FILE_PATH
       : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.MEMORY_FILE_PATH);

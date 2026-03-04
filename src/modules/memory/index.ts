@@ -1,9 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"; // Adapted SDK import
-import type {
-  RequestHandlerExtra,
-  ServerRequest,
-  ServerNotification,
-} from '@modelcontextprotocol/sdk/types.js';
+import type { ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { z } from "zod";
 import { Module, InfectedConfig, ManagerInstances } from '../../types/index.js'; // Adjusted path for types and ManagerInstances
 import logger from '../../core/logger.js'; // Import the new logger
