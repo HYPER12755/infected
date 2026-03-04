@@ -357,7 +357,20 @@ export default class SshModule implements IUnifiedPlugin {
     try {
       const session = this.sessions.get(args.session_id);
       if (!session) {
-        throw new Error(`Session ${args.session_id} not found.`);
+        const message = `Session ${args.session_id} not found. Call ssh_new_session before inspecting buffers.`;
+        context.logger.warn('ssh_get_buffer: session missing', {
+          component: this.manifest.id,
+          sessionId: args.session_id,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: message,
+            },
+          ],
+          isError: true,
+        };
       }
       const buffer = args.clean ? this.cleanOutput(session.outputBuffer) : session.outputBuffer;
       return {
