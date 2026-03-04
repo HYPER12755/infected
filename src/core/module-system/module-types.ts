@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InfectedConfig } from '../../config/index.js';
 import logger from '../logger.js';
 import { z } from 'zod';
-import { Tool as McpTool } from '@modelcontextprotocol/sdk';
+import type { Tool as McpTool } from '@modelcontextprotocol/sdk/spec.types.js';
 
 // Forward declarations for ManagerInstances and ModuleManager to avoid circular dependencies
 import type { ManagerInstances } from '../../types/index.js';

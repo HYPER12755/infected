@@ -1,4 +1,4 @@
-import { 
+import type { 
   CommandHistoryEntry, 
   SimplifiedLLMEvaluationResult,
   FunctionCallHandlerRegistry,
@@ -8,7 +8,7 @@ import {
   EvaluateCommandSecurityArgs,
   ReevaluateWithUserIntentArgs,
   ReevaluateWithAdditionalContextArgs
-} from '../types/shell-server/enhanced-security.js'; // Adapted import
+} from '../types/shell-server/enhanced-security'; // Adapted import
 import { SecurityManager } from './manager.js'; // Adapted import
 import { 
   SafetyEvaluationResult,
@@ -19,7 +19,7 @@ import { CommandHistoryManager } from '../core/enhanced-history-manager.js'; // 
 import { getCurrentTimestamp, generateId } from '../utils/shell-helpers.js'; // Adapted import
 import { repairAndParseJson } from '../utils/json-repair.js'; // Adapted import
 import { adjustCriteria } from '../utils/criteria-manager.js'; // Adapted import
-import { ElicitResultSchema } from '@modelcontextprotocol/sdk/types'; // Adapted SDK import
+import { ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js'; // Adapted SDK import
 import logger from '../core/logger.js'; // Use our central logger
 import { InfectedConfig } from '../config/index.js'; // Import InfectedConfig for llmSecurity type
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
@@ -107,6 +107,9 @@ type LLMEvaluationResult =
         executable_commands?: string[];
       };
     });
+
+const userIntentQuestion =
+  'Please describe the intent and context for this command so we can decide whether to proceed.';
 
 // User intent data from elicitation
 interface UserIntentData {
@@ -426,13 +429,39 @@ export class EnhancedSafetyEvaluator {
     try {
       const args = JSON.parse(functionCall.arguments);
       return await this.executeFunctionCall(functionCall.name, args, context);
-    } catch (error) {
-      logger.error('Failed to parse function call arguments for test function call:', { error: error instanceof Error ? error.message : String(error) });
+  } catch (error) {
+    logger.error('Failed to parse function call arguments for test function call:', { error: error instanceof Error ? error.message : String(error) });
+    return {
+      success: false,
+      error: `Failed to parse function call arguments: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
+  /**
+   * Simplified LLM-centric evaluation stub (can be replaced with actual LLM call)
+   */
+  private async performLLMCentricEvaluation(
+    command: string,
+    workingDirectory: string,
+    history: CommandHistoryEntry[],
+    comment?: string,
+    forceUserConfirm?: boolean
+  ): Promise<LLMEvaluationResult> {
+    if (forceUserConfirm) {
       return {
-        success: false,
-        error: `Failed to parse function call arguments: ${error instanceof Error ? error.message : String(error)}`
+        evaluation_result: 'user_confirm',
+        reasoning: 'Assistant confirmation forced via API parameter.',
+        confirmation_question: userIntentQuestion,
       };
     }
+
+    return {
+      evaluation_result: 'allow',
+      reasoning: 'Default allow response (LLM integration pending).',
+      suggested_alternatives: [],
+      user_response: undefined,
+    };
   }
 
   /**
@@ -527,7 +556,7 @@ export class EnhancedSafetyEvaluator {
         },
       };
 
-      const response = await this.mcpServer.request(requestPayload, ElicitResultSchema);
+      const response = await this.mcpServer.server.request(requestPayload, ElicitResultSchema);
       const endTime = Date.now();
       const duration = endTime - startTime;
 

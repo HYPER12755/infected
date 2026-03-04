@@ -1,11 +1,11 @@
-import { Server } from '@modelcontextprotocol/sdk/server'; // Adapted SDK import
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio'; // Adapted SDK import
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'; // Adapted SDK import
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'; // Adapted SDK import
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   ErrorCode,
   McpError,
-} from '@modelcontextprotocol/sdk/types'; // Adapted SDK import
+} from '@modelcontextprotocol/sdk/types.js'; // Adapted SDK import
 import { ZodError } from 'zod';
 
 import { ProcessManager } from '../../core/process-manager.js'; // Adapted import

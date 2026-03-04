@@ -57,6 +57,7 @@ export interface ExecutionOptions {
   createTerminal: boolean;
   terminalShell?: TerminalOptions['shellType'];
   terminalDimensions?: TerminalOptions['dimensions'];
+  sessionId?: string;
   returnPartialOnTimeout?: boolean;
 }
 

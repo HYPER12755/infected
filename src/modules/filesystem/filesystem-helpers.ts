@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs'; // Use node:fs
 import * as path from 'node:path'; // Use node:path
 import logger from '../../core/logger.js'; // Use our central logger
-import type { Root } from '@modelcontextprotocol/sdk/types'; // Adapted SDK import
+import type { Root } from '@modelcontextprotocol/sdk/types.js'; // Adapted SDK import
 import { getValidRootDirectories } from './roots-utils.js'; // Adapted import
 import { setAllowedDirectories } from './lib.js'; // Adapted import
 

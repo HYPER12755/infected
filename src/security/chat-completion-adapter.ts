@@ -566,10 +566,10 @@ function createMessageCallbackFromMCPServer(server: Server): CreateMessageCallba
     try {
       // Convert request to MCP format
       const mcpMessages = request.messages
-        .filter((msg: { role: string }) => msg.role !== 'tool') // Filter out tool messages as MCP doesn't support them
-        .map((msg: { role: string; content: { text: string } }) => ({
+        .filter((msg: { role: string; content?: { type?: string; text?: string } }) => msg.role !== 'tool' && msg.content?.type === 'text')
+        .map((msg: { role: string; content: { type?: string; text?: string } }) => ({
           role: (msg.role as 'user' | 'assistant'),
-          content: { type: 'text' as const, text: msg.content.text },
+          content: { type: 'text' as const, text: msg.content.text ?? '' },
         }));
 
       // Create MCP request with only defined values

@@ -1,4 +1,4 @@
-import { ShellType, Dimensions, SafetyEvaluationResult } from '../../types/shell-server/index.js'; // Adapted import
+import type { ShellType, Dimensions, SafetyEvaluationResult, ExecutionInfo } from '../../types/shell-server/index'; // Adapted import
 import logger from '../../core/logger.js'; // Use our central logger
 
 // Tool response type for safety evaluation
@@ -32,7 +32,7 @@ export interface TerminalOutputResponse {
   next_start_line: number;
   foreground_process?: unknown;
 }
-import {
+import type {
   ShellExecuteParams,
   ShellGetExecutionParams,
   ShellSetDefaultWorkdirParams,
@@ -55,8 +55,8 @@ import {
   AutoCleanupParams,
   CommandHistoryQueryParams,
   AdjustCriteriaParams as _AdjustCriteriaParams, // Disabled MCP tool type
-} from '../../types/shell-server/schemas.js'; // Adapted import
-import { TerminalOperateParams } from '../../types/shell-server/quick-schemas.js'; // Adapted import
+} from '../../types/shell-server/schemas';
+import type { TerminalOperateParams } from '../../types/shell-server/quick-schemas';
 import { ProcessManager, ExecutionOptions } from '../../core/process-manager.js'; // Adapted import
 import { RemoteProcessService } from '../../core/remote-process-service.js'; // Adapted import
 import { TerminalManager } from '../../core/terminal-manager.js'; // Adapted import
@@ -194,11 +194,11 @@ export class ShellTools {
         stderr?: string;
         execution_time_ms?: number;
         exit_code?: number;
-      } | import('../../types/shell-server/index.js').ExecutionInfo; // Use ExecutionInfo from our types
+      } | ExecutionInfo;
       if (this.isRemoteBackend()) {
         // Minimal remote start: map subset of fields
         const remote = new RemoteProcessService();
-        const req: import('../../core/remote-process-service').RemoteExecStartRequest = { // Adapted import
+        const req: import('../../core/remote-process-service.js').RemoteExecStartRequest = { // Adapted import
           command: executionOptions.command,
           timeout_seconds: executionOptions.timeoutSeconds,
           capture_stderr: executionOptions.captureStderr,

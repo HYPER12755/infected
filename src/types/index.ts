@@ -1,4 +1,5 @@
-import type { Tool as McpTool, McpServer } from '@modelcontextprotocol/sdk';
+import type { Tool as McpTool } from '@modelcontextprotocol/sdk/spec.types.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InfectedConfig } from '../config/index.js'; // Our own InfectedConfig from our config module.
 
 // Import actual manager classes
@@ -65,7 +66,6 @@ export interface ManagerInstances {
   toolLoader: ToolLoader;
   pluginLoader: PluginLoader;
 }
-
 
 
 

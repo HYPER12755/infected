@@ -1,5 +1,3 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Corrected import path
-import { ServerTransport } from '@modelcontextprotocol/sdk';
 import { ConfigManager } from './config/index.js'; // Our own ConfigManager
 import { InfectedConfig } from './config/index.js'; // Corrected import path for InfectedConfig
 import express from 'express';
@@ -34,7 +32,7 @@ export class InfectedServer {
   private server: McpServer;
   private configManager: ConfigManager;
   private config!: InfectedConfig; // Initialized in start()
-  private transport: ServerTransport | undefined;
+  private transport: ReturnType<typeof createStdioTransport> | undefined;
   private container!: ServiceContainer; // Initialized in start()
   // Add manager properties
   private processManager!: ProcessManager;

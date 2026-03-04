@@ -14,6 +14,15 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted 
 import logger from '../core/logger.js'; // Use our central logger
 import { InfectedConfig } from '../config/index.js'; // Import InfectedConfig for llmSecurity type
 
+const DEFAULT_LLM_SECURITY_CONFIG: InfectedConfig['llmSecurity'] = {
+  enabled: false,
+  provider: undefined,
+  model: undefined,
+  apiKey: undefined,
+  elicitationEnabled: false,
+  skipSafeCommands: true,
+};
+
 // Import SafetyEvaluationResult from types
 import type { SafetyEvaluationResult } from '../types/shell-server/index.js'; // Adapted import
 
@@ -31,7 +40,7 @@ export class SecurityManager {
     llmSecurityConfig?: InfectedConfig['llmSecurity']
   ) {
     this.enhancedConfig = mcpShellConfig ? { ...mcpShellConfig } : { ...DEFAULT_ENHANCED_SECURITY_CONFIG };
-    this.llmSecurityConfig = llmSecurityConfig ? { ...llmSecurityConfig } : {}; // Initialize llmSecurityConfig
+    this.llmSecurityConfig = { ...DEFAULT_LLM_SECURITY_CONFIG, ...(llmSecurityConfig ?? {}) };
     this.basicSafetyRules = [...DEFAULT_BASIC_SAFETY_RULES];
 
     // Load Enhanced Security configuration from environment variables (fallback/override)
@@ -49,7 +58,7 @@ export class SecurityManager {
     llmSecurityConfig: InfectedConfig['llmSecurity']
   ): void {
     this.enhancedConfig = { ...mcpShellConfig };
-    this.llmSecurityConfig = { ...llmSecurityConfig };
+    this.llmSecurityConfig = { ...DEFAULT_LLM_SECURITY_CONFIG, ...(llmSecurityConfig ?? {}) };
     this.consolidateLlmSettings(); // Re-consolidate on config update
     this.setDefaultRestrictions(); // Re-set restrictions based on potentially updated config
     // If enhancedEvaluator exists, update its config as well

@@ -7,7 +7,7 @@ import {
   SecurityModeSchema,
   DimensionsSchema,
   EnvironmentVariablesSchema,
-} from './index'; // Adapted import
+} from './index.js'; // Adapted import
 
 // Shell Operations
 export const ShellExecuteParamsSchema = z

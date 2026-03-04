@@ -44,8 +44,9 @@ function extractSessionId(req: express.Request): string | undefined {
     return queryValue[0].trim();
   }
 
-  if (typeof req.body?.params?.sessionId === 'string' && req.body.params.sessionId.trim().length > 0) {
-    return req.body.params.sessionId.trim();
+  const bodySessionId = req.body?.params?.sessionId;
+  if (typeof bodySessionId === 'string' && bodySessionId.trim().length > 0) {
+    return bodySessionId.trim();
   }
   return undefined;
 }
@@ -199,6 +200,8 @@ export function httpStreamTransportFactory(mcpServer: McpServer) {
     metadataSnapshot: SessionMetadata;
   }> => {
     const clientInfo = clientSnapshotFromRequest(req);
+    const metadataMethod = req.method ?? 'POST';
+    const metadataPath = req.path ?? (typeof req.url === 'string' ? req.url : '/');
     const metadata: SessionMetadata = {
       ip: req.ip,
       userAgent: req.headers['user-agent'] as string | undefined,
@@ -206,8 +209,8 @@ export function httpStreamTransportFactory(mcpServer: McpServer) {
       origin: req.headers['origin'] as string | undefined,
       apiKey: maskApiKey(req.headers['x-api-key'] as string | undefined),
       createdAt: new Date().toISOString(),
-      method: req.method,
-      path: req.path,
+      method: metadataMethod,
+      path: metadataPath,
       ...clientInfo,
     };
     pendingMetadata.push(metadata);

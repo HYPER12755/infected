@@ -24,7 +24,7 @@ import {
   AdjustCriteriaParams,
 } from './schemas.js'; // Adapted import
 import { ResponseLevel, OutputFormat, BatchResultFormat } from './response-schemas.js'; // Adapted import
-import { QuickExecuteParams, TerminalOperateParams, SystemDashboardParams, FileQuickParams } from './quick-schemas'; // Adapted import
+import { QuickExecuteParams, TerminalOperateParams, SystemDashboardParams, FileQuickParams } from './quick-schemas.js'; // Adapted import
 import {
   SafetyLevel,
   EvaluationResult,
@@ -44,7 +44,7 @@ import {
   FunctionCallResult,
   FunctionCallHandler,
   FunctionCallHandlerRegistry,
-} from './enhanced-security'; // Adapted import
+} from './enhanced-security.js'; // Adapted import
 
 // 実行モード
 export const ExecutionModeSchema = z.enum(['foreground', 'background', 'detached', 'adaptive']);

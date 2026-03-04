@@ -3,7 +3,7 @@ import {
   CallToolResult,
   RootsListChangedNotificationSchema,
   type Root,
-} from "@modelcontextprotocol/sdk/types"; // Adapted SDK import
+} from "@modelcontextprotocol/sdk/types.js"; // Adapted SDK import
 import * as fs from "node:fs/promises"; // Use node:fs/promises
 import { createReadStream } from "node:fs"; // Use node:fs for createReadStream
 import * as path from "node:path"; // Use node:path

@@ -26,12 +26,23 @@ function extractSessionId(req: express.Request): string | undefined {
   if (typeof queryValue === 'string' && queryValue.trim().length > 0) {
     return queryValue.trim();
   }
-  if (Array.isArray(queryValue) && queryValue.length > 0) {
-    return queryValue[0].trim();
+  if (Array.isArray(queryValue)) {
+    for (const candidate of queryValue) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
   }
   const headerValue = req.headers['mcp-session-id'];
   if (typeof headerValue === 'string' && headerValue.trim().length > 0) {
     return headerValue.trim();
+  }
+  if (Array.isArray(headerValue)) {
+    for (const candidate of headerValue) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
   }
   return undefined;
 }

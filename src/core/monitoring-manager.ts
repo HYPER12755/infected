@@ -204,6 +204,35 @@ export class MonitoringManager {
     };
   }
 
+  /**
+   * Simplified system stats exposed to shell tools.
+   */
+  getSystemStats(timeRangeMinutes?: number): SystemStats {
+    const load = loadavg();
+    const totalMemoryMB = Math.round(totalmem() / (1024 * 1024));
+    const freeMemoryMB = Math.round(freemem() / (1024 * 1024));
+    const usedMemoryMB = Math.max(totalMemoryMB - freeMemoryMB, 0);
+
+    return {
+      active_processes: this.processMetrics.size,
+      active_terminals: 0,
+      total_files: 0,
+      system_load: {
+        load1: load[0],
+        load5: load[1],
+        load15: load[2],
+      },
+      memory_usage: {
+        total_mb: totalMemoryMB,
+        used_mb: usedMemoryMB,
+        free_mb: freeMemoryMB,
+        available_mb: freeMemoryMB,
+      },
+      uptime_seconds: Math.round(uptime()),
+      collected_at: new Date().toISOString(),
+    };
+  }
+
 
   startProcessMonitor(
     processId: number,
