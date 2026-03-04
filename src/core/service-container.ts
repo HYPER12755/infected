@@ -14,7 +14,6 @@ import { PermissionManager } from './permission-manager.js';
 import { ModuleManager } from './module-system/module-manager.js';
 import { ToolLoader } from './tool-loader.js';
 import { PluginLoader } from './plugin-loader.js';
-import { SkillLoader } from './skill-loader.js';
 import { ManagerInstances } from '../types/index.js';
 
 type ServiceName = keyof ManagerInstances;
@@ -73,7 +72,7 @@ export class ServiceContainer {
     // For now, let's pass a set of managers and then update the main managers object for the loaders.
 
     // Temporarily create a partial managers object for ModuleManager's constructor
-    const partialManagers: Omit<ManagerInstances, 'moduleManager' | 'toolLoader' | 'pluginLoader' | 'skillLoader'> = {
+    const partialManagers: Omit<ManagerInstances, 'moduleManager' | 'toolLoader' | 'pluginLoader'> = {
         processManager, terminalManager, fileManager, monitoringManager,
         securityManager, commandHistoryManager, mcpShellConfigManager,
         toolCacheManager, permissionManager
@@ -93,22 +92,17 @@ export class ServiceContainer {
     const toolLoader = new ToolLoader(this.server, this.config, moduleManager);
     this.services.set('toolLoader', toolLoader);
     
-    // Reconstruct the full managers object before passing to PluginLoader and SkillLoader
+    // Reconstruct the full managers object before passing to PluginLoader
     const fullManagers: ManagerInstances = {
         ...partialManagers,
         moduleManager,
         toolLoader,
         pluginLoader: null as any, // Placeholder, will be set next
-        skillLoader: null as any,  // Placeholder, will be set next
     };
 
     const pluginLoader = new PluginLoader(this.server, this.config, fullManagers, moduleManager);
     this.services.set('pluginLoader', pluginLoader);
     fullManagers.pluginLoader = pluginLoader; // Update fullManagers reference
-
-    const skillLoader = new SkillLoader(this.server, this.config, fullManagers, moduleManager);
-    this.services.set('skillLoader', skillLoader);
-    fullManagers.skillLoader = skillLoader; // Update fullManagers reference
 
     // Set tool managers for monitoring after all are instantiated
     monitoringManager.setToolManagers(toolLoader, toolCacheManager);
@@ -138,7 +132,6 @@ export class ServiceContainer {
       moduleManager: this.get('moduleManager'),
       toolLoader: this.get('toolLoader'),
       pluginLoader: this.get('pluginLoader'),
-      skillLoader: this.get('skillLoader'),
     };
   }
 }

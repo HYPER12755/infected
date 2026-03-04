@@ -14,8 +14,7 @@ import type { PermissionManager } from '../core/permission-manager.js'; // Add t
 import type { ModuleManager } from '../core/module-system/module-manager.js'; // Add this import
 import type { ToolLoader } from '../core/tool-loader.js';
 import type { PluginLoader } from '../core/plugin-loader.js';
-import type { SkillLoader } from '../core/skill-loader.js';
-import type { IUnifiedModule, IUnifiedTool, IUnifiedPlugin, IUnifiedSkill, UnifiedModuleContext, UnifiedModuleManifest } from '../core/module-system/module-types.js';
+import type { IUnifiedModule, IUnifiedTool, IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../core/module-system/module-types.js';
 
 // Re-export specific mcp-shell-server types for convenience if needed, 
 // otherwise, modules should import directly from 'types/mcp-shell-server'
@@ -40,7 +39,7 @@ export type {
   ElicitationResult,
 } from './shell-server/index.js'; // Renamed directory
 
-export type { IUnifiedModule, IUnifiedTool, IUnifiedPlugin, IUnifiedSkill, UnifiedModuleContext, UnifiedModuleManifest };
+export type { IUnifiedModule, IUnifiedTool, IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest };
 
 
 export type Tool = McpTool;
@@ -65,9 +64,7 @@ export interface ManagerInstances {
   moduleManager: ModuleManager;
   toolLoader: ToolLoader;
   pluginLoader: PluginLoader;
-  skillLoader: SkillLoader;
 }
-
 
 
 

@@ -27,10 +27,8 @@ import { authenticationMiddleware, authorizationMiddleware, setAuthConfig } from
 import { ModuleManager } from './core/module-system/module-manager.js';
 import { ToolLoader } from './core/tool-loader.js';
 import { PluginLoader } from './core/plugin-loader.js';
-import { SkillLoader } from './core/skill-loader.js';
 import { generateRandomTokens } from './auth/random-token-generator.js';
 import { LogBroadcastManager } from './core/log-broadcast-manager.js';
-import { PromptManager } from './core/prompt-manager.js';
 
 export class InfectedServer {
   private server: McpServer;
@@ -47,9 +45,7 @@ export class InfectedServer {
   private moduleManager!: ModuleManager; // Add ModuleManager property
   private toolLoader!: ToolLoader; // Add ToolLoader property
   private pluginLoader!: PluginLoader; // Add PluginLoader property
-  private skillLoader!: SkillLoader; // Add SkillLoader property
   private logBroadcastManager: LogBroadcastManager;
-  private promptManager!: PromptManager;
   private app!: express.Application; // Declare the Express app property
 
 
@@ -62,7 +58,7 @@ export class InfectedServer {
       title: "Infected MCP Server",
       description: "A unified MCP server for modular operations and agent interactions."
     }, {
-      instructions: "This server provides tools and skills for various operations. Interact to discover capabilities.",
+      instructions: "This server provides tools and plugins for various operations. Interact to discover capabilities.",
       capabilities: {
         tools: {
           listChanged: true
@@ -70,9 +66,6 @@ export class InfectedServer {
         resources: {
           listChanged: true
         },
-        prompts: {
-          listChanged: true
-        }
       }
     });
     this.logBroadcastManager = new LogBroadcastManager(this.server);
@@ -97,9 +90,6 @@ export class InfectedServer {
     this.moduleManager = managers.moduleManager;
     this.toolLoader = managers.toolLoader;
     this.pluginLoader = managers.pluginLoader;
-    this.skillLoader = managers.skillLoader;
-    this.promptManager = new PromptManager(this.server, this.moduleManager);
-    this.promptManager.start();
   }
 
   private async _configureSecurity(): Promise<void> {
@@ -184,7 +174,6 @@ export class InfectedServer {
     logger.info(`  Hot-Reload Enabled: ${this.config.hotReload}`);
     logger.info(`  Modules Loaded: ${this.config.modules.join(', ')}`);
     logger.info(`  Tools Directory: ${this.config.toolsDir}`);
-    logger.info(`  Prompts Directory: ${this.config.promptsDir}`);
     logger.info(`  Cache Enabled: ${this.config.cache?.enabled}`);
     logger.info(`  Auth Enabled: ${this.config.auth?.enabled}`);
     if (this.config.auth?.enabled) {
@@ -234,11 +223,10 @@ export class InfectedServer {
     this._logConfigurationSummary();
     this._logSecurityWarnings();
 
-    // Ensure all modules/tools/skills are loaded and registered before initializing transport
+    // Ensure all modules and tools are loaded and registered before initializing transport
     await this.moduleManager.start();
     await this.toolLoader.start();
     await this.pluginLoader.start();
-    await this.skillLoader.start();
 
     await this._initializeTransport();
   }
@@ -301,13 +289,11 @@ export class InfectedServer {
     this.terminalManager.cleanup();
     await this.fileManager.cleanup();
     this.monitoringManager.cleanup();
-    const { moduleManager, pluginLoader, skillLoader, toolLoader } = this.container.getAllManagers();
+    const { moduleManager, pluginLoader, toolLoader } = this.container.getAllManagers();
     await moduleManager.stop(); // Stop module management and unload all modules
     await toolLoader.stop(); // Stop ToolLoader's listeners and deregister tools
     await pluginLoader.stop(); // Stop PluginLoader's listeners and unload plugins
-    await skillLoader.stop(); // Stop SkillLoader's listeners and unload skills
     this.toolCacheManager.stopCleanupInterval(); // Stop tool cache cleanup
     this.logBroadcastManager.stop();
-    this.promptManager.stop();
   }
 }

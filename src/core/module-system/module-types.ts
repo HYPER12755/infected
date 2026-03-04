@@ -11,7 +11,7 @@ import type { ModuleManager } from './module-manager.js'; // This will be the ne
 /**
  * Defines the types of modules supported by the unified system.
  */
-export const ModuleTypeSchema = z.enum(['tool', 'plugin', 'skill']);
+export const ModuleTypeSchema = z.enum(['tool', 'plugin']);
 export type ModuleType = z.infer<typeof ModuleTypeSchema>;
 
 /**
@@ -28,7 +28,7 @@ export interface UnifiedModuleContext {
 
 /**
  * Unified schema for module manifests (module.json or exported metadata).
- * This combines and extends metadata from existing Tool, Plugin, and Skill definitions.
+ * This combines and extends metadata from existing Tool and Plugin definitions.
  */
 export const UnifiedModuleManifestSchema = z.object({
   id: z.string().min(1, 'Module ID cannot be empty'),
@@ -40,17 +40,12 @@ export const UnifiedModuleManifestSchema = z.object({
   description: z.string().optional(),
   timeout: z.number().int().positive().optional(), // General timeout for lifecycle/execution
   
-  // Tool/Skill specific
+  // Tool specific
   inputs: z.record(z.any()).optional().describe('Input schema for the module, compatible with ZodRawShapeCompat.'),
   outputs: z.record(z.any()).optional(), // Zod schema for outputs
   
-  // Skill specific
-  capabilities: z.array(z.string()).optional(),
-  requiresTools: z.array(z.string()).optional(),
-  steps: z.array(z.string()).optional(),
-  
   // Plugin specific
-  provides: z.array(z.string()).optional(), // What the plugin provides (e.g., "tools", "prompts")
+  provides: z.array(z.string()).optional(), // What the plugin provides (e.g., "tools", "resources")
   dependencies: z.array(z.string()).optional(), // Other modules this plugin depends on
 });
 
@@ -88,22 +83,9 @@ export interface IUnifiedPlugin extends IUnifiedModule {
   // We'll keep it separate for now in case plugins need specific methods like `registerExtension`
 }
 
-/**
- * Interface for Unified Skills.
- * Extends IUnifiedModule and includes the execute method.
- */
-export interface IUnifiedSkill extends IUnifiedModule {
-  execute(input: any, context: UnifiedModuleContext): Promise<any>;
-}
-
 // Type guard to check if a module is a tool
 export function isUnifiedTool(module: IUnifiedModule | undefined | null): module is IUnifiedTool {
   return module && module.manifest && module.manifest.type === 'tool' && typeof (module as IUnifiedTool).execute === 'function';
-}
-
-// Type guard to check if a module is a skill
-export function isUnifiedSkill(module: IUnifiedModule | undefined | null): module is IUnifiedSkill {
-  return module && module.manifest && module.manifest.type === 'skill' && typeof (module as IUnifiedSkill).execute === 'function';
 }
 
 // Type guard to check if a module is a plugin

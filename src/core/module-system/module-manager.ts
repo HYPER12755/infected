@@ -56,9 +56,6 @@ export class ModuleManager extends EventEmitter {
 
     const workspaceToolsDir = path.resolve(this.workspaceRoot, this.config.toolsDir || './tools');
     const workspacePluginsDir = path.resolve(this.workspaceRoot, this.config.pluginsDir || './plugins');
-    const workspacePromptsDir = path.resolve(this.workspaceRoot, this.config.promptsDir || './prompts');
-    const builtinPromptsSrcDir = path.resolve(this.installRoot, 'src/prompts/builtin');
-    const builtinPromptsDistDir = path.resolve(this.installRoot, 'dist/prompts/builtin');
     const workspaceSrcModulesDir = path.resolve(this.workspaceRoot, 'src/modules');
     const workspaceDistModulesDir = path.resolve(this.workspaceRoot, 'dist/modules');
     const installSrcModulesDir = path.resolve(this.installRoot, 'src/modules');
@@ -67,9 +64,6 @@ export class ModuleManager extends EventEmitter {
     const candidateWatchDirs = Array.from(new Set([
       workspaceToolsDir,
       workspacePluginsDir,
-      workspacePromptsDir,
-      builtinPromptsSrcDir,
-      builtinPromptsDistDir,
       workspaceSrcModulesDir,
       workspaceDistModulesDir,
       installSrcModulesDir,
@@ -220,12 +214,6 @@ export class ModuleManager extends EventEmitter {
     }
     if (relativePath.startsWith((this.config.pluginsDir || 'plugins') + path.sep) || fullPath.includes('plugins/')) {
       return 'plugin';
-    }
-    if (relativePath.startsWith((this.config.promptsDir || 'prompts') + path.sep) || fullPath.includes('prompts/')) {
-      return 'skill';
-    }
-    if (fullPath.includes('src/prompts/builtin')) { // Special handling for built-in skills
-      return 'skill';
     }
     return null;
   }
@@ -581,11 +569,4 @@ export class ModuleManager extends EventEmitter {
     return deregisterFn;
   }
 
-  public getSkill(skillIdOrName: string): IUnifiedModule | undefined {
-    const skill = this.getLoadedModule(skillIdOrName);
-    if (skill && skill.manifest.type === 'skill') {
-      return skill;
-    }
-    return undefined;
-  }
 }
