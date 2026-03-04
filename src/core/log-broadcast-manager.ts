@@ -49,7 +49,7 @@ export class LogBroadcastManager {
     };
 
     try {
-      await this.server.notification({ method: 'notifications/log', params });
+      await this.server.server.notification({ method: 'notifications/log', params });
     } catch {
       // Ignore failures (clients might not yet be connected)
     }

@@ -96,12 +96,17 @@ const logger = winston.createLogger({
   exitOnError: false // Do not exit on handled exceptions, Winston will do its job
 });
 
+const formatConsoleArgs = (args: unknown[]) =>
+  args
+    .map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : String(arg)))
+    .filter(Boolean)
+    .join(' ');
+
 // Override console methods to use the logger
-// Original: console.log = (...args: any[]) => logger.info(args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '));
-console.log = (...args: any[]) => logger.info(...args);
-console.info = (...args: any[]) => logger.info(...args);
-console.warn = (...args: any[]) => logger.warn(...args);
-console.error = (...args: any[]) => logger.error(...args);
-console.debug = (...args: any[]) => logger.debug(...args);
+console.log = (...args: unknown[]) => logger.info(formatConsoleArgs(args));
+console.info = (...args: unknown[]) => logger.info(formatConsoleArgs(args));
+console.warn = (...args: unknown[]) => logger.warn(formatConsoleArgs(args));
+console.error = (...args: unknown[]) => logger.error(formatConsoleArgs(args));
+console.debug = (...args: unknown[]) => logger.debug(formatConsoleArgs(args));
 
 export default logger;

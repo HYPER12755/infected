@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { InfectedConfig } from '../config'; // Assuming your config is available like this
-import logger from '../core/logger';
+import { InfectedConfig } from '../config/index.js'; // Assuming your config is available like this
+import logger from '../core/logger.js';
 
 function maskApiKey(key: string | undefined): string | undefined {
   if (!key) return undefined;

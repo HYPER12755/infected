@@ -154,10 +154,18 @@ export async function configureCLI() {
       filter: (value: string) => value.split(',').map(s => s.trim()).filter(s => s.length > 0)
     }
   ]);
+  const defaultAdvanced = newConfig.auth?.randomAuthTokenAdvanced ?? {
+    enabled: false,
+    tokenCount: 1,
+    tokenLength: 32,
+    includeTimestamp: false,
+  };
+
   newConfig.auth = {
     enabled: authAnswers.authEnabled,
     randomAuthTokenEnabled: authAnswers.randomAuthTokenEnabled,
-    apiKey: authAnswers.apiKey || [] // Store as array
+    apiKey: authAnswers.apiKey || [], // Store as array
+    randomAuthTokenAdvanced: defaultAdvanced,
   };
 
   // --- Permissions Settings ---

@@ -73,8 +73,17 @@ export class ConfigManager {
     if (process.env.MEMORY_FILE_PATH) {
         envConfig.memory = { filePath: process.env.MEMORY_FILE_PATH };
     }
-    if (process.env.FETCH_DOMAIN_WHITELIST) {
-        envConfig.fetch = { domainWhitelist: process.env.FETCH_DOMAIN_WHITELIST.split(',') };
+    if (process.env.FETCH_DOMAIN_WHITELIST || process.env.FETCH_BLOCK_LOCAL_NETWORK) {
+        const fetchEnv: Partial<InfectedConfig['fetch']> = {};
+        if (process.env.FETCH_DOMAIN_WHITELIST) {
+            fetchEnv.domainWhitelist = process.env.FETCH_DOMAIN_WHITELIST.split(',').map((value) =>
+                value.trim()
+            ).filter(Boolean);
+        }
+        if (process.env.FETCH_BLOCK_LOCAL_NETWORK) {
+            fetchEnv.blockLocalNetwork = process.env.FETCH_BLOCK_LOCAL_NETWORK === 'true';
+        }
+        envConfig.fetch = fetchEnv as InfectedConfig['fetch'];
     }
 
 
