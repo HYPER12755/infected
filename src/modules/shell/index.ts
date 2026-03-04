@@ -6,10 +6,6 @@ import { ExecutionInfo } from '../../types/shell-server/index.js'; // Adapted to
 import logger from '../../core/logger.js';
 import { ShellTools } from './shell-tools.js'; // Adapted import
 import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.js'; // Adapted custom errors
-import type {
-  ShellGetExecutionParams,
-  ProcessListParams,
-} from '../../types/shell-server/schemas.js';
 import {
   ShellExecuteParamsSchema,
   ShellGetExecutionParamsSchema,
@@ -132,7 +128,7 @@ export class ShellModule implements Module {
         description: 'Retrieves detailed information about a specific command execution.',
         inputSchema: ShellGetExecutionParamsSchema,
       },
-      async (args: ShellGetExecutionParams, _extra: ToolRequestExtra) => {
+      async (args, _extra: ToolRequestExtra) => {
         const executionInfo = await this.shellTools.getExecution({
           execution_id: args.execution_id,
         });
@@ -154,7 +150,7 @@ export class ShellModule implements Module {
         description: 'Lists active and completed command executions with filtering and pagination.',
         inputSchema: ProcessListParamsSchema,
       },
-      async (args: ProcessListParams, _extra: ToolRequestExtra) => {
+      async (args, _extra: ToolRequestExtra) => {
         const statusFilter = args.status_filter === 'all' ? undefined : args.status_filter;
         const result = await this.shellTools.listProcesses({
           status_filter: statusFilter,
