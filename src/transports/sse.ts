@@ -40,6 +40,7 @@ export function SSETransportFactory(mcpServer: McpServer) {
   const transportMap = new Map<string, SSEServerTransport>();
   const sessionMetadata = new Map<string, SessionMetadata>();
   const router = express.Router();
+  let sseConnected = false;
 
   router.get('/sse', async (req, res) => {
     const requestedSession = extractSessionId(req);
@@ -83,7 +84,10 @@ export function SSETransportFactory(mcpServer: McpServer) {
       host: req.headers['host'],
     });
 
-    await mcpServer.connect(transport);
+    if (!sseConnected) {
+      await mcpServer.connect(transport);
+      sseConnected = true;
+    }
   });
 
   router.post('/messages', async (req, res) => {
