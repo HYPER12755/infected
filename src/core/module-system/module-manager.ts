@@ -565,6 +565,11 @@ export class ModuleManager extends EventEmitter {
         inputSchema: inputSchema,
     }, permissionAndCachedAndMonitoredExecute);
 
+    const deregisterFn = () => {
+      registeredTool.remove();
+      this.deregisterFunctions.delete(toolId);
+    };
+
     this.deregisterFunctions.set(toolId, registeredTool);
     logger.info(`ModuleManager: Tool '${toolId}' execution wrapper registered with McpServer.`);
     return deregisterFn;

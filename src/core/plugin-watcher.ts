@@ -1,10 +1,10 @@
-import chokidar from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import logger from './logger.js';
 
 export class PluginWatcher extends EventEmitter {
-  private watcher: chokidar.FSWatcher;
+  private watcher: FSWatcher;
   private pluginsDir: string;
 
   constructor(pluginsDir: string) {
@@ -23,12 +23,12 @@ export class PluginWatcher extends EventEmitter {
 
   private setupListeners() {
     this.watcher
-      .on('addDir', path => logger.debug(`PluginWatcher: Directory ${path} has been added`))
-      .on('unlinkDir', path => logger.debug(`PluginWatcher: Directory ${path} has been removed`))
-      .on('add', path => this.emit('pluginAdded', path))
-      .on('change', path => this.emit('pluginChanged', path))
-      .on('unlink', path => this.emit('pluginRemoved', path))
-      .on('error', error => logger.error(`PluginWatcher: Watcher error: ${error}`));
+      .on('addDir', (dirPath: string) => logger.debug(`PluginWatcher: Directory ${dirPath} has been added`))
+      .on('unlinkDir', (dirPath: string) => logger.debug(`PluginWatcher: Directory ${dirPath} has been removed`))
+      .on('add', (filePath: string) => this.emit('pluginAdded', filePath))
+      .on('change', (filePath: string) => this.emit('pluginChanged', filePath))
+      .on('unlink', (filePath: string) => this.emit('pluginRemoved', filePath))
+      .on('error', (error: Error) => logger.error(`PluginWatcher: Watcher error: ${error.message}`));
   }
 
   public async start(): Promise<void> {

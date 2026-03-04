@@ -559,6 +559,7 @@ export class ProcessManager {
         }, 5000);
 
         const executionInfo = this.executions.get(executionId);
+        const executionTime = Date.now() - startTime;
         if (executionInfo) {
           executionInfo.status = 'timeout';
           executionInfo.stdout = sanitizeString(stdout);
