@@ -1,6 +1,6 @@
 {
   "transport": "http",
-  "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
+  "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch", "ssh"],
   "port": 3001,
   "toolsDir": "./tools",
   "pluginsDir": "./plugins",

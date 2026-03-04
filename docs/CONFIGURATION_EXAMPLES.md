@@ -77,7 +77,7 @@ Use this file for primary server configuration.
   // Main server transport: 'stdio' for CLI, 'http' for REST API, 'sse' for real-time events.
   "transport": "http",
   // List of modules to load. Agents can use tools from these modules.
-  "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
+  "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch", "ssh"],
   // Port for HTTP/SSE transport.
   "port": 3000,
   // Directory where external tools are automatically discovered.
