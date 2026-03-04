@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import chokidar from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 import logger from '../logger.js';
 import { getWorkspaceRoot } from '../../config/index.js';
 
@@ -11,7 +11,7 @@ interface WatcherOptions {
 }
 
 export class ModuleWatcher extends EventEmitter {
-  private watcher: chokidar.FSWatcher | null = null;
+  private watcher: FSWatcher | null = null;
   private directoriesToWatch: string[];
   private options: Required<WatcherOptions>;
   private ready = false;
@@ -64,11 +64,11 @@ export class ModuleWatcher extends EventEmitter {
     });
 
     const handle = this.handleChokidarEvent.bind(this);
-    this.watcher.on('add', (filePath) => handle('add', filePath));
-    this.watcher.on('change', (filePath) => handle('change', filePath));
-    this.watcher.on('unlink', (filePath) => handle('unlink', filePath));
-    this.watcher.on('addDir', (filePath) => handle('addDir', filePath));
-    this.watcher.on('unlinkDir', (filePath) => handle('unlinkDir', filePath));
+    this.watcher.on('add', (filePath: string) => handle('add', filePath));
+    this.watcher.on('change', (filePath: string) => handle('change', filePath));
+    this.watcher.on('unlink', (filePath: string) => handle('unlink', filePath));
+    this.watcher.on('addDir', (filePath: string) => handle('addDir', filePath));
+    this.watcher.on('unlinkDir', (filePath: string) => handle('unlinkDir', filePath));
 
     this.watcher.on('error', (error) => {
       logger.error(`ModuleWatcher: Chokidar watcher error: ${error instanceof Error ? error.message : String(error)}`);

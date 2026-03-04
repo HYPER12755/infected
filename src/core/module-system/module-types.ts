@@ -85,10 +85,15 @@ export interface IUnifiedPlugin extends IUnifiedModule {
 
 // Type guard to check if a module is a tool
 export function isUnifiedTool(module: IUnifiedModule | undefined | null): module is IUnifiedTool {
-  return module && module.manifest && module.manifest.type === 'tool' && typeof (module as IUnifiedTool).execute === 'function';
+  return Boolean(
+    module &&
+      module.manifest &&
+      module.manifest.type === 'tool' &&
+      typeof (module as IUnifiedTool).execute === 'function'
+  );
 }
 
 // Type guard to check if a module is a plugin
 export function isUnifiedPlugin(module: IUnifiedModule | undefined | null): module is IUnifiedPlugin {
-  return module && module.manifest && module.manifest.type === 'plugin';
+  return Boolean(module && module.manifest && module.manifest.type === 'plugin');
 }

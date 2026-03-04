@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InfectedConfig, getInstallRoot, getWorkspaceRoot } from '../../config/index.js';
 import logger from '../logger.js';
 import * as path from 'node:path';
@@ -35,7 +36,7 @@ export class ModuleManager extends EventEmitter {
   // Use module ID as key for loadedModules to prevent duplicates and easier access
   private loadedModules: Map<string, { moduleInstance: IUnifiedModule; fullPath: string }> = new Map();
   private loadingModules: Set<string> = new Set(); // To prevent re-entry during hot reload cycles
-  private deregisterFunctions: Map<string, () => void> = new Map(); // K: toolId, V: deregisterFn
+  private deregisterFunctions: Map<string, RegisteredTool> = new Map(); // K: toolId, V: registered tool metadata
   
   private toolCacheManager: ToolCacheManager;
   private permissionManager: PermissionManager;
@@ -422,9 +423,9 @@ export class ModuleManager extends EventEmitter {
       }
       // If it's a tool, call its deregister function from McpServer
       if (moduleInstance.manifest.type === 'tool') {
-        const deregisterFn = this.deregisterFunctions.get(moduleInstance.manifest.id);
-        if (deregisterFn) {
-          deregisterFn();
+        const registeredTool = this.deregisterFunctions.get(moduleInstance.manifest.id);
+        if (registeredTool) {
+          registeredTool.remove();
           this.deregisterFunctions.delete(moduleInstance.manifest.id);
           logger.info(`ModuleManager: Tool '${moduleInstance.manifest.name}' deregistered from McpServer.`);
         }
@@ -558,13 +559,13 @@ export class ModuleManager extends EventEmitter {
       return result;
     };
     
-    const deregisterFn = this.server.registerTool(toolId, {
+    const registeredTool = this.server.registerTool(toolId, {
         title: name,
         description: description,
         inputSchema: inputSchema,
     }, permissionAndCachedAndMonitoredExecute);
 
-    this.deregisterFunctions.set(toolId, deregisterFn);
+    this.deregisterFunctions.set(toolId, registeredTool);
     logger.info(`ModuleManager: Tool '${toolId}' execution wrapper registered with McpServer.`);
     return deregisterFn;
   }
