@@ -69,6 +69,7 @@ interface LLMEvaluationResultBase {
   reasoning: string;
   suggested_alternatives?: string[];  // Common to all types for consistency
   elicitationResult?: ElicitationResult | undefined;  // Elicitation details when applicable
+  user_response?: unknown;
   
   // Legacy compatibility
   requires_additional_context?: {
@@ -178,7 +179,7 @@ export class EnhancedSafetyEvaluator {
       });
     }
 
-    return new CCCToMCPCMAdapter(server, provider, model, apiKey);
+    return new CCCToMCPCMAdapter(server);
   }
 
   /**

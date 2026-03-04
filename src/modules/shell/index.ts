@@ -5,6 +5,7 @@ import { z } from 'zod';
 import logger from '../../core/logger.js';
 import { ShellTools } from './shell-tools.js'; // Adapted import
 import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.js'; // Adapted custom errors
+import type { ShellExecuteParams } from '../../types/shell-server/schemas.js';
 
 // Zod schema for shell_execute tool arguments
 const shellExecuteSchema = z.object({
@@ -121,19 +122,31 @@ export class ShellModule implements Module {
         }
 
         try {
-          const executionInfo = await this.shellTools.executeShell({
+          const shellParams: ShellExecuteParams = {
             command: args.command,
             execution_mode: args.executionMode,
-            working_directory: args.workingDirectory,
-            environment_variables: args.environmentVariables,
-            input_data: args.inputData,
-            input_output_id: args.inputOutputId,
             timeout_seconds: args.timeoutSeconds,
-            foreground_timeout_seconds: args.foregroundTimeoutSeconds,
             max_output_size: args.maxOutputSize,
             capture_stderr: args.captureStderr,
             create_terminal: args.createTerminal,
-          });
+          };
+          if (args.workingDirectory) {
+            shellParams.working_directory = args.workingDirectory;
+          }
+          if (args.environmentVariables) {
+            shellParams.environment_variables = args.environmentVariables;
+          }
+          if (args.inputData) {
+            shellParams.input_data = args.inputData;
+          }
+          if (args.inputOutputId) {
+            shellParams.input_output_id = args.inputOutputId;
+          }
+          if (args.foregroundTimeoutSeconds !== undefined) {
+            shellParams.foreground_timeout_seconds = args.foregroundTimeoutSeconds;
+          }
+
+          const executionInfo = await this.shellTools.executeShell(shellParams);
           logger.info(`shell_execute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
           const executionDetails = executionInfo as unknown as ExecutionInfo;
           
@@ -176,7 +189,7 @@ export class ShellModule implements Module {
         description: 'Retrieves detailed information about a specific command execution.',
         inputSchema: processGetExecutionSchema,
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = processGetExecutionSchema.parse(rawArgs);
         const executionInfo = await this.shellTools.getExecution({
           execution_id: args.executionId,
@@ -199,7 +212,7 @@ export class ShellModule implements Module {
         description: 'Lists active and completed command executions with filtering and pagination.',
         inputSchema: processListExecutionsSchema,
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = processListExecutionsSchema.parse(rawArgs);
         const normalizedStatus: 'running' | 'completed' | 'failed' | undefined =
           args.status === 'timeout' ? 'failed' : args.status;
@@ -224,7 +237,7 @@ export class ShellModule implements Module {
         description: 'Sends a signal to terminate a running process by its process ID.',
         inputSchema: processKillSchema,
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = processKillSchema.parse(rawArgs);
         const result = await this.shellTools.killProcess({
           process_id: args.processId,
@@ -246,7 +259,7 @@ export class ShellModule implements Module {
         description: 'Sets the default working directory for subsequent shell commands.',
         inputSchema: shellSetDefaultWorkdirSchema,
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = shellSetDefaultWorkdirSchema.parse(rawArgs);
         const result = await this.shellTools.setDefaultWorkingDirectory({
           working_directory: args.workingDirectory,

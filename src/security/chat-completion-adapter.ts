@@ -592,6 +592,8 @@ function createMessageCallbackFromMCPServer(server: Server): CreateMessageCallba
       const result = await server.createMessage(mcpRequest as Parameters<typeof server.createMessage>[0]);
 
       // Build response object conditionally
+      const contentText =
+        result.content && result.content.type === 'text' ? result.content.text : '';
       const response: {
         content: { type: 'text'; text: string; };
         model?: string;
@@ -602,7 +604,7 @@ function createMessageCallbackFromMCPServer(server: Server): CreateMessageCallba
           function: { name: string; arguments: string; };
         }>;
       } = {
-        content: { type: 'text', text: String(result.content?.text || '') },
+        content: { type: 'text', text: contentText },
       };
 
       if (result.model) {

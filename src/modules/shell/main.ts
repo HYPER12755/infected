@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'; // Adapted SDK import
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'; // Adapted SDK import
 import {

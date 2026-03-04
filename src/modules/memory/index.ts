@@ -98,7 +98,7 @@ export class MemoryModule implements Module {
         inputSchema: createEntitiesSchema,
         outputSchema: createEntitiesSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = createEntitiesSchema.parse(rawArgs);
         const result = await knowledgeGraphManager.createEntities(args.entities);
         return {
@@ -117,7 +117,7 @@ export class MemoryModule implements Module {
         inputSchema: createRelationsSchema,
         outputSchema: createRelationsSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = createRelationsSchema.parse(rawArgs);
         const result = await knowledgeGraphManager.createRelations(args.relations);
         return {
@@ -136,7 +136,7 @@ export class MemoryModule implements Module {
         inputSchema: observationInputSchema,
         outputSchema: observationResultsSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = observationInputSchema.parse(rawArgs);
         const result = await knowledgeGraphManager.addObservations(args.observations);
         return {
@@ -155,7 +155,7 @@ export class MemoryModule implements Module {
         inputSchema: deleteEntitiesSchema,
         outputSchema: deleteSuccessSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = deleteEntitiesSchema.parse(rawArgs);
         await knowledgeGraphManager.deleteEntities(args.entityNames);
         return {
@@ -174,7 +174,7 @@ export class MemoryModule implements Module {
         inputSchema: deleteObservationsSchema,
         outputSchema: deleteSuccessSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = deleteObservationsSchema.parse(rawArgs);
         await knowledgeGraphManager.deleteObservations(args.deletions);
         return {
@@ -193,7 +193,7 @@ export class MemoryModule implements Module {
         inputSchema: deleteRelationsSchema,
         outputSchema: deleteSuccessSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = deleteRelationsSchema.parse(rawArgs);
         await knowledgeGraphManager.deleteRelations(args.relations);
         return {
@@ -212,7 +212,7 @@ export class MemoryModule implements Module {
         inputSchema: emptySchema,
         outputSchema: graphSchema
       },
-      async (_rawArgs: unknown, _extra: unknown) => {
+      async (_rawArgs: unknown) => {
         emptySchema.parse(_rawArgs);
         const graph = await knowledgeGraphManager.readGraph();
         return {
@@ -231,7 +231,7 @@ export class MemoryModule implements Module {
         inputSchema: searchNodesSchema,
         outputSchema: graphSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = searchNodesSchema.parse(rawArgs);
         const graph = await knowledgeGraphManager.searchNodes(args.query);
         return {
@@ -250,7 +250,7 @@ export class MemoryModule implements Module {
         inputSchema: openNodesSchema,
         outputSchema: graphSchema
       },
-      async (rawArgs: unknown, _extra: unknown) => {
+      async (rawArgs: unknown) => {
         const args = openNodesSchema.parse(rawArgs);
         const graph = await knowledgeGraphManager.openNodes(args.names);
         return {

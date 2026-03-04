@@ -1,5 +1,6 @@
 import { ConfigManager } from './config/index.js'; // Our own ConfigManager
 import { InfectedConfig } from './config/index.js'; // Corrected import path for InfectedConfig
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import express from 'express';
 import logger from './core/logger.js';
 import { SecurityError } from './utils/shell-errors.js'; // Import SecurityError
