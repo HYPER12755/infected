@@ -74,12 +74,12 @@ export class ShellModule implements Module {
       },
     });
 
-    this.deregisterFunctions.push(server.registerTool(
+    this.deregisterFunctions.push((server as any).registerTool(
       'shell_execute',
       {
         title: 'Shell Execute',
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
-        inputSchema: zodToJsonSchema(ShellExecuteParamsSchema, { target: 'jsonSchema7' }),
+        inputSchema: zodToJsonSchema(ShellExecuteParamsSchema, { target: 'jsonSchema7' }) as any,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellExecuteParamsSchema.parse(rawArgs);
@@ -122,14 +122,15 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: shell_execute tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool(
+    this.deregisterFunctions.push((server as any).registerTool(
       'process_get_execution',
       {
         title: 'Get Execution Details',
         description: 'Retrieves detailed information about a specific command execution.',
-        inputSchema: zodToJsonSchema(ShellGetExecutionParamsSchema, { target: 'jsonSchema7' }),
+        inputSchema: zodToJsonSchema(ShellGetExecutionParamsSchema, { target: 'jsonSchema7' }) as any,
       },
-      async (args, _extra: ToolRequestExtra) => {
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ShellGetExecutionParamsSchema.parse(rawArgs);
         const executionInfo = await this.shellTools.getExecution({
           execution_id: args.execution_id,
         });
@@ -145,14 +146,15 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: process_get_execution tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool(
+    this.deregisterFunctions.push((server as any).registerTool(
       'process_list_executions',
       {
         title: 'List Command Executions',
         description: 'Lists active and completed command executions with filtering and pagination.',
-        inputSchema: zodToJsonSchema(ProcessListParamsSchema, { target: 'jsonSchema7' }),
+        inputSchema: zodToJsonSchema(ProcessListParamsSchema, { target: 'jsonSchema7' }) as any,
       },
-      async (args, _extra: ToolRequestExtra) => {
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ProcessListParamsSchema.parse(rawArgs);
         const statusFilter = args.status_filter === 'all' ? undefined : args.status_filter;
         const result = await this.shellTools.listProcesses({
           status_filter: statusFilter,
@@ -170,12 +172,12 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: process_list_executions tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool(
+    this.deregisterFunctions.push((server as any).registerTool(
       'process_kill',
       {
         title: 'Kill Process',
         description: 'Sends a signal to terminate a running process by its process ID.',
-        inputSchema: zodToJsonSchema(ProcessKillParamsSchema, { target: 'jsonSchema7' }),
+        inputSchema: zodToJsonSchema(ProcessKillParamsSchema, { target: 'jsonSchema7' }) as any,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ProcessKillParamsSchema.parse(rawArgs);
@@ -192,12 +194,12 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: process_kill tool registered.');
 
-    this.deregisterFunctions.push(server.registerTool(
+    this.deregisterFunctions.push((server as any).registerTool(
       'shell_set_default_workdir',
       {
         title: 'Set Default Working Directory',
         description: 'Sets the default working directory for subsequent shell commands.',
-        inputSchema: zodToJsonSchema(ShellSetDefaultWorkdirParamsSchema, { target: 'jsonSchema7' }),
+        inputSchema: zodToJsonSchema(ShellSetDefaultWorkdirParamsSchema, { target: 'jsonSchema7' }) as any,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellSetDefaultWorkdirParamsSchema.parse(rawArgs);
