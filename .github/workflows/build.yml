@@ -19,6 +19,9 @@ jobs:
       - run: npm run build
       - name: Package npm bundle
         run: npm pack
+      - name: Determine npm artifact name
+        id: package-info
+        run: echo "artifact_name=$(node -p \"const pkg=require('./package.json'); pkg.name.split('/').pop()+'-'+pkg.version+'.tgz'\")" >> $GITHUB_OUTPUT
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
@@ -27,5 +30,5 @@ jobs:
       - name: Upload npm package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: infected-infected-1.0.0.tgz
-          path: infected-infected-1.0.0.tgz
+          name: ${{ steps.package-info.outputs.artifact_name }}
+          path: ${{ steps.package-info.outputs.artifact_name }}
