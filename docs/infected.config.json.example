@@ -1,0 +1,84 @@
+{
+  // Main server transport: 'stdio' for CLI, 'http' for REST API, 'sse' for real-time events.
+  "transport": "http",
+  // List of modules to load. Agents can use tools from these modules.
+  "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
+  // Port for HTTP/SSE transport.
+  "port": 3001,
+  // Directory where external tools are automatically discovered.
+  "toolsDir": "./tools",
+  // Directory where external plugins are automatically discovered.
+  "pluginsDir": "./plugins",
+
+  // Enable/disable hot-reloading for tools and modules. Useful for development.
+  "hotReload": true,
+  "shell": {
+    // List of specific commands allowed for the shell module. Empty means all are allowed by default for agent autonomy.
+    // Example: ["ls", "echo"]
+    "allowlist": []
+  },
+  "memory": {
+    // File path for storing the agent's knowledge graph.
+    "filePath": ".infected/memory.jsonl"
+  },
+  "fetch": {
+    // Whitelist of domains allowed for 'fetch' tools. Empty means all are allowed for agent autonomy.
+    // Example: ["example.com", "api.github.com"]
+    "domainWhitelist": [],
+    // Prevent 'fetch' tools from accessing local network resources. Set to false for agents needing local access.
+    "blockLocalNetwork": false
+  },
+  "plugins": [
+    // Define external plugins to load, with optional plugin-specific configurations.
+    {
+      "name": "./plugins/example-plugin",
+      "config": {
+        "greeting": "Hello from config!" // Example plugin configuration.
+      }
+    }
+  ],
+  "cache": {
+    // Enable/disable caching of tool execution results to improve performance.
+    "enabled": true,
+    // Default time-to-live (milliseconds) for cached entries.
+    "defaultTTL": 300000,
+    // Maximum number of entries in the cache.
+    "maxSize": 1000
+  },
+  "auth": {
+    // Enable/disable API Key authentication. If true AND apiKey is set, it will be enforced.
+    "enabled": false,
+    // API Keys for authenticating requests to HTTP/SSE transports.
+    // Can be a single string or an array of strings. Each key must be at least 8 characters long.
+    // If empty, authentication is disabled if 'enabled' is true and 'randomAuthTokenEnabled' is false.
+    "apiKey": [], // Example: ["your-super-secret-key-123"]
+    // If true, a random API key is generated at server startup, overriding any static API keys.
+    // Useful for temporary sessions; disable for persistent keys.
+    "randomAuthTokenEnabled": false
+  },
+  "permissions": {
+    // Default policy for tool execution: 'allow' (default for agents) or 'deny'.
+    // 'allow' grants maximum autonomy to agents by permitting all tools unless explicitly blocked.
+    "defaultPolicy": "allow",
+    // List of tool names that are always allowed, overriding the default policy. Empty for agents to use all tools.
+    // Example: ["shell_execute", "list_directory"]
+    "toolAllowlist": [],
+    // List of tool names that are always blocked, overriding the allowlist. Empty for agents to use all tools.
+    // Example: ["rm_rf"]
+    "toolBlocklist": []
+  },
+  "llmSecurity": {
+    // Enable LLM-based security evaluation for shell commands. (Default: false for agent autonomy).
+    "enabled": false,
+    // LLM provider for security evaluation (e.g., "openai", "gemini").
+    "provider": "",
+    // Specific LLM model to use (e.g., "gpt-4-turbo", "gemini-pro").
+    "model": "",
+    // API key for the LLM provider.
+    "apiKey": "",
+    // Enable interactive elicitation by LLM for potentially unsafe commands.
+    "elicitationEnabled": false,
+    // Optimize: Skip LLM checks for commands pre-identified as safe patterns.
+    "skipSafeCommands": true
+  }
+}

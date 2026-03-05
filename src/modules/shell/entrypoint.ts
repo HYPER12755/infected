@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+
+import { MCPShellServer } from './main.js'; // Adapted import
+import logger from '../../core/logger.js'; // Use our central logger
+
+async function main() {
+  const server = new MCPShellServer();
+  
+  // グレースフルシャットダウンの設定
+  const cleanup = async () => {
+    logger.info('Shutting down MCP Shell Server', {}, 'main');
+    await server.cleanup();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception', { error: error.message, stack: error.stack }, 'main');
+    cleanup();
+  });
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection', { reason, promise: promise.toString() }, 'main');
+    cleanup();
+  });
+
+  try {
+    await server.run();
+  } catch (error) {
+    logger.error('Failed to start MCP Shell Server', { error: String(error) }, 'main');
+    process.exit(1);
+  }
+}
+
+// メイン実行時の判定 - 常に実行（ライブラリとして使用される場合は除く）
+main().catch((error) => {
+  logger.error('Fatal error', { error: String(error) }, 'main');
+  process.exit(1);
+});
