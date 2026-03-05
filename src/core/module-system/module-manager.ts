@@ -44,6 +44,13 @@ export class ModuleManager extends EventEmitter {
   private workspaceRoot: string;
   private installRoot: string;
 
+  private resolveConfiguredDir(root: string, configuredPath: string | undefined, defaultDirName: string): string {
+    const candidate = configuredPath && configuredPath.trim().length > 0 ? configuredPath.trim() : `./${defaultDirName}`;
+    return path.isAbsolute(candidate)
+      ? path.resolve(candidate)
+      : path.resolve(root, candidate);
+  }
+
   constructor(server: McpServer, config: InfectedConfig, managers: ManagerInstances, toolCacheManager: ToolCacheManager, permissionManager: PermissionManager, monitoringManager: MonitoringManager) {
     super(); // Call EventEmitter constructor
     this.server = server;
@@ -55,8 +62,10 @@ export class ModuleManager extends EventEmitter {
     this.workspaceRoot = getWorkspaceRoot();
     this.installRoot = getInstallRoot();
 
-    const workspaceToolsDir = path.resolve(this.workspaceRoot, this.config.toolsDir || './tools');
-    const workspacePluginsDir = path.resolve(this.workspaceRoot, this.config.pluginsDir || './plugins');
+    const workspaceToolsDir = this.resolveConfiguredDir(this.workspaceRoot, this.config.toolsDir, 'tools');
+    const installToolsDir = this.resolveConfiguredDir(this.installRoot, this.config.toolsDir, 'tools');
+    const workspacePluginsDir = this.resolveConfiguredDir(this.workspaceRoot, this.config.pluginsDir, 'plugins');
+    const installPluginsDir = this.resolveConfiguredDir(this.installRoot, this.config.pluginsDir, 'plugins');
     const workspaceSrcModulesDir = path.resolve(this.workspaceRoot, 'src/modules');
     const workspaceDistModulesDir = path.resolve(this.workspaceRoot, 'dist/modules');
     const installSrcModulesDir = path.resolve(this.installRoot, 'src/modules');
@@ -64,7 +73,9 @@ export class ModuleManager extends EventEmitter {
 
     const candidateWatchDirs = Array.from(new Set([
       workspaceToolsDir,
+      installToolsDir,
       workspacePluginsDir,
+      installPluginsDir,
       workspaceSrcModulesDir,
       workspaceDistModulesDir,
       installSrcModulesDir,
