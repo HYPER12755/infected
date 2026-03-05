@@ -17,10 +17,15 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - run: npm install
       - run: npm run build
-      - name: Publish package
-        if: github.event_name == 'push'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm config set //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
-          npm run publish:npm
+      - name: Package npm bundle
+        run: npm pack
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-directory
+          path: dist
+      - name: Upload npm package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: infected-infected-1.0.0.tgz
