@@ -27,5 +27,5 @@ jobs:
       - name: Upload npm package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npm-package
+          name: infected-infected-1.0.0.tgz
           path: infected-infected-1.0.0.tgz
