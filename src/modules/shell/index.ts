@@ -8,12 +8,12 @@ import { ShellTools } from './shell-tools.js'; // Adapted import
 import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.js'; // Adapted custom errors
 import {
   ShellExecuteParamsSchema,
+  ShellExecuteParamsInputSchema,
   ShellGetExecutionParamsSchema,
   ProcessListParamsSchema,
   ProcessKillParamsSchema,
   ShellSetDefaultWorkdirParamsSchema,
 } from '../../types/shell-server/schemas.js';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 
 type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -74,12 +74,12 @@ export class ShellModule implements Module {
       },
     });
 
-    this.deregisterFunctions.push((server as any).registerTool(
+    this.deregisterFunctions.push(server.registerTool(
       'shell_execute',
       {
         title: 'Shell Execute',
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
-        inputSchema: zodToJsonSchema(ShellExecuteParamsSchema, { target: 'jsonSchema7' }) as any,
+        inputSchema: ShellExecuteParamsInputSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellExecuteParamsSchema.parse(rawArgs);
@@ -122,12 +122,12 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: shell_execute tool registered.');
 
-    this.deregisterFunctions.push((server as any).registerTool(
+    this.deregisterFunctions.push(server.registerTool(
       'process_get_execution',
       {
         title: 'Get Execution Details',
         description: 'Retrieves detailed information about a specific command execution.',
-        inputSchema: zodToJsonSchema(ShellGetExecutionParamsSchema, { target: 'jsonSchema7' }) as any,
+        inputSchema: ShellGetExecutionParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellGetExecutionParamsSchema.parse(rawArgs);
@@ -146,12 +146,12 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: process_get_execution tool registered.');
 
-    this.deregisterFunctions.push((server as any).registerTool(
+    this.deregisterFunctions.push(server.registerTool(
       'process_list_executions',
       {
         title: 'List Command Executions',
         description: 'Lists active and completed command executions with filtering and pagination.',
-        inputSchema: zodToJsonSchema(ProcessListParamsSchema, { target: 'jsonSchema7' }) as any,
+        inputSchema: ProcessListParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ProcessListParamsSchema.parse(rawArgs);
@@ -172,12 +172,12 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: process_list_executions tool registered.');
 
-    this.deregisterFunctions.push((server as any).registerTool(
+    this.deregisterFunctions.push(server.registerTool(
       'process_kill',
       {
         title: 'Kill Process',
         description: 'Sends a signal to terminate a running process by its process ID.',
-        inputSchema: zodToJsonSchema(ProcessKillParamsSchema, { target: 'jsonSchema7' }) as any,
+        inputSchema: ProcessKillParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ProcessKillParamsSchema.parse(rawArgs);
@@ -194,12 +194,12 @@ export class ShellModule implements Module {
     ));
     logger.info('  ShellModule: process_kill tool registered.');
 
-    this.deregisterFunctions.push((server as any).registerTool(
+    this.deregisterFunctions.push(server.registerTool(
       'shell_set_default_workdir',
       {
         title: 'Set Default Working Directory',
         description: 'Sets the default working directory for subsequent shell commands.',
-        inputSchema: zodToJsonSchema(ShellSetDefaultWorkdirParamsSchema, { target: 'jsonSchema7' }) as any,
+        inputSchema: ShellSetDefaultWorkdirParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellSetDefaultWorkdirParamsSchema.parse(rawArgs);
