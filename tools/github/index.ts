@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -558,7 +558,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     stdin?: string
   ): Promise<GhRunResult> {
     await this.killConflictingGitProcesses(cwd);
-    let child;
+    let child: ChildProcessWithoutNullStreams | null = null;
     const result = await new Promise<GhRunResult>((resolve, reject) => {
       child = spawn('git', commandArgs, {
         cwd,
