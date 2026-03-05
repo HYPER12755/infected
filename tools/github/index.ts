@@ -560,11 +560,13 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     await this.killConflictingGitProcesses(cwd);
     let child: ChildProcessWithoutNullStreams | null = null;
     const result = await new Promise<GhRunResult>((resolve, reject) => {
-      child = spawn('git', commandArgs, {
+      const childProcess = spawn('git', commandArgs, {
         cwd,
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+
+      child = childProcess;
 
       let stdout = '';
       let stderr = '';
@@ -574,24 +576,24 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
       const timer = setTimeout(() => {
         if (done) return;
         timedOut = true;
-        child.kill('SIGKILL');
+        childProcess.kill('SIGKILL');
       }, timeoutMs);
 
-      child.stdout.on('data', (chunk) => {
+      childProcess.stdout.on('data', (chunk) => {
         stdout += chunk.toString();
       });
-      child.stderr.on('data', (chunk) => {
+      childProcess.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
       });
 
-      child.on('error', (error) => {
+      childProcess.on('error', (error) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         reject(error);
       });
 
-      child.on('close', (code) => {
+      childProcess.on('close', (code) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
@@ -608,9 +610,9 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
       });
 
       if (stdin && stdin.length > 0) {
-        child.stdin.write(stdin);
+        childProcess.stdin.write(stdin);
       }
-      child.stdin.end();
+      childProcess.stdin.end();
     });
 
     await this.killConflictingGitProcesses(cwd, child?.pid ? [child.pid] : []);
