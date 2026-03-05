@@ -2,7 +2,41 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
+
+interface UnifiedModuleManifest {
+  id: string;
+  name: string;
+  version: string;
+  type: 'plugin' | 'tool';
+  entry?: string;
+  description?: string;
+  timeout?: number;
+}
+
+interface UnifiedModuleContext {
+  moduleManager: {
+    registerToolExecution: (
+      toolId: string,
+      executeFn: (args: any) => Promise<any>,
+      name: string,
+      description?: string,
+      inputSchema?: any,
+      moduleId?: string,
+      skipTimeout?: boolean
+    ) => () => void;
+  };
+  logger: {
+    info: (message: string, meta?: Record<string, unknown>) => void;
+    error: (message: string, meta?: Record<string, unknown>) => void;
+  };
+}
+
+interface IUnifiedPlugin {
+  manifest: UnifiedModuleManifest;
+  onLoad(context: UnifiedModuleContext): Promise<void> | void;
+  onUnload?(): Promise<void> | void;
+  onError?(error: Error, context: UnifiedModuleContext): Promise<void> | void;
+}
 
 type FlagValue = string | number | boolean | null | undefined;
 
