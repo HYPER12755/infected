@@ -80,17 +80,8 @@ const SharedInputSchema = {
   stdin: z.string().optional().describe('Optional stdin content piped into the gh command.'),
 };
 
-const workspaceRootEnv = process.env['INFECTED_WORKSPACE_ROOT']?.trim();
-const installRootEnv = process.env['INFECTED_INSTALL_ROOT']?.trim();
-
 function getRuntimeModuleRoot(): string {
-  if (workspaceRootEnv && workspaceRootEnv.length > 0) {
-    return path.resolve(workspaceRootEnv);
-  }
-  if (installRootEnv && installRootEnv.length > 0) {
-    return path.resolve(installRootEnv);
-  }
-  return process.cwd();
+  return path.resolve(process.cwd());
 }
 
 function resolveRuntimePath(relativeOrAbsolute?: string): string {
@@ -102,8 +93,6 @@ function resolveRuntimePath(relativeOrAbsolute?: string): string {
     ? path.resolve(cleaned)
     : path.resolve(getRuntimeModuleRoot(), cleaned);
 }
-
-const RUNTIME_MODULE_ROOT = getRuntimeModuleRoot();
 
 class GithubCommandsPlugin implements IUnifiedPlugin {
   manifest: UnifiedModuleManifest = {
@@ -416,7 +405,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     if (requested && requested.trim()) {
       return resolveRuntimePath(requested);
     }
-    return RUNTIME_MODULE_ROOT;
+    return getRuntimeModuleRoot();
   }
 
   private async killConflictingGitProcesses(cwd: string, excludePids: number[] = []): Promise<void> {
