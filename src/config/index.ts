@@ -95,10 +95,29 @@ export class ConfigManager {
       // CLI arguments would be merged here, for now they are handled in index.ts directly for --configure
     });
 
+    this.adjustInstallDefaults(installRoot, workspaceRoot);
+
     return this.config;
   }
 
   getConfig(): InfectedConfig {
     return this.config;
+  }
+
+  private adjustInstallDefaults(installRoot: string, workspaceRoot: string): void {
+    if (installRoot !== workspaceRoot) {
+      if (this.config.toolsDir === './tools') {
+        const distToolsPath = path.resolve(installRoot, 'dist/tools');
+        if (fs.existsSync(distToolsPath)) {
+          this.config.toolsDir = './dist/tools';
+        }
+      }
+      if (this.config.pluginsDir === './plugins') {
+        const distPluginsPath = path.resolve(installRoot, 'dist/plugins');
+        if (fs.existsSync(distPluginsPath)) {
+          this.config.pluginsDir = './dist/plugins';
+        }
+      }
+    }
   }
 }
