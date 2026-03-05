@@ -70,6 +70,10 @@ export class ModuleManager extends EventEmitter {
     const workspaceDistModulesDir = path.resolve(this.workspaceRoot, 'dist/modules');
     const installSrcModulesDir = path.resolve(this.installRoot, 'src/modules');
     const installDistModulesDir = path.resolve(this.installRoot, 'dist/modules');
+    const workspaceDistToolsDir = path.resolve(this.workspaceRoot, 'dist/tools');
+    const installDistToolsDir = path.resolve(this.installRoot, 'dist/tools');
+    const workspaceDistPluginsDir = path.resolve(this.workspaceRoot, 'dist/plugins');
+    const installDistPluginsDir = path.resolve(this.installRoot, 'dist/plugins');
 
     const candidateWatchDirs = Array.from(new Set([
       workspaceToolsDir,
@@ -80,6 +84,10 @@ export class ModuleManager extends EventEmitter {
       workspaceDistModulesDir,
       installSrcModulesDir,
       installDistModulesDir,
+      workspaceDistToolsDir,
+      installDistToolsDir,
+      workspaceDistPluginsDir,
+      installDistPluginsDir,
     ]));
     const directoriesToWatch = candidateWatchDirs.filter((dirPath) => {
       try {
@@ -220,11 +228,20 @@ export class ModuleManager extends EventEmitter {
 
 
   private getModuleTypeFromPath(fullPath: string): ModuleType | null {
-    const relativePath = path.relative(process.cwd(), fullPath);
+    let relativePath = path.relative(process.cwd(), fullPath);
+    if (path.sep === '\\') {
+      relativePath = relativePath.replace(/\\/g, '/');
+    }
     if (relativePath.startsWith((this.config.toolsDir || 'tools') + path.sep) || fullPath.includes('tools/')) {
       return 'tool';
     }
+    if (relativePath.startsWith('dist/tools' + path.sep) || fullPath.includes(`${path.sep}dist${path.sep}tools${path.sep}`)) {
+      return 'tool';
+    }
     if (relativePath.startsWith((this.config.pluginsDir || 'plugins') + path.sep) || fullPath.includes('plugins/')) {
+      return 'plugin';
+    }
+    if (relativePath.startsWith('dist/plugins' + path.sep) || fullPath.includes(`${path.sep}dist${path.sep}plugins${path.sep}`)) {
       return 'plugin';
     }
     return null;
