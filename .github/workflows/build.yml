@@ -19,11 +19,13 @@ jobs:
       - run: npm run build
       - name: Package npm bundle
         run: npm pack
-      - name: Determine npm artifact name
+      - name: Rename npm package
         id: package-info
         run: |
-          artifact=$(node -p "const pkg=require('./package.json'); pkg.name.replace(/^@/,'').replace(/\\//g,'-')+'-'+pkg.version+'.tgz'")
-          echo "artifact_name=$artifact" >> $GITHUB_OUTPUT
+          version=$(node -p "require('./package.json').version")
+          original=$(ls *.tgz | head -n1)
+          mv "$original" "infected-$version.tgz"
+          echo "artifact_name=infected-$version.tgz" >> $GITHUB_OUTPUT
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
