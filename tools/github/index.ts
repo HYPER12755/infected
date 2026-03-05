@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
+import type { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
 
 type FlagValue = string | number | boolean | null | undefined;
 
