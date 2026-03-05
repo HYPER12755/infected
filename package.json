@@ -27,6 +27,7 @@
     "docs",
     "infected.config.json",
     "infected.config.json.example",
+    ".env.example",
     "index.js"
   ],
   "devDependencies": {
