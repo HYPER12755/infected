@@ -558,7 +558,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     stdin?: string
   ): Promise<GhRunResult> {
     await this.killConflictingGitProcesses(cwd);
-    let child: ChildProcessWithoutNullStreams | null = null;
+    let childPid: number | undefined;
     const result = await new Promise<GhRunResult>((resolve, reject) => {
       const childProcess = spawn('git', commandArgs, {
         cwd,
@@ -566,7 +566,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      child = childProcess;
+      childPid = childProcess.pid;
 
       let stdout = '';
       let stderr = '';
@@ -615,7 +615,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
       childProcess.stdin.end();
     });
 
-    await this.killConflictingGitProcesses(cwd, child?.pid ? [child.pid] : []);
+    await this.killConflictingGitProcesses(cwd, childPid ? [childPid] : []);
     return result;
   }
 
