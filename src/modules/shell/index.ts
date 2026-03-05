@@ -13,6 +13,7 @@ import {
   ProcessKillParamsSchema,
   ShellSetDefaultWorkdirParamsSchema,
 } from '../../types/shell-server/schemas.js';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
 type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -78,7 +79,7 @@ export class ShellModule implements Module {
       {
         title: 'Shell Execute',
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
-        inputSchema: ShellExecuteParamsSchema,
+        inputSchema: zodToJsonSchema(ShellExecuteParamsSchema, { target: 'jsonSchema7' }),
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellExecuteParamsSchema.parse(rawArgs);
@@ -126,7 +127,7 @@ export class ShellModule implements Module {
       {
         title: 'Get Execution Details',
         description: 'Retrieves detailed information about a specific command execution.',
-        inputSchema: ShellGetExecutionParamsSchema,
+        inputSchema: zodToJsonSchema(ShellGetExecutionParamsSchema, { target: 'jsonSchema7' }),
       },
       async (args, _extra: ToolRequestExtra) => {
         const executionInfo = await this.shellTools.getExecution({
@@ -149,7 +150,7 @@ export class ShellModule implements Module {
       {
         title: 'List Command Executions',
         description: 'Lists active and completed command executions with filtering and pagination.',
-        inputSchema: ProcessListParamsSchema,
+        inputSchema: zodToJsonSchema(ProcessListParamsSchema, { target: 'jsonSchema7' }),
       },
       async (args, _extra: ToolRequestExtra) => {
         const statusFilter = args.status_filter === 'all' ? undefined : args.status_filter;
@@ -174,7 +175,7 @@ export class ShellModule implements Module {
       {
         title: 'Kill Process',
         description: 'Sends a signal to terminate a running process by its process ID.',
-        inputSchema: ProcessKillParamsSchema,
+        inputSchema: zodToJsonSchema(ProcessKillParamsSchema, { target: 'jsonSchema7' }),
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ProcessKillParamsSchema.parse(rawArgs);
@@ -196,7 +197,7 @@ export class ShellModule implements Module {
       {
         title: 'Set Default Working Directory',
         description: 'Sets the default working directory for subsequent shell commands.',
-        inputSchema: ShellSetDefaultWorkdirParamsSchema,
+        inputSchema: zodToJsonSchema(ShellSetDefaultWorkdirParamsSchema, { target: 'jsonSchema7' }),
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellSetDefaultWorkdirParamsSchema.parse(rawArgs);
