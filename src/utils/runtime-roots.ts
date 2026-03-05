@@ -9,11 +9,23 @@ import path from 'node:path';
  */
 export function getRuntimeModuleRoot(): string {
   const workspaceRoot = process.env['INFECTED_WORKSPACE_ROOT']?.trim();
+  const installRoot = process.env['INFECTED_INSTALL_ROOT']?.trim();
+  const runtimeMode = process.env['INFECTED_RUNTIME_MODE']?.trim().toLowerCase();
+
+  if (runtimeMode === 'production') {
+    if (installRoot) {
+      return path.resolve(installRoot);
+    }
+    if (workspaceRoot) {
+      return path.resolve(workspaceRoot);
+    }
+    return process.cwd();
+  }
+
   if (workspaceRoot) {
     return path.resolve(workspaceRoot);
   }
 
-  const installRoot = process.env['INFECTED_INSTALL_ROOT']?.trim();
   if (installRoot) {
     return path.resolve(installRoot);
   }

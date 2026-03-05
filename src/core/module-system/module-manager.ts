@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { InfectedConfig, getInstallRoot, getWorkspaceRoot } from '../../config/index.js';
+import { InfectedConfig, getInstallRoot, getRuntimeMode, getWorkspaceRoot } from '../../config/index.js';
 import logger from '../logger.js';
 import * as path from 'node:path';
 import * as url from 'node:url';
@@ -43,6 +43,7 @@ export class ModuleManager extends EventEmitter {
   private monitoringManager: MonitoringManager;
   private workspaceRoot: string;
   private installRoot: string;
+  private runtimeMode: 'development' | 'production';
 
   private resolveConfiguredDir(root: string, configuredPath: string | undefined, defaultDirName: string): string {
     const candidate = configuredPath && configuredPath.trim().length > 0 ? configuredPath.trim() : `./${defaultDirName}`;
@@ -61,6 +62,8 @@ export class ModuleManager extends EventEmitter {
     this.monitoringManager = monitoringManager;
     this.workspaceRoot = getWorkspaceRoot();
     this.installRoot = getInstallRoot();
+    this.runtimeMode = getRuntimeMode();
+    const isProductionRuntime = this.runtimeMode === 'production';
 
     const workspaceToolsDir = this.resolveConfiguredDir(this.workspaceRoot, this.config.toolsDir, 'tools');
     const installToolsDir = this.resolveConfiguredDir(this.installRoot, this.config.toolsDir, 'tools');
@@ -75,20 +78,28 @@ export class ModuleManager extends EventEmitter {
     const workspaceDistPluginsDir = path.resolve(this.workspaceRoot, 'dist/plugins');
     const installDistPluginsDir = path.resolve(this.installRoot, 'dist/plugins');
 
-    const candidateWatchDirs = Array.from(new Set([
-      workspaceToolsDir,
-      installToolsDir,
-      workspacePluginsDir,
-      installPluginsDir,
-      workspaceSrcModulesDir,
-      workspaceDistModulesDir,
-      installSrcModulesDir,
-      installDistModulesDir,
-      workspaceDistToolsDir,
-      installDistToolsDir,
-      workspaceDistPluginsDir,
-      installDistPluginsDir,
-    ]));
+    const candidateWatchDirs = isProductionRuntime
+      ? Array.from(new Set([
+          installToolsDir,
+          installPluginsDir,
+          installDistModulesDir,
+          installDistToolsDir,
+          installDistPluginsDir,
+        ]))
+      : Array.from(new Set([
+          workspaceToolsDir,
+          installToolsDir,
+          workspacePluginsDir,
+          installPluginsDir,
+          workspaceSrcModulesDir,
+          workspaceDistModulesDir,
+          installSrcModulesDir,
+          installDistModulesDir,
+          workspaceDistToolsDir,
+          installDistToolsDir,
+          workspaceDistPluginsDir,
+          installDistPluginsDir,
+        ]));
     const directoriesToWatch = candidateWatchDirs.filter((dirPath) => {
       try {
         fs.accessSync(dirPath, fs.constants.R_OK);
@@ -152,9 +163,11 @@ export class ModuleManager extends EventEmitter {
 
     for (const moduleName of this.config.modules || []) {
       addDirIfReadable(path.resolve(this.installRoot, 'dist/modules', moduleName));
-      addDirIfReadable(path.resolve(this.installRoot, 'src/modules', moduleName));
-      addDirIfReadable(path.resolve(this.workspaceRoot, 'dist/modules', moduleName));
-      addDirIfReadable(path.resolve(this.workspaceRoot, 'src/modules', moduleName));
+      if (this.runtimeMode === 'development') {
+        addDirIfReadable(path.resolve(this.installRoot, 'src/modules', moduleName));
+        addDirIfReadable(path.resolve(this.workspaceRoot, 'dist/modules', moduleName));
+        addDirIfReadable(path.resolve(this.workspaceRoot, 'src/modules', moduleName));
+      }
     }
 
     logger.info(`ModuleManager: Performing initial load of ${moduleDirsToProcess.size} potential module directories...`);
