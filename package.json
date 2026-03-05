@@ -6,7 +6,7 @@
   "type": "module",
   "types": "dist/index.d.ts",
   "bin": {
-    "infected": "./dist/index.js"
+    "infected": "./index.js"
   },
   "scripts": {
     "start": "mkdir -p logs && npx kill-port 3001 || true && LOG_LEVEL=debug nohup tsx src/index.ts > logs/start.log 2>&1 &",
@@ -20,6 +20,15 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "files": [
+    "dist",
+    "tools",
+    "plugins",
+    "docs",
+    "infected.config.json",
+    "infected.config.json.example",
+    "index.js"
+  ]
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
     "@types/chokidar": "^2.1.7",
