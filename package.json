@@ -11,7 +11,7 @@
   "scripts": {
     "start": "mkdir -p logs && npx kill-port 3001 || true && LOG_LEVEL=debug nohup tsx src/index.ts > logs/start.log 2>&1 &",
     "dev": "mkdir -p logs && LOG_LEVEL=debug NODE_OPTIONS='--enable-source-maps' tsx watch --clear-screen=false src/index.ts | stdbuf -o L tee logs/dev.log",
-    "build:server": "tsc",
+    "build:server": "tsc && node scripts/prepare-dist.js",
     "build": "npm run build:server",
     "pack": "npm run build && npm pack",
     "publish:npm": "npm run pack && npm publish --access public",
@@ -22,11 +22,6 @@
   "license": "ISC",
   "files": [
     "dist",
-    "tools",
-    "plugins",
-    "docs",
-    "infected.config.json",
-    "infected.config.json.example",
     "index.js"
   ]
   "devDependencies": {
