@@ -167,9 +167,73 @@ Example `module.json`:
 ## Adding Plugins
 
 1. Create a directory in `plugins/`
-2. Add your plugin code
-3. Add `module.json` for discovery
+2. Add `module.json` for discovery
+3. Add your plugin code
 4. Update `infected.config.json` to enable
+
+Example plugin structure:
+
+```
+plugins/my-plugin/
+├── module.json
+└── index.js
+```
+
+**module.json:**
+```json
+{
+  "id": "plugin.my_plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "type": "plugin",
+  "entry": "index.js",
+  "description": "My custom plugin"
+}
+```
+
+**index.js:**
+```javascript
+import { z } from 'zod';
+
+const schema = z.object({
+  name: z.string().optional(),
+});
+
+class MyPlugin {
+  manifest = {
+    id: 'plugin.my_plugin',
+    name: 'My Plugin',
+    version: '1.0.0',
+    type: 'plugin',
+    entry: 'index.js',
+    description: 'My custom plugin description',
+  };
+
+  async onLoad(context) {
+    context.moduleManager.registerToolExecution(
+      'plugin.my_tool',
+      async (args = {}) => {
+        const name = args.name || 'world';
+        return { message: `Hello, ${name}!` };
+      },
+      'my_plugin_tool',
+      'Returns a friendly greeting.',
+      schema,
+      this.manifest.id
+    );
+  }
+}
+
+export default MyPlugin;
+```
+
+The `onLoad` method receives a context with the ModuleManager. Use `registerToolExecution` to register tools with:
+- Tool name
+- Handler function
+- Permission key
+- Description
+- Input schema (Zod)
+- Plugin ID
 
 ## Security
 
