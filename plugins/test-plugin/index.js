@@ -1,26 +1,25 @@
 import { z } from 'zod';
-import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
 
 const schema = z.object({
   name: z.string().optional(),
 });
 
-class ExamplePlugin implements IUnifiedPlugin {
-  manifest: UnifiedModuleManifest = {
+class ExamplePlugin {
+  manifest = {
     id: 'plugin.example_toolkit',
     name: 'Example Plugin',
     version: '1.0.0',
     type: 'plugin',
-    entry: 'index.ts',
+    entry: 'index.js',
     description: 'Registers a simple greeting tool.',
   };
 
-  async onLoad(context: UnifiedModuleContext): Promise<void> {
+  async onLoad(context) {
     context.moduleManager.registerToolExecution(
       'plugin.tool_greet',
-      async (args: z.infer<typeof schema>) => {
-        const { name } = args;
-        return { message: `Hello, ${name || 'world'}!` };
+      async (args = {}) => {
+        const name = typeof args.name === 'string' && args.name.trim() ? args.name.trim() : 'world';
+        return { message: `Hello, ${name}!` };
       },
       'example_plugin_greet',
       'Returns a friendly greeting.',

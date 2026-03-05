@@ -52,6 +52,12 @@ export class ModuleManager extends EventEmitter {
       : path.resolve(root, candidate);
   }
 
+  private isInstallPath(moduleDirPath: string): boolean {
+    const normalizedInstallRoot = path.resolve(this.installRoot) + path.sep;
+    const normalizedModuleDir = path.resolve(moduleDirPath);
+    return normalizedModuleDir.startsWith(normalizedInstallRoot);
+  }
+
   constructor(server: McpServer, config: InfectedConfig, managers: ManagerInstances, toolCacheManager: ToolCacheManager, permissionManager: PermissionManager, monitoringManager: MonitoringManager) {
     super(); // Call EventEmitter constructor
     this.server = server;
@@ -73,18 +79,11 @@ export class ModuleManager extends EventEmitter {
     const workspaceDistModulesDir = path.resolve(this.workspaceRoot, 'dist/modules');
     const installSrcModulesDir = path.resolve(this.installRoot, 'src/modules');
     const installDistModulesDir = path.resolve(this.installRoot, 'dist/modules');
-    const workspaceDistToolsDir = path.resolve(this.workspaceRoot, 'dist/tools');
-    const installDistToolsDir = path.resolve(this.installRoot, 'dist/tools');
-    const workspaceDistPluginsDir = path.resolve(this.workspaceRoot, 'dist/plugins');
-    const installDistPluginsDir = path.resolve(this.installRoot, 'dist/plugins');
-
     const candidateWatchDirs = isProductionRuntime
       ? Array.from(new Set([
           installToolsDir,
           installPluginsDir,
           installDistModulesDir,
-          installDistToolsDir,
-          installDistPluginsDir,
         ]))
       : Array.from(new Set([
           workspaceToolsDir,
@@ -95,10 +94,6 @@ export class ModuleManager extends EventEmitter {
           workspaceDistModulesDir,
           installSrcModulesDir,
           installDistModulesDir,
-          workspaceDistToolsDir,
-          installDistToolsDir,
-          workspaceDistPluginsDir,
-          installDistPluginsDir,
         ]));
     const directoriesToWatch = candidateWatchDirs.filter((dirPath) => {
       try {
@@ -353,21 +348,47 @@ export class ModuleManager extends EventEmitter {
 
     // 2. If no valid module.json or entry found, try to infer from index.ts/js
     if (!moduleEntryFile) {
-        const potentialEntryTs = path.join(moduleDirPath, 'index.ts');
         const potentialEntryJs = path.join(moduleDirPath, 'index.js');
+        const potentialEntryTs = path.join(moduleDirPath, 'index.ts');
+        const preferJs = this.runtimeMode === 'production' && this.isInstallPath(moduleDirPath);
         try {
-            await fs.promises.access(potentialEntryTs);
-            moduleEntryFile = potentialEntryTs;
+            if (preferJs) {
+              await fs.promises.access(potentialEntryJs);
+              moduleEntryFile = potentialEntryJs;
+            } else {
+              await fs.promises.access(potentialEntryTs);
+              moduleEntryFile = potentialEntryTs;
+            }
         } catch {
             try {
-                await fs.promises.access(potentialEntryJs);
-                moduleEntryFile = potentialEntryJs;
+                if (preferJs) {
+                  await fs.promises.access(potentialEntryTs);
+                  moduleEntryFile = potentialEntryTs;
+                } else {
+                  await fs.promises.access(potentialEntryJs);
+                  moduleEntryFile = potentialEntryJs;
+                }
             } catch {
                 logger.debug(`ModuleManager: No module.json or index.ts/js found in ${moduleDirPath}. Skipping.`);
                 this.loadingModules.delete(moduleDirPath);
                 return;
             }
         }
+    }
+
+    const isProductionInstallModule = this.runtimeMode === 'production' && this.isInstallPath(moduleDirPath);
+    if (isProductionInstallModule && moduleEntryFile?.endsWith('.ts')) {
+      const jsFallback = moduleEntryFile.slice(0, -3) + '.js';
+      try {
+        await fs.promises.access(jsFallback);
+        moduleEntryFile = jsFallback;
+      } catch {
+        logger.warn(
+          `ModuleManager: Skipping TypeScript entry in production for ${moduleDirPath}. Expected transpiled JS entry at ${jsFallback}.`
+        );
+        this.loadingModules.delete(moduleDirPath);
+        return;
+      }
     }
 
     if (!moduleEntryFile || (!moduleEntryFile.endsWith('.js') && !moduleEntryFile.endsWith('.ts'))) {

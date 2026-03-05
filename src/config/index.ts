@@ -122,23 +122,10 @@ export class ConfigManager {
   }
 
   private adjustInstallDefaults(installRoot: string, workspaceRoot: string, runtimeMode: RuntimeMode): void {
-    const shouldPreferDist = runtimeMode === 'production' || installRoot !== workspaceRoot;
-
-    if (!shouldPreferDist) {
-      return;
-    }
-
-    if (this.config.toolsDir === './tools') {
-      const distToolsPath = path.resolve(installRoot, 'dist/tools');
-      if (fs.existsSync(distToolsPath)) {
-        this.config.toolsDir = './dist/tools';
-      }
-    }
-    if (this.config.pluginsDir === './plugins') {
-      const distPluginsPath = path.resolve(installRoot, 'dist/plugins');
-      if (fs.existsSync(distPluginsPath)) {
-        this.config.pluginsDir = './dist/plugins';
-      }
-    }
+    // Keep configured tools/plugins directories stable across dev/prod.
+    // Production runtime path isolation is handled by ModuleManager/runtime root logic.
+    void installRoot;
+    void workspaceRoot;
+    void runtimeMode;
   }
 }

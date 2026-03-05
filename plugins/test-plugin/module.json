@@ -3,6 +3,6 @@
   "name": "Example Plugin",
   "version": "1.0.0",
   "type": "plugin",
-  "entry": "index.ts",
+  "entry": "index.js",
   "description": "Demonstration plugin registering a lightweight tool."
 }
