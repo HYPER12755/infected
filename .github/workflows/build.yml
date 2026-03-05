@@ -22,7 +22,7 @@ jobs:
       - name: Determine npm artifact name
         id: package-info
         run: |
-          artifact=$(node -p "const pkg=require('./package.json'); pkg.name.split('/').pop()+'-'+pkg.version+'.tgz'")
+          artifact=$(node -p "const pkg=require('./package.json'); pkg.name.replace(/^@/,'').replace(/\\//g,'-')+'-'+pkg.version+'.tgz'")
           echo "artifact_name=$artifact" >> $GITHUB_OUTPUT
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
