@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
-import { getRuntimeModuleRoot, resolveRuntimePath } from '../../src/utils/runtime-roots.js';
 import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
 
 type FlagValue = string | number | boolean | null | undefined;
@@ -45,6 +45,29 @@ const SharedInputSchema = {
     .describe('When true, non-zero exit codes return structured output instead of throwing.'),
   stdin: z.string().optional().describe('Optional stdin content piped into the gh command.'),
 };
+
+const workspaceRootEnv = process.env['INFECTED_WORKSPACE_ROOT']?.trim();
+const installRootEnv = process.env['INFECTED_INSTALL_ROOT']?.trim();
+
+function getRuntimeModuleRoot(): string {
+  if (workspaceRootEnv && workspaceRootEnv.length > 0) {
+    return path.resolve(workspaceRootEnv);
+  }
+  if (installRootEnv && installRootEnv.length > 0) {
+    return path.resolve(installRootEnv);
+  }
+  return process.cwd();
+}
+
+function resolveRuntimePath(relativeOrAbsolute?: string): string {
+  if (!relativeOrAbsolute || relativeOrAbsolute.trim().length === 0) {
+    return getRuntimeModuleRoot();
+  }
+  const cleaned = relativeOrAbsolute.trim();
+  return path.isAbsolute(cleaned)
+    ? path.resolve(cleaned)
+    : path.resolve(getRuntimeModuleRoot(), cleaned);
+}
 
 const RUNTIME_MODULE_ROOT = getRuntimeModuleRoot();
 
