@@ -22,7 +22,7 @@ jobs:
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist-directory
+          name: dist
           path: dist
       - name: Upload npm package artifact
         uses: actions/upload-artifact@v4
