@@ -13,6 +13,8 @@
     "dev": "mkdir -p logs && LOG_LEVEL=debug NODE_OPTIONS='--enable-source-maps' tsx watch --clear-screen=false src/index.ts | stdbuf -o L tee logs/dev.log",
     "build:server": "tsc",
     "build": "npm run build:server",
+    "pack": "npm run build && npm pack",
+    "publish:npm": "npm run pack && npm publish --access public",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
