@@ -113,6 +113,23 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
       return new https.Agent({ rejectUnauthorized: false });
     };
 
+    const normalizeHeaders = (headers: Record<string, unknown> | undefined): Record<string, string> => {
+      if (!headers) {
+        return {};
+      }
+      return Object.entries(headers).reduce<Record<string, string>>((normalized, [key, value]) => {
+        if (value === undefined || value === null) {
+          return normalized;
+        }
+        if (Array.isArray(value)) {
+          normalized[key.toLowerCase()] = value.join('; ');
+          return normalized;
+        }
+        normalized[key.toLowerCase()] = String(value);
+        return normalized;
+      }, {});
+    };
+
     const formatFetchError = (error: unknown, allowInsecureTls: boolean): string => {
       const err = error as { code?: string; message?: string };
       const code = err?.code || '';
@@ -173,11 +190,12 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           const bodyText = typeof data === 'string' ? data : JSON.stringify(data);
           const text = `status: ${response.status}\nurl: ${args.url}\n\n${bodyText}`;
 
+          const flattenedHeaders = normalizeHeaders(response.headers);
           return {
             content: [{ type: "text", text }],
             structuredContent: {
               status: response.status,
-              headers: response.headers,
+              headers: flattenedHeaders,
               data: data,
               url: args.url,
             },
@@ -241,11 +259,12 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           }
           const text = `status: ${response.status}\nurl: ${args.url}\n\n${content}`;
 
+          const flattenedHeaders = normalizeHeaders(response.headers);
           return {
             content: [{ type: "text", text }],
             structuredContent: {
               status: response.status,
-              headers: response.headers,
+              headers: flattenedHeaders,
               content: content,
               url: args.url,
             },
