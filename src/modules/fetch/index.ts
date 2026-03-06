@@ -134,9 +134,11 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           if (args.responseType === 'markdown' && typeof response.data === 'string') {
             data = turndownService.turndown(response.data);
           }
+          const bodyText = typeof data === 'string' ? data : JSON.stringify(data);
+          const text = `status: ${response.status}\nurl: ${args.url}\n\n${bodyText}`;
 
           return {
-            content: [{ type: "text", text: typeof data === 'string' ? data : JSON.stringify(data) }],
+            content: [{ type: "text", text }],
             structuredContent: {
               status: response.status,
               headers: response.headers,
@@ -197,9 +199,10 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           } else if (args.returnType === 'cheerio') {
             // Return raw HTML for Cheerio processing if requested
           }
+          const text = `status: ${response.status}\nurl: ${args.url}\n\n${content}`;
 
           return {
-            content: [{ type: "text", text: content }],
+            content: [{ type: "text", text }],
             structuredContent: {
               status: response.status,
               headers: response.headers,

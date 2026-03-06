@@ -34,6 +34,8 @@ interface FileInfo {
 
 export interface SearchOptions {
   excludePatterns?: string[];
+  maxResults?: number;
+  timeoutMs?: number;
 }
 
 export interface SearchResult {
@@ -381,40 +383,74 @@ export async function searchFilesWithValidation(
   allowedDirectories: string[],
   options: SearchOptions = {}
 ): Promise<string[]> {
-  const { excludePatterns = [] } = options;
+  const {
+    excludePatterns = ['**/node_modules/**', '**/.git/**'],
+    maxResults = 1000,
+    timeoutMs = 15000
+  } = options;
   const results: string[] = [];
+  const startedAt = Date.now();
+  const normalizedRoot = await validatePath(rootPath);
+  const normalizedPattern = pattern.includes('/') || pattern.includes('**')
+    ? pattern
+    : `**/${pattern}`;
+  const stack: string[] = [normalizedRoot];
 
-  async function search(currentPath: string) {
-    const entries = await fs.readdir(currentPath, { withFileTypes: true });
+  while (stack.length > 0) {
+    if (Date.now() - startedAt > timeoutMs) {
+      break;
+    }
+    if (results.length >= maxResults) {
+      break;
+    }
 
-    for (const entry of entries) {
-      const fullPath = path.join(currentPath, entry.name);
+    const currentPath = stack.pop();
+    if (!currentPath) {
+      continue;
+    }
 
-      try {
-        await validatePath(fullPath);
+    let entries: unknown[] = [];
+    try {
+      entries = await fs.readdir(currentPath, { withFileTypes: true }) as unknown[];
+    } catch {
+      continue;
+    }
 
-        const relativePath = path.relative(rootPath, fullPath);
-        const shouldExclude = excludePatterns.some(excludePattern =>
-          minimatch(relativePath, excludePattern, { dot: true })
-        );
+    for (const rawEntry of entries) {
+      const entry = rawEntry as { name: string; isDirectory: () => boolean; isSymbolicLink: () => boolean };
+      if (Date.now() - startedAt > timeoutMs || results.length >= maxResults) {
+        break;
+      }
 
-        if (shouldExclude) continue;
-
-        // Use glob matching for the search pattern
-        if (minimatch(relativePath, pattern, { dot: true })) {
-          results.push(fullPath);
-        }
-
-        if (entry.isDirectory()) {
-          await search(fullPath);
-        }
-      } catch {
-        // Access denied or other error, skip this path
+      if (entry.isSymbolicLink()) {
         continue;
+      }
+
+      const fullPath = path.join(currentPath, entry.name);
+      const relativePath = path.relative(normalizedRoot, fullPath);
+      if (!relativePath || relativePath.startsWith('..')) {
+        continue;
+      }
+
+      const shouldExclude = excludePatterns.some((excludePattern) =>
+        minimatch(relativePath, excludePattern, { dot: true })
+      );
+      if (shouldExclude) {
+        continue;
+      }
+
+      if (
+        minimatch(relativePath, normalizedPattern, { dot: true }) ||
+        minimatch(entry.name, pattern, { dot: true })
+      ) {
+        results.push(fullPath);
+      }
+
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
       }
     }
   }
 
-  await search(rootPath);
   return results;
 }

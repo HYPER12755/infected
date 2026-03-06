@@ -56,6 +56,34 @@ function toCompactPreview(value: unknown): string {
   return json.length > PREVIEW_LIMIT ? `${json.slice(0, PREVIEW_LIMIT)}\n...(truncated)` : json;
 }
 
+function sanitizeTerminalText(raw: string): string {
+  let text = raw
+    .replace(/\\u001b/gi, '\x1B')
+    .replace(/\\x1b/gi, '\x1B')
+    .replace(/\\u0007/gi, '\x07')
+    .replace(/\\x07/gi, '\x07');
+
+  // OSC: ESC ] ... BEL or ST
+  text = text.replace(/\x1B\][\s\S]*?(?:\x07|\x1B\\)/g, '');
+  // DCS/PM/APC: ESC P/^/_ ... ST
+  text = text.replace(/\x1B[PX^_][\s\S]*?\x1B\\/g, '');
+  // CSI sequences
+  text = text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+  // 2-byte ESC sequences
+  text = text.replace(/\x1B[@-Z\\-_]/g, '');
+  // Remaining control characters except tab/newline.
+  text = text.replace(/[\x00-\x08\x0B-\x1F\x7F]/g, '');
+
+  // Normalize whitespace without losing meaningful line breaks.
+  text = text.replace(/\r/g, '');
+  text = text
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line, index, arr) => !(line === '' && arr[index - 1] === ''))
+    .join('\n');
+  return text.trim();
+}
+
 function formatExecutionText(result: unknown): string {
   const data = asRecord(result);
   const lines: string[] = [];
@@ -116,12 +144,174 @@ function formatProcessListText(result: unknown): string {
   return lines.join('\n');
 }
 
+function formatListExecutionOutputsText(result: unknown): string {
+  const data = asRecord(result);
+  const files = asArray(data['files']);
+  const totalCount = asNumber(data['total_count']) ?? files.length;
+  const lines: string[] = [`files: ${files.length}`, `total_count: ${totalCount}`];
+
+  for (const entry of files.slice(0, 20)) {
+    const file = asRecord(entry);
+    const outputId = asString(file['output_id']) || 'unknown';
+    const outputType = asString(file['output_type']) || 'unknown';
+    const size = asNumber(file['size']);
+    const executionId = asString(file['execution_id']) || 'unknown';
+    const name = asString(file['name']) || '';
+    lines.push(
+      `${outputId} | ${outputType} | ${size ?? 0}B | exec:${executionId}${name ? ` | ${name}` : ''}`
+    );
+  }
+
+  if (files.length > 20) {
+    lines.push(`...and ${files.length - 20} more`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatTerminalListText(result: unknown): string {
+  const data = asRecord(result);
+  const terminals = asArray(data['terminals']);
+  const total = asNumber(data['total']) ?? terminals.length;
+  const lines: string[] = [`terminals: ${terminals.length}`, `total: ${total}`];
+
+  for (const entry of terminals.slice(0, 20)) {
+    const terminal = asRecord(entry);
+    const terminalId = asString(terminal['terminal_id']) || 'unknown';
+    const status = asString(terminal['status']) || 'unknown';
+    const shellType = asString(terminal['shell_type']) || '';
+    const sessionName = asString(terminal['session_name']) || '';
+    lines.push(
+      `${terminalId} | ${status}${shellType ? ` | shell:${shellType}` : ''}${sessionName ? ` | session:${sessionName}` : ''}`
+    );
+  }
+
+  if (terminals.length > 20) {
+    lines.push(`...and ${terminals.length - 20} more`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatTerminalInfoText(result: unknown): string {
+  const data = asRecord(result);
+  const terminalId = asString(data['terminal_id']) || 'unknown';
+  const status = asString(data['status']) || 'unknown';
+  const shellType = asString(data['shell_type']) || 'unknown';
+  const sessionName = asString(data['session_name']) || '';
+  const lastActivity = asString(data['last_activity']) || '';
+  const lines = [
+    `terminal_id: ${terminalId}`,
+    `status: ${status}`,
+    `shell_type: ${shellType}`,
+  ];
+  if (sessionName) lines.push(`session_name: ${sessionName}`);
+  if (lastActivity) lines.push(`last_activity: ${lastActivity}`);
+  return lines.join('\n');
+}
+
+function formatTerminalOperateText(result: unknown): string {
+  const data = asRecord(result);
+  const terminalId = asString(data['terminal_id']) || 'unknown';
+  const success = data['success'] === true;
+  const inputRejected = data['input_rejected'] === true;
+  const reason = asString(data['reason']);
+  const outputRaw = asString(data['output']) || '';
+  const shouldStripAnsi = data['strip_ansi'] !== false;
+  const output = shouldStripAnsi ? sanitizeTerminalText(outputRaw) : outputRaw;
+  const outputInfo = asRecord(data['output_info']);
+  const hasMore = outputInfo['has_more'] === true;
+  const lineCount = asNumber(outputInfo['line_count']);
+
+  const lines: string[] = [`terminal_id: ${terminalId}`, `success: ${success}`];
+  lines.push(`strip_ansi: ${shouldStripAnsi}`);
+  if (inputRejected) lines.push('input_rejected: true');
+  if (reason) lines.push(`reason: ${reason}`);
+  if (lineCount !== undefined) lines.push(`line_count: ${lineCount}`);
+  if (outputInfo && Object.keys(outputInfo).length > 0) lines.push(`has_more: ${hasMore}`);
+  if (output) lines.push('', 'output:', output);
+  return lines.join('\n');
+}
+
+function formatTerminalCloseText(result: unknown): string {
+  const data = asRecord(result);
+  const terminalId = asString(data['terminal_id']) || 'unknown';
+  const success = data['success'] === true;
+  const message = asString(data['message']) || '';
+  const closedAt = asString(data['closed_at']) || asString(data['timestamp']) || '';
+  const lines = [`terminal_id: ${terminalId}`, `success: ${success}`];
+  if (message) lines.push(`message: ${message}`);
+  if (closedAt) lines.push(`closed_at: ${closedAt}`);
+  return lines.join('\n');
+}
+
+function formatCommandHistoryText(result: unknown): string {
+  const data = asRecord(result);
+  if (data['success'] === false) {
+    return `success: false\nerror: ${asString(data['error']) || 'unknown error'}`;
+  }
+
+  const entry = asRecord(data['entry']);
+  if (Object.keys(entry).length > 0) {
+    return [
+      'success: true',
+      `entry_id: ${asString(entry['execution_id']) || 'unknown'}`,
+      `command: ${asString(entry['command']) || ''}`,
+      `timestamp: ${asString(entry['timestamp']) || ''}`,
+      `executed: ${entry['was_executed'] === true}`,
+    ].join('\n');
+  }
+
+  const analytics = asRecord(data['analytics']);
+  if (Object.keys(analytics).length > 0) {
+    return toCompactPreview({ success: true, analytics });
+  }
+
+  const entries = asArray(data['entries']);
+  const pagination = asRecord(data['pagination']);
+  const page = asNumber(pagination['page']) ?? 1;
+  const totalEntries = asNumber(pagination['total_entries']) ?? entries.length;
+  const lines: string[] = [`success: true`, `entries: ${entries.length}`, `total_entries: ${totalEntries}`, `page: ${page}`];
+
+  for (const entryItem of entries.slice(0, 20)) {
+    const item = asRecord(entryItem);
+    const executionId = asString(item['execution_id']) || 'unknown';
+    const command = (asString(item['command']) || '').replace(/\s+/g, ' ').trim();
+    const timestamp = asString(item['timestamp']) || '';
+    lines.push(`${executionId} | ${timestamp}${command ? ` | ${command}` : ''}`);
+  }
+
+  if (entries.length > 20) {
+    lines.push(`...and ${entries.length - 20} more`);
+  }
+
+  return lines.join('\n');
+}
+
 function formatShellToolText(toolName: string, result: unknown): string {
   if (toolName === 'shell_execute' || toolName === 'process_get_execution') {
     return formatExecutionText(result);
   }
   if (toolName === 'process_list_executions') {
     return formatProcessListText(result);
+  }
+  if (toolName === 'list_execution_outputs') {
+    return formatListExecutionOutputsText(result);
+  }
+  if (toolName === 'terminal_list') {
+    return formatTerminalListText(result);
+  }
+  if (toolName === 'terminal_get_info') {
+    return formatTerminalInfoText(result);
+  }
+  if (toolName === 'terminal_operate') {
+    return formatTerminalOperateText(result);
+  }
+  if (toolName === 'terminal_close') {
+    return formatTerminalCloseText(result);
+  }
+  if (toolName === 'command_history_query') {
+    return formatCommandHistoryText(result);
   }
   if (toolName === 'read_execution_output') {
     const data = asRecord(result);

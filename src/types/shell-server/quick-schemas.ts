@@ -86,6 +86,10 @@ const TerminalOperateParamsBaseSchema = z.object({
       .default(20)
       .describe('Number of output lines to retrieve'),
     include_ansi: z.boolean().default(false).describe('Include ANSI codes in output'),
+    strip_ansi: z
+      .boolean()
+      .default(true)
+      .describe('When true, strips ANSI/control sequences from terminal output text.'),
 
     // Response control
     response_level: ResponseLevelSchema,
