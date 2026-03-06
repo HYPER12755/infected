@@ -3,46 +3,76 @@ import { promises as fs } from 'node:fs'; // Use node:fs/promises
 import * as path from 'node:path'; // Use node:path
 import { fileURLToPath } from 'node:url'; // Use node:url
 import logger from '../../core/logger.js'; // Use our central logger
+import { resolveRuntimePath } from '../../utils/runtime-roots.js';
 
-// Define memory file path using environment variable with fallback
-export const defaultMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.jsonl');
+// Define memory file path in runtime workspace by default
+export const defaultMemoryPath = resolveRuntimePath('.infected/memory.jsonl');
+
+async function ensureStorageFile(filePath: string): Promise<void> {
+  const directory = path.dirname(filePath);
+  await fs.mkdir(directory, { recursive: true });
+  try {
+    await fs.access(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      await fs.writeFile(filePath, '', 'utf-8');
+      return;
+    }
+    throw error;
+  }
+}
 
 // Handle backward compatibility: migrate memory.json to memory.jsonl if needed
 export async function ensureMemoryFilePath(customPath?: string): Promise<string> {
+  const runtimeRoot = resolveRuntimePath();
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+  const resolveConfiguredPath = (inputPath: string): string =>
+    path.isAbsolute(inputPath) ? path.resolve(inputPath) : resolveRuntimePath(inputPath);
+
   if (customPath && customPath.length > 0) {
-    return path.isAbsolute(customPath)
-      ? customPath
-      : path.join(path.dirname(fileURLToPath(import.meta.url)), customPath);
+    const target = resolveConfiguredPath(customPath);
+    await ensureStorageFile(target);
+    return target;
   }
 
   if (process.env.MEMORY_FILE_PATH) {
-    // Custom path provided via environment variable, use it as-is (with absolute path resolution)
-    return path.isAbsolute(process.env.MEMORY_FILE_PATH)
-      ? process.env.MEMORY_FILE_PATH
-      : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.MEMORY_FILE_PATH);
+    const target = resolveConfiguredPath(process.env.MEMORY_FILE_PATH);
+    await ensureStorageFile(target);
+    return target;
   }
   
   // No custom path set, check for backward compatibility migration
-  const oldMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.json');
+  const oldMemoryCandidates = [
+    path.join(runtimeRoot, '.infected/memory.json'),
+    path.join(moduleDir, 'memory.json')
+  ];
   const newMemoryPath = defaultMemoryPath;
   
   try {
-    // Check if old file exists and new file doesn't
-    await fs.access(oldMemoryPath);
-    try {
-      await fs.access(newMemoryPath);
-      // Both files exist, use new one (no migration needed)
-      return newMemoryPath;
-    } catch {
-      // Old file exists, new file doesn't - migrate
-      logger.warn('DETECTED: Found legacy memory.json file, migrating to memory.jsonl for JSONL format compatibility');
-      await fs.rename(oldMemoryPath, newMemoryPath);
-      logger.info('COMPLETED: Successfully migrated memory.json to memory.jsonl');
-      return newMemoryPath;
+    // Check for legacy memory.json and migrate if needed.
+    for (const oldMemoryPath of oldMemoryCandidates) {
+      try {
+        await fs.access(oldMemoryPath);
+        try {
+          await fs.access(newMemoryPath);
+          break;
+        } catch {
+          await fs.mkdir(path.dirname(newMemoryPath), { recursive: true });
+          logger.warn('DETECTED: Found legacy memory.json file, migrating to memory.jsonl for JSONL format compatibility');
+          await fs.rename(oldMemoryPath, newMemoryPath);
+          logger.info('COMPLETED: Successfully migrated memory.json to memory.jsonl');
+          break;
+        }
+      } catch {
+        // Continue checking other candidate paths.
+      }
     }
+    await ensureStorageFile(newMemoryPath);
+    return newMemoryPath;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      // Old file doesn't exist, use new path
+      await ensureStorageFile(newMemoryPath);
       return newMemoryPath;
     }
     logger.error('Error during memory file path ensureance:', { error: error instanceof Error ? error.message : String(error) });

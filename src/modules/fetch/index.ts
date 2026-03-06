@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Module, InfectedConfig, ManagerInstances } from '../../types/index.js';
 import { z } from "zod";
 import axios from 'axios';
+import https from 'node:https';
 import TurndownService from 'turndown';
 import * as cheerio from 'cheerio';
 import robotsParser from 'robots-parser';
@@ -19,6 +20,7 @@ const fetchArgsSchema = z.object({
   body: z.string().optional().describe("Request body for POST/PUT/DELETE"),
   timeout: z.number().int().min(1).default(10000).describe("Request timeout in milliseconds"),
   responseType: z.enum(["text", "json", "markdown"]).default("text").describe("Desired response type"),
+  allowInsecureTls: z.boolean().optional().describe("Allow invalid/self-signed TLS certificates for this request"),
 });
 
 const fetchHtmlArgsSchema = z.object({
@@ -29,6 +31,7 @@ const fetchHtmlArgsSchema = z.object({
   selector: z.string().optional().describe("CSS selector to extract specific content"),
   blockLocalNetwork: z.boolean().optional().describe("Block requests to local network. Overrides global config."),
   domainWhitelist: z.array(z.string()).optional().describe("List of allowed domains. Overrides global config."),
+  allowInsecureTls: z.boolean().optional().describe("Allow invalid/self-signed TLS certificates for this request"),
 });
 
 export class FetchModule implements Module {
@@ -100,6 +103,37 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
       }
     };
 
+    const resolveAllowInsecureTls = (override?: boolean): boolean =>
+      override ?? config.fetch?.allowInsecureTls ?? false;
+
+    const buildHttpsAgent = (allowInsecureTls: boolean): https.Agent | undefined => {
+      if (!allowInsecureTls) {
+        return undefined;
+      }
+      return new https.Agent({ rejectUnauthorized: false });
+    };
+
+    const formatFetchError = (error: unknown, allowInsecureTls: boolean): string => {
+      const err = error as { code?: string; message?: string };
+      const code = err?.code || '';
+      const message = err?.message || String(error);
+      const tlsCodes = new Set([
+        'SELF_SIGNED_CERT_IN_CHAIN',
+        'DEPTH_ZERO_SELF_SIGNED_CERT',
+        'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+        'CERT_HAS_EXPIRED',
+      ]);
+
+      if (tlsCodes.has(code) || /certificate|self[- ]signed|unable to verify/i.test(message)) {
+        if (allowInsecureTls) {
+          return `TLS certificate validation failed even with allowInsecureTls=true: ${message}`;
+        }
+        return `TLS certificate validation failed: ${message}. Set allowInsecureTls=true (or config.fetch.allowInsecureTls=true) to bypass certificate validation.`;
+      }
+
+      return message;
+    };
+
     this.deregisterFunctions.push(server.registerTool(
       "fetch",
       {
@@ -117,6 +151,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
         try {
           // Security checks
           validateNetworkAccess(args.url, config.fetch);
+          const allowInsecureTls = resolveAllowInsecureTls(args.allowInsecureTls);
 
           // Robots.txt check
           await ensureRobotsAllowed(args.url, args.timeout);
@@ -128,6 +163,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
             data: args.body,
             timeout: args.timeout,
             responseType: args.responseType === 'json' ? 'json' : 'text',
+            httpsAgent: buildHttpsAgent(allowInsecureTls),
           });
 
           let data = response.data;
@@ -147,9 +183,11 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
             },
           };
         } catch (error) {
-          logger.error(`Error fetching URL ${args.url}: ${error instanceof Error ? error.message : String(error)}`);
+          const allowInsecureTls = resolveAllowInsecureTls(args.allowInsecureTls);
+          const message = formatFetchError(error, allowInsecureTls);
+          logger.error(`Error fetching URL ${args.url}: ${message}`);
           return {
-            content: [{ type: "text", text: `Error fetching URL: ${error instanceof Error ? error.message : String(error)}` }],
+            content: [{ type: "text", text: `Error fetching URL: ${message}` }],
             isError: true,
           };
         }
@@ -174,6 +212,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
         try {
           // Security checks
           validateNetworkAccess(args.url, config.fetch);
+          const allowInsecureTls = resolveAllowInsecureTls(args.allowInsecureTls);
 
           await ensureRobotsAllowed(args.url, args.timeout);
 
@@ -183,6 +222,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
             headers: args.headers,
             timeout: args.timeout,
             responseType: 'text', // Always fetch as text for HTML
+            httpsAgent: buildHttpsAgent(allowInsecureTls),
           });
 
           let content = response.data;
@@ -211,9 +251,11 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
             },
           };
         } catch (error) {
-          logger.error(`Error fetching HTML from ${args.url}: ${error instanceof Error ? error.message : String(error)}`);
+          const allowInsecureTls = resolveAllowInsecureTls(args.allowInsecureTls);
+          const message = formatFetchError(error, allowInsecureTls);
+          logger.error(`Error fetching HTML from ${args.url}: ${message}`);
           return {
-            content: [{ type: "text", text: `Error fetching HTML: ${error instanceof Error ? error.message : String(error)}` }],
+            content: [{ type: "text", text: `Error fetching HTML: ${message}` }],
             isError: true,
           };
         }
