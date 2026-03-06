@@ -1,0 +1,38 @@
+name: Publish Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Read version
+        id: read_version
+        run: |
+          echo "version=$(node -p \"require('./package.json').version\")" >> $GITHUB_OUTPUT
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run -s build:server
+
+      - name: Pack
+        run: npm pack
+
+      - name: Configure npm token
+        run: npm config set //registry.npmjs.org/:_authToken ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish
+        run: |
+          npm publish "_nazmiforreal-infected-${{ steps.read_version.outputs.version }}.tgz" --access public

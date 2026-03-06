@@ -17,6 +17,8 @@ import {
   getFileStats,
   readFileContent,
   writeFileContent,
+  createUnifiedDiff,
+  formatDiffAsMarkdown,
   searchFilesWithValidation,
   applyFileEdits,
   tailFile,
@@ -303,8 +305,18 @@ export class FilesystemModule implements Module {
       },
       async (args: z.infer<typeof WriteFileArgsSchema>) => {
         const validPath = await validatePath(args.path);
+        let previousContent = '';
+        try {
+          previousContent = await readFileContent(validPath);
+        } catch (error) {
+          const errorCode = (error as NodeJS.ErrnoException).code;
+          if (errorCode !== 'ENOENT') {
+            throw error;
+          }
+        }
         await writeFileContent(validPath, args.content);
-        const text = `Successfully wrote to ${args.path}`;
+        const diff = createUnifiedDiff(previousContent, args.content, args.path);
+        const text = formatDiffAsMarkdown(diff);
         return {
           content: [{ type: "text" as const, text }],
           structuredContent: { content: text }
@@ -497,6 +509,21 @@ export class FilesystemModule implements Module {
           children?: TreeEntry[];
         }
         const rootPath = args.path;
+        const rootLabel = path.basename(path.resolve(rootPath)) || rootPath;
+
+        function renderTree(entries: TreeEntry[], prefix: string = ""): string[] {
+          const lines: string[] = [];
+          entries.forEach((entry, index) => {
+            const isLast = index === entries.length - 1;
+            const connector = isLast ? "└── " : "├── ";
+            lines.push(`${prefix}${connector}${entry.name}`);
+            if (entry.type === 'directory' && entry.children && entry.children.length > 0) {
+              const childPrefix = `${prefix}${isLast ? "    " : "│   "}`;
+              lines.push(...renderTree(entry.children, childPrefix));
+            }
+          });
+          return lines;
+        }
 
         async function buildTree(currentPath: string, excludePatterns: string[] = []): Promise<TreeEntry[]> {
           const validPath = await validatePath(currentPath);
@@ -534,7 +561,8 @@ export class FilesystemModule implements Module {
         }
 
         const treeData = await buildTree(rootPath, args.excludePatterns);
-        const text = JSON.stringify(treeData, null, 2);
+        const treeLines = [rootLabel, ...renderTree(treeData)];
+        const text = treeLines.join("\n");
         const contentBlock = { type: "text" as const, text };
         return {
           content: [contentBlock],
@@ -592,8 +620,23 @@ export class FilesystemModule implements Module {
       },
       async (args: z.infer<typeof SearchFilesArgsSchema>) => {
         const validPath = await validatePath(args.path);
-        const results = await searchFilesWithValidation(validPath, args.pattern, this.allowedDirectories, { excludePatterns: args.excludePatterns }); // Use this.allowedDirectories
-        const text = results.length > 0 ? results.join("\n") : "No matches found";
+        const excludePatterns = args.excludePatterns.length > 0 ? args.excludePatterns : undefined;
+        const results = await searchFilesWithValidation(validPath, args.pattern, this.allowedDirectories, {
+          excludePatterns
+        }); // Use this.allowedDirectories
+
+        const maxShown = 200;
+        const shown = results.slice(0, maxShown);
+        const lines = [`matches: ${results.length}`];
+        if (shown.length > 0) {
+          lines.push(...shown);
+        } else {
+          lines.push("No matches found");
+        }
+        if (results.length > maxShown) {
+          lines.push(`...and ${results.length - maxShown} more`);
+        }
+        const text = lines.join("\n");
         return {
           content: [{ type: "text" as const, text }],
           structuredContent: { content: text }

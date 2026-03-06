@@ -25,6 +25,7 @@ export const InfectedConfigSchema = z.object({
   fetch: z.object({
     domainWhitelist: z.array(z.string()).default([]),
     blockLocalNetwork: z.boolean().default(false), // Changed default to false for agent autonomy
+    allowInsecureTls: z.boolean().default(false).describe("Allow HTTPS requests with invalid/self-signed certificates."),
   }).default({}),
   plugins: z.array(z.object({
     name: z.string().describe("The name or path of the plugin."),

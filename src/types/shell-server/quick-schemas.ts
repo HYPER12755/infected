@@ -13,8 +13,7 @@ export const QuickExecuteParamsSchema = z.object({
 });
 
 // 2. 統合ターミナル操作 (terminal_create + terminal_send_input + terminal_get_output を統合)
-export const TerminalOperateParamsSchema = z
-  .object({
+const TerminalOperateParamsBaseSchema = z.object({
     // Terminal identification/creation
     terminal_id: z
       .string()
@@ -87,6 +86,10 @@ export const TerminalOperateParamsSchema = z
       .default(20)
       .describe('Number of output lines to retrieve'),
     include_ansi: z.boolean().default(false).describe('Include ANSI codes in output'),
+    strip_ansi: z
+      .boolean()
+      .default(true)
+      .describe('When true, strips ANSI/control sequences from terminal output text.'),
 
     // Response control
     response_level: ResponseLevelSchema,
@@ -94,8 +97,11 @@ export const TerminalOperateParamsSchema = z
       .boolean()
       .default(true)
       .describe('Include terminal information in response'),
-  })
-  .refine((data) => data.terminal_id || data.command, {
+  });
+
+export const TerminalOperateParamsInputSchema = TerminalOperateParamsBaseSchema;
+
+export const TerminalOperateParamsSchema = TerminalOperateParamsBaseSchema.refine((data) => data.terminal_id || data.command, {
     message:
       'Either terminal_id (to use existing terminal) or command (to create new terminal) must be provided',
     path: ['terminal_id', 'command'],

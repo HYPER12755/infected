@@ -656,6 +656,9 @@ export class ShellTools {
   // 統合ターミナル操作 (create + send_input + get_output を統合)
   async terminalOperate(params: TerminalOperateParams) {
     try {
+      const shouldStripAnsi =
+        params.strip_ansi !== undefined ? params.strip_ansi : !(params.include_ansi ?? false);
+      const includeAnsiInOutput = !shouldStripAnsi;
       let terminalId = params.terminal_id;
       let terminalInfo = null;
       let inputRejected = false;
@@ -732,7 +735,7 @@ export class ShellTools {
               terminalId,
               undefined, // start_lineはデフォルト（連続読み取り）
               1000, // 大きめの値で未読データを全取得
-              params.include_ansi || false,
+              includeAnsiInOutput,
               false // include_foreground_process
             );
             if (unreadCheck.output && unreadCheck.output.trim().length > 0) {
@@ -769,7 +772,7 @@ export class ShellTools {
           terminalId,
           undefined, // start_lineはデフォルト（連続読み取り）
           params.output_lines || 20,
-          params.include_ansi || false,
+          includeAnsiInOutput,
           false // include_foreground_process
         );
         output = outputResult;
@@ -779,6 +782,7 @@ export class ShellTools {
       const response: Record<string, unknown> = {
         terminal_id: terminalId,
         success: !inputRejected, // 入力が拒否された場合はfalse
+        strip_ansi: shouldStripAnsi,
       };
 
       // 入力拒否情報を追加

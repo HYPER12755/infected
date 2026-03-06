@@ -94,7 +94,7 @@ export class SequentialThinkingServer {
             nextThoughtNeeded: input.nextThoughtNeeded,
             branches: Object.keys(this.branches),
             thoughtHistoryLength: this.thoughtHistory.length
-          }, null, 2)
+          })
         }]
       };
     } catch (error) {
@@ -105,7 +105,7 @@ export class SequentialThinkingServer {
           text: JSON.stringify({
             error: error instanceof Error ? error.message : String(error),
             status: 'failed'
-          }, null, 2)
+          })
         }],
         isError: true
       };

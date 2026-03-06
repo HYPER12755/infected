@@ -91,7 +91,7 @@ export class ConfigManager {
     if (process.env.MEMORY_FILE_PATH) {
         envConfig.memory = { filePath: process.env.MEMORY_FILE_PATH };
     }
-    if (process.env.FETCH_DOMAIN_WHITELIST || process.env.FETCH_BLOCK_LOCAL_NETWORK) {
+    if (process.env.FETCH_DOMAIN_WHITELIST || process.env.FETCH_BLOCK_LOCAL_NETWORK || process.env.FETCH_ALLOW_INSECURE_TLS) {
         const fetchEnv: Partial<InfectedConfig['fetch']> = {};
         if (process.env.FETCH_DOMAIN_WHITELIST) {
             fetchEnv.domainWhitelist = process.env.FETCH_DOMAIN_WHITELIST.split(',').map((value) =>
@@ -100,6 +100,9 @@ export class ConfigManager {
         }
         if (process.env.FETCH_BLOCK_LOCAL_NETWORK) {
             fetchEnv.blockLocalNetwork = process.env.FETCH_BLOCK_LOCAL_NETWORK === 'true';
+        }
+        if (process.env.FETCH_ALLOW_INSECURE_TLS) {
+            fetchEnv.allowInsecureTls = process.env.FETCH_ALLOW_INSECURE_TLS === 'true';
         }
         envConfig.fetch = fetchEnv as InfectedConfig['fetch'];
     }

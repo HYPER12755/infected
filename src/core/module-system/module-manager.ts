@@ -91,9 +91,7 @@ export class ModuleManager extends EventEmitter {
           workspacePluginsDir,
           installPluginsDir,
           workspaceSrcModulesDir,
-          workspaceDistModulesDir,
           installSrcModulesDir,
-          installDistModulesDir,
         ]));
     const directoriesToWatch = candidateWatchDirs.filter((dirPath) => {
       try {
@@ -140,6 +138,17 @@ export class ModuleManager extends EventEmitter {
         // Skip non-existent or inaccessible directories during initial scan
       }
     };
+    const firstReadableDir = (candidates: string[]): string | null => {
+      for (const dirPath of candidates) {
+        try {
+          fs.accessSync(dirPath, fs.constants.R_OK);
+          return dirPath;
+        } catch {
+          // try next candidate
+        }
+      }
+      return null;
+    };
 
     for (const watchDir of this.moduleWatcher['directoriesToWatch']) {
         try {
@@ -157,11 +166,18 @@ export class ModuleManager extends EventEmitter {
     }
 
     for (const moduleName of this.config.modules || []) {
-      addDirIfReadable(path.resolve(this.installRoot, 'dist/modules', moduleName));
       if (this.runtimeMode === 'development') {
-        addDirIfReadable(path.resolve(this.installRoot, 'src/modules', moduleName));
-        addDirIfReadable(path.resolve(this.workspaceRoot, 'dist/modules', moduleName));
-        addDirIfReadable(path.resolve(this.workspaceRoot, 'src/modules', moduleName));
+        const preferredDevModuleDir = firstReadableDir([
+          path.resolve(this.workspaceRoot, 'src/modules', moduleName),
+          path.resolve(this.installRoot, 'src/modules', moduleName),
+          path.resolve(this.workspaceRoot, 'dist/modules', moduleName),
+          path.resolve(this.installRoot, 'dist/modules', moduleName),
+        ]);
+        if (preferredDevModuleDir) {
+          moduleDirsToProcess.add(preferredDevModuleDir);
+        }
+      } else {
+        addDirIfReadable(path.resolve(this.installRoot, 'dist/modules', moduleName));
       }
     }
 
