@@ -52,8 +52,7 @@ type SSHConnectionTarget = z.infer<typeof sshTargetSchema>;
 
 const sshNewSessionSchema = z.object({
   session_id: z.string().min(1).describe('Unique identifier for the new session.'),
-  shell: z.string().optional().describe('Optional shell executable override.'),
-  target: sshTargetSchema.optional().describe('Optional remote connection details for this session.'),
+  target: sshTargetSchema.describe('Remote connection details for this session.'),
 });
 
 const sshCloseSessionSchema = z.object({
@@ -264,7 +263,7 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.getOrCreateSession(args.session_id);
+      const session = this.getSession(args.session_id);
       if (!session.isReady) {
         throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
       }
@@ -329,13 +328,9 @@ export default class SshModule implements IUnifiedPlugin {
         throw new Error(`Session ${args.session_id} already exists. Close it before recreating.`);
       }
       const connectionTarget = args.target;
-      this.createSession(args.session_id, args.shell, connectionTarget);
+      this.createSession(args.session_id, connectionTarget);
       await this.sleep(250);
-      const label = connectionTarget
-        ? ` (remote: ${connectionTarget.user ? `${connectionTarget.user}@` : ''}${connectionTarget.host}:${connectionTarget.port})`
-        : args.shell
-        ? ` (shell: ${args.shell})`
-        : '';
+      const label = ` (remote: ${connectionTarget.user ? `${connectionTarget.user}@` : ''}${connectionTarget.host}:${connectionTarget.port})`;
       return {
         content: [
           {
@@ -439,14 +434,7 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      let session = this.sessions.get(args.session_id);
-      if (!session) {
-        if (args.session_id === DEFAULT_SESSION_ID) {
-          session = this.createSession(args.session_id);
-          await this.sleep(250);
-        }
-      }
-
+      const session = this.sessions.get(args.session_id);
       if (!session) {
         const message = `Session ${args.session_id} not found. Call ssh_new_session before inspecting buffers.`;
         context.logger.warn('ssh_get_buffer: session missing', {
@@ -498,7 +486,7 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.getOrCreateSession(args.session_id);
+      const session = this.getSession(args.session_id);
       if (!session.isReady) {
         throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
       }
@@ -546,7 +534,7 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.getOrCreateSession(args.session_id);
+      const session = this.getSession(args.session_id);
       if (!session.isReady) {
         throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
       }
@@ -600,26 +588,21 @@ export default class SshModule implements IUnifiedPlugin {
     return path.resolve(remotePath);
   }
 
-  private getOrCreateSession(sessionId?: string, shell?: string): TerminalSession {
+  private getSession(sessionId?: string): TerminalSession {
     const normalized = (sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID;
-    let session = this.sessions.get(normalized);
+    const session = this.sessions.get(normalized);
     if (!session) {
-      session = this.createSession(normalized, shell);
+      throw new Error(`Session ${normalized} not found. Create it with ssh_new_session before using other tools.`);
     }
     return session;
   }
 
-  private createSession(
-    sessionId: string,
-    shellOverride?: string,
-    connection?: SSHConnectionTarget
-  ): TerminalSession {
-    const isRemote = Boolean(connection);
-    const shellPath = isRemote
-      ? 'ssh'
-      : shellOverride ??
-        (os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
-    const args = isRemote ? this.buildSshArgs(connection!) : [];
+  private createSession(sessionId: string, connection: SSHConnectionTarget): TerminalSession {
+    if (!connection) {
+      throw new Error('SSH session creation requires a remote target.');
+    }
+    const shellPath = 'ssh';
+    const args = this.buildSshArgs(connection);
 
     const ptyProcess = spawn(shellPath, args, {
       name: 'xterm-256color',
