@@ -12,15 +12,6 @@ const MAX_BUFFER_CHARS = 200_000;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const FILE_TRANSFER_TIMEOUT = 300000;
 
-interface TerminalSession {
-  id: string;
-  ptyProcess: IPty;
-  outputBuffer: string;
-  isReady: boolean;
-  lastCommand: string;
-  createdAt: Date;
-}
-
 const sshExecuteSchema = z.object({
   command: z.string().min(1).describe('Command to run inside the session.'),
   session_id: z
@@ -43,9 +34,25 @@ const sshExecuteSchema = z.object({
     .describe('Return the output even if the command exits with a non-zero code.'),
 });
 
+const sshTargetSchema = z
+  .object({
+    host: z.string().min(1).describe('Remote hostname or IP address.'),
+    port: z.number().int().min(1).max(65535).optional().default(22).describe('Remote SSH port.'),
+    user: z.string().min(1).optional().describe('Remote username (defaults to current user).'),
+    identityFile: z.string().min(1).optional().describe('Path to private key file for authentication.'),
+    extraArgs: z
+      .array(z.string())
+      .optional()
+      .describe('Additional command-line arguments forwarded to `ssh` (e.g., "-o StrictHostKeyChecking=no").'),
+  })
+  .describe('Connection target used to spawn an SSH client session to a remote host.');
+
+type SSHConnectionTarget = z.infer<typeof sshTargetSchema>;
+
 const sshNewSessionSchema = z.object({
   session_id: z.string().min(1).describe('Unique identifier for the new session.'),
   shell: z.string().optional().describe('Optional shell executable override.'),
+  target: sshTargetSchema.optional().describe('Optional remote connection details for this session.'),
 });
 
 const sshCloseSessionSchema = z.object({
@@ -96,6 +103,16 @@ const sshDownloadSchema = z.object({
     .default(FILE_TRANSFER_TIMEOUT)
     .describe('Download timeout in milliseconds (default 5 minutes).'),
 });
+
+interface TerminalSession {
+  id: string;
+  ptyProcess: IPty;
+  outputBuffer: string;
+  isReady: boolean;
+  lastCommand: string;
+  createdAt: Date;
+  target?: SSHConnectionTarget;
+}
 
 export default class SshModule implements IUnifiedPlugin {
   public manifest: UnifiedModuleManifest = {
@@ -265,6 +282,13 @@ export default class SshModule implements IUnifiedPlugin {
         ],
         structuredContent: {
           sessionId: args.session_id,
+          target: session.target
+            ? {
+                host: session.target.host,
+                port: session.target.port,
+                user: session.target.user,
+              }
+            : undefined,
           command: args.command,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
@@ -302,13 +326,19 @@ export default class SshModule implements IUnifiedPlugin {
       if (this.sessions.has(args.session_id)) {
         throw new Error(`Session ${args.session_id} already exists. Close it before recreating.`);
       }
-      this.createSession(args.session_id, args.shell);
+      const connectionTarget = args.target;
+      this.createSession(args.session_id, args.shell, connectionTarget);
       await this.sleep(250);
+      const label = connectionTarget
+        ? ` (remote: ${connectionTarget.user ? `${connectionTarget.user}@` : ''}${connectionTarget.host}:${connectionTarget.port})`
+        : args.shell
+        ? ` (shell: ${args.shell})`
+        : '';
       return {
         content: [
           {
             type: 'text',
-            text: `Created session ${args.session_id}${args.shell ? ` (shell: ${args.shell})` : ''}.`,
+            text: `Created session ${args.session_id}${label}.`,
           },
         ],
       };
@@ -470,7 +500,7 @@ export default class SshModule implements IUnifiedPlugin {
         throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
       }
       const localPath = path.resolve(process.cwd(), args.local_path);
-      const remoteTarget = this.resolveRemotePath(args.remote_path);
+      const remoteTarget = this.resolveRemotePath(args.remote_path, session);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
       const result = await this.uploadFile(session, localPath, remoteTarget, timeout);
       return {
@@ -517,7 +547,7 @@ export default class SshModule implements IUnifiedPlugin {
       if (!session.isReady) {
         throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
       }
-      const remoteTarget = this.resolveRemotePath(args.remote_path);
+      const remoteTarget = this.resolveRemotePath(args.remote_path, session);
       const localPath = path.resolve(process.cwd(), args.local_path);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
       const result = await this.downloadFile(session, remoteTarget, localPath, timeout);
@@ -556,7 +586,10 @@ export default class SshModule implements IUnifiedPlugin {
     }
   }
 
-  private resolveRemotePath(remotePath: string): string {
+  private resolveRemotePath(remotePath: string, session?: TerminalSession): string {
+    if (session?.target) {
+      return remotePath;
+    }
     if (remotePath.startsWith('~')) {
       const home = process.env.HOME || os.homedir();
       return path.resolve(home, remotePath.slice(1));
@@ -573,12 +606,19 @@ export default class SshModule implements IUnifiedPlugin {
     return session;
   }
 
-  private createSession(sessionId: string, shellOverride?: string): TerminalSession {
-    const shellPath =
-      shellOverride ??
-      (os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
+  private createSession(
+    sessionId: string,
+    shellOverride?: string,
+    connection?: SSHConnectionTarget
+  ): TerminalSession {
+    const isRemote = Boolean(connection);
+    const shellPath = isRemote
+      ? 'ssh'
+      : shellOverride ??
+        (os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
+    const args = isRemote ? this.buildSshArgs(connection!) : [];
 
-    const ptyProcess = spawn(shellPath, [], {
+    const ptyProcess = spawn(shellPath, args, {
       name: 'xterm-256color',
       cols: 160,
       rows: 40,
@@ -599,6 +639,7 @@ export default class SshModule implements IUnifiedPlugin {
       isReady: true,
       lastCommand: '',
       createdAt: new Date(),
+      target: connection,
     };
 
     ptyProcess.onData((data) => {
@@ -614,6 +655,21 @@ export default class SshModule implements IUnifiedPlugin {
 
     this.sessions.set(sessionId, session);
     return session;
+  }
+
+  private buildSshArgs(target: SSHConnectionTarget): string[] {
+    const args: string[] = ['-tt', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no'];
+    if (target.identityFile) {
+      args.push('-i', target.identityFile);
+    }
+    if (target.port) {
+      args.push('-p', String(target.port));
+    }
+    args.push(`${target.user ? `${target.user}@` : ''}${target.host}`);
+    if (target.extraArgs?.length) {
+      args.push(...target.extraArgs);
+    }
+    return args;
   }
 
   private async executeCommand(session: TerminalSession, command: string, timeout: number) {

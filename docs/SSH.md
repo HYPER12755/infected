@@ -43,7 +43,9 @@ The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager*
 
 ### Connection & Session Establishment
 
-The module does **NOT** establish actual SSH connections to remote hosts. Instead, it creates **local PTY (pseudo-terminal) sessions** that simulate an SSH-like experience:
+The module can create either a local shell or an actual SSH client session. By default it spawns local PTYs, but `ssh_new_session` now accepts an optional `target` object (host, user, port, identity file, etc.). When a target is provided, the session runs the `ssh` binary, keeping a remote shell open for all future commands on that session. This allows `ssh_execute` to run remote commands while still benefiting from the same PTY buffering, upload/download, and timeout handling.
+
+If no target is provided, the behavior remains the same as earlier — a local shell is spawned and commands run on this machine.
 
 ```
 createSession() (lines 576-617):
