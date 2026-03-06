@@ -9,6 +9,7 @@ const DEFAULT_SESSION_ID = 'default';
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 120000;
 const MAX_BUFFER_CHARS = 200_000;
+const MAX_HISTORY_CHARS = 400_000;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const FILE_TRANSFER_TIMEOUT = 300000;
 
@@ -112,6 +113,7 @@ interface TerminalSession {
   lastCommand: string;
   createdAt: Date;
   target?: SSHConnectionTarget;
+  historyLog: string;
 }
 
 export default class SshModule implements IUnifiedPlugin {
@@ -462,7 +464,8 @@ export default class SshModule implements IUnifiedPlugin {
         };
       }
 
-      const buffer = args.clean ? this.cleanOutput(session.outputBuffer) : session.outputBuffer;
+      const contentSource = session.historyLog || session.outputBuffer;
+      const buffer = args.clean ? this.cleanOutput(contentSource) : contentSource;
       return {
         content: [
           {
@@ -640,6 +643,7 @@ export default class SshModule implements IUnifiedPlugin {
       lastCommand: '',
       createdAt: new Date(),
       target: connection,
+      historyLog: '',
     };
 
     ptyProcess.onData((data) => {
@@ -721,6 +725,9 @@ export default class SshModule implements IUnifiedPlugin {
     const exitMatch = buffer.match(new RegExp(`${this.escapeRegex(exitMarker)}(\\d+)`));
     const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
 
+    const historyLines = [`$ ${command}`, cleaned || '(no output)', `(exit ${exitCode})`].join('\n');
+    this.appendHistory(session, historyLines);
+
     return {
       output: cleaned,
       exitCode,
@@ -759,6 +766,13 @@ export default class SshModule implements IUnifiedPlugin {
         return true;
       })
       .join('\n');
+  }
+
+  private appendHistory(session: TerminalSession, entry: string) {
+    session.historyLog = session.historyLog ? `${session.historyLog}\n\n${entry}` : entry;
+    if (session.historyLog.length > MAX_HISTORY_CHARS) {
+      session.historyLog = session.historyLog.slice(-MAX_HISTORY_CHARS);
+    }
   }
 
   private cleanOutput(output: string): string {
