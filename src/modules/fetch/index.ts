@@ -130,6 +130,40 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
       }, {});
     };
 
+    const buildHeaderText = (headers: Record<string, string>) => {
+      const entries = Object.entries(headers)
+        .map(([key, val]) => `${key}: ${val}`)
+        .slice(0, 20);
+      return entries.length ? entries.join('\n') : '(no headers)';
+    };
+
+    const buildBodySnippet = (body: string, limit = 1000) => {
+      const trimmed = body.trim();
+      if (trimmed.length <= limit) {
+        return trimmed;
+      }
+      return `${trimmed.slice(0, limit).trim()} …`;
+    };
+
+    const buildContentText = (
+      url: string,
+      status: number,
+      headers: Record<string, string>,
+      body: string,
+      label: string
+    ) => {
+      return [
+        `${label} ${url}`,
+        `Status: ${status}`,
+        '',
+        'Headers:',
+        buildHeaderText(headers),
+        '',
+        'Body Snippet:',
+        buildBodySnippet(body),
+      ].join('\n');
+    };
+
     const formatFetchError = (error: unknown, allowInsecureTls: boolean): string => {
       const err = error as { code?: string; message?: string };
       const code = err?.code || '';
@@ -161,6 +195,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           status: z.number(),
           headers: z.record(z.string(), z.string()),
           data: z.union([z.string(), z.record(z.unknown())]),
+          bodySnippet: z.string().optional(),
           url: z.string().url(),
         }),
       },
@@ -187,16 +222,19 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           if (args.responseType === 'markdown' && typeof response.data === 'string') {
             data = turndownService.turndown(response.data);
           }
-          const bodyText = typeof data === 'string' ? data : JSON.stringify(data);
-          const text = `status: ${response.status}\nurl: ${args.url}\n\n${bodyText}`;
-
+          const serializedData =
+            typeof data === 'string' ? data : JSON.stringify(data, null, 2);
           const flattenedHeaders = normalizeHeaders(response.headers);
+          const bodyLabel = args.responseType === 'json' ? 'JSON response' : 'Response body';
+          const text = buildContentText(args.url, response.status, flattenedHeaders, serializedData, bodyLabel);
+
           return {
-            content: [{ type: "text", text }],
+            content: [{ type: 'text', text }],
             structuredContent: {
               status: response.status,
               headers: flattenedHeaders,
-              data: data,
+              data,
+              bodySnippet: buildBodySnippet(serializedData, 1000),
               url: args.url,
             },
           };
@@ -223,6 +261,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           status: z.number(),
           headers: z.record(z.string(), z.string()),
           content: z.string(),
+          bodySnippet: z.string().optional(),
           url: z.string().url(),
         }),
       },
@@ -254,18 +293,24 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           // Convert to markdown if requested
           if (args.returnType === 'markdown') {
             content = turndownService.turndown(content);
-          } else if (args.returnType === 'cheerio') {
-            // Return raw HTML for Cheerio processing if requested
           }
-          const text = `status: ${response.status}\nurl: ${args.url}\n\n${content}`;
-
+          const serializedContent = typeof content === 'string' ? content : String(content);
           const flattenedHeaders = normalizeHeaders(response.headers);
+          const text = buildContentText(
+            args.url,
+            response.status,
+            flattenedHeaders,
+            serializedContent,
+            `HTML (${args.returnType})`
+          );
+
           return {
-            content: [{ type: "text", text }],
+            content: [{ type: 'text', text }],
             structuredContent: {
               status: response.status,
               headers: flattenedHeaders,
-              content: content,
+              content,
+              bodySnippet: buildBodySnippet(serializedContent, 1200),
               url: args.url,
             },
           };
