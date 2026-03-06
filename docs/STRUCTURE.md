@@ -2,141 +2,415 @@
 
 This document outlines the architecture and file organization of the `@infected/infected` unified Model Context Protocol (MCP) server. The server is designed to be modular, extensible, and production-ready, integrating functionalities from multiple original MCP servers.
 
-## Top-Level Files and Directories
+---
 
-- **`.env.example`**: Provides an example of environment variables that can be set to configure the server. This includes settings for core server operation, caching, authentication, tool permissions, and specific MCP Shell server parameters, as well as LLM security configuration.
-- **`index.js`**: JS entrypoint shim for global CLI execution; forwards to `dist/index.js` after build.
-- **`.gitignore`**: Specifies intentionally untracked files that Git should ignore.
-- **`infected.config.json.example`**: An example configuration file for the server, demonstrating how to set up transports, modules, tool directories, caching, authentication (API Key, random token generation), tool permissions, and LLM security features. This file is parsed by the `ConfigManager` and defines the server's runtime behavior.
-- **`package.json`**: Defines the project metadata (name, version, description), dependencies, and scripts. It declares the `infected` command-line tool via `bin` pointing to `dist/index.js`.
-- **`package-lock.json`**: Records the exact versions of dependencies installed, ensuring consistent builds.
-- **`README.md`**: Provides a high-level overview of the server, its features, and how to get started.
-- **`GUIDE.md`**: Explains how to create plugins and external tools for the server, including robust examples.
-- **`tsconfig.json`**: TypeScript configuration file, specifying compiler options and project settings.
-- **`plugins/`**: Directory for dynamically loadable plugins. Each plugin resides in its own subdirectory and includes an `index.ts` (or `index.js`) and `module.json` for metadata, conforming to the `IUnifiedModule` interface.
+## Complete Directory Tree
 
-Extensions now live exclusively under `tools/` or `plugins/`; the legacy `prompts/` directory and the associated skill examples have been removed.
+```
+infected/                                    # Project root
+├── .env.example                           # Environment variables template
+├── .gitignore                             # Git ignore rules
+├── README.md                              # Project documentation
+├── index.js                               # CLI entry point (compiled shim)
+├── infected.config.json                   # Runtime configuration
+├── infected.config.json.example           # Configuration template
+├── package.json                           # npm package (MCP server)
+├── package-lock.json                      # Dependency lock file
+├── tsconfig.json                          # TypeScript config for server
+├── tsconfig.tools.json                    # TypeScript config for tools
+├── git+gh.md                             # GitHub integration docs
+├── docs/                                  # Documentation
+│   ├── STRUCTURE.md                       # This file
+│   ├── GUIDE.md                          # Plugin & tool creation guide
+│   ├── CONFIGURATION_EXAMPLES.md
+│   ├── API_ENDPOINTS.md
+│   ├── MCP_SERVER.md
+│   ├── OFFICIAL_MCP_SDK_OVERVIEW.md
+│   ├── SEQUENTALTHINKING.md
+│   ├── MEMORY.md
+│   ├── SHELL.md
+│   ├── FILESYSTEM.md
+│   ├── SSH.md
+│   └── ...
+├── src/                                   # Source code
+│   ├── index.ts                          # Main entry point (CLI)
+│   ├── server.ts                         # InfectedServer class
+│   ├── cli/                              # CLI utilities
+│   │   ├── configure.ts                  # Interactive config wizard
+│   │   └── plugin-cli.ts                 # Plugin CLI manager
+│   ├── config/                           # Configuration
+│   │   ├── index.ts                     # ConfigManager
+│   │   └── schema.ts                    # Zod schemas
+│   ├── auth/                             # Authentication
+│   │   ├── index.ts                     # Auth middleware
+│   │   └── random-token-generator.ts    # Token generation
+│   ├── core/                             # Core functionality (27 files)
+│   │   ├── module-system/               # Module system
+│   │   │   ├── module-manager.ts        # Module orchestration
+│   │   │   ├── module-types.ts          # Type definitions
+│   │   │   └── module-watcher.ts        # Hot reload watcher
+│   │   ├── managers.ts                  # Manager exports
+│   │   ├── logger.ts                    # Winston logger
+│   │   ├── log-event-emitter.ts        # Log events
+│   │   ├── log-broadcast-manager.ts     # Log broadcasting
+│   │   ├── service-container.ts         # DI container
+│   │   ├── module-loader.ts             # Module loader
+│   │   ├── tool-loader.ts               # Tool loader
+│   │   ├── tool-cache-manager.ts        # Tool caching
+│   │   ├── plugin-loader.ts             # Plugin loader
+│   │   ├── plugin-watcher.ts           # Plugin hot reload
+│   │   ├── monitoring-manager.ts        # System monitoring
+│   │   ├── process-manager.ts           # Process execution
+│   │   ├── terminal-manager.ts         # PTY sessions
+│   │   ├── permission-manager.ts        # Permissions
+│   │   ├── file-manager.ts             # File operations
+│   │   ├── file-storage-subscriber.ts  # File events
+│   │   ├── enhanced-history-manager.ts # Command history
+│   │   ├── shell-config-manager.ts      # Shell config
+│   │   ├── remote-process-service.ts   # Remote execution
+│   │   ├── remote-http-client.ts       # Remote HTTP
+│   │   ├── realtime-stream-subscriber.ts
+│   │   ├── stream-publisher.ts         # Stream pub/sub
+│   │   ├── streaming-pipeline-reader.ts
+│   │   └── executor/
+│   │       └── server.ts               # Isolated executor
+│   ├── modules/                         # Built-in modules (6)
+│   │   ├── shell/                      # Shell execution
+│   │   │   ├── index.ts
+│   │   │   ├── main.ts
+│   │   │   ├── entrypoint.ts
+│   │   │   ├── shell-tools.ts
+│   │   │   └── schemas.ts
+│   │   ├── filesystem/                 # File operations
+│   │   │   ├── index.ts
+│   │   │   ├── lib.ts
+│   │   │   ├── types.ts
+│   │   │   ├── helpers.ts
+│   │   │   ├── filesystem-helpers.ts
+│   │   │   ├── path-utils.ts
+│   │   │   ├── path-validation.ts
+│   │   │   ├── roots-utils.ts
+│   │   │   └── errors.ts
+│   │   ├── memory/                      # Knowledge graph
+│   │   │   ├── index.ts
+│   │   │   ├── memory-core.ts
+│   │   │   └── memory.jsonl
+│   │   ├── sequentialthinking/          # Chain of thought
+│   │   │   ├── index.ts
+│   │   │   └── lib.ts
+│   │   ├── fetch/                       # HTTP fetch
+│   │   │   └── index.ts
+│   │   └── ssh/                         # SSH sessions
+│   │       └── index.ts
+│   ├── security/                        # Security
+│   │   ├── manager.ts                   # SecurityManager
+│   │   ├── enhanced-evaluator.ts        # LLM evaluator
+│   │   ├── security-tools.ts
+│   │   ├── validator-criteria-manager.ts
+│   │   ├── evaluator-types.ts
+│   │   ├── security-llm-prompt-generator.ts
+│   │   └── chat-completion-adapter.ts
+│   ├── transports/                       # Transport layer
+│   │   ├── stdio.ts                    # STDIO transport
+│   │   ├── http.ts                      # HTTP REST
+│   │   └── sse.ts                       # Server-Sent Events
+│   ├── types/                           # TypeScript types
+│   │   ├── index.ts
+│   │   └── shell-server/
+│   │       ├── index.ts
+│   │       ├── schemas.ts
+│   │       ├── response-schemas.ts
+│   │       ├── quick-schemas.ts
+│   │       └── enhanced-security.ts
+│   └── utils/                           # Utilities
+│       ├── common-helpers.ts
+│       ├── server-helpers.ts
+│       ├── shell-helpers.ts
+│       ├── shell-errors.ts
+│       ├── process-utils.ts
+│       ├── criteria-manager.ts
+│       ├── json-repair.ts
+│       └── runtime-roots.ts
+├── tools/                                # External tools
+│   └── github/
+│       ├── index.ts
+│       └── index.js
+├── plugins/                              # Plugin directory
+│   └── test-plugin/
+│       ├── index.ts
+│       └── module.json
+└── dist/                                 # Compiled output
+    └── (mirrors src/ structure)
+```
 
-- **`src/`**: The main source code directory for the unified server.
+---
 
-## `src/` Directory Breakdown
+## Top-Level Files
 
-The `src/` directory is the heart of the `infected` server, organizing its functionalities into core components, modules, and utilities.
+| File | Description |
+|------|-------------|
+| `.env.example` | Environment variables template (API keys, ports, paths, LLM config) |
+| `index.js` | CLI entry point shim - forwards to `dist/index.js` |
+| `infected.config.json` | Runtime configuration file |
+| `infected.config.json.example` | Configuration template with comments |
+| `package.json` | npm package config, declares `infected` CLI command |
+| `tsconfig.json` | TypeScript configuration for server |
 
-- **`index.ts`**: The primary entry point for the `infected` command-line interface (CLI). It handles initial CLI argument parsing (e.g., `--configure`, `plugin add/remove`) and orchestrates the startup of the `InfectedServer`.
-- **`server.ts`**: Contains the core `InfectedServer` class, which is responsible for initializing the MCP server, loading configurations, orchestrating module and tool loading, setting up transport mechanisms (STDIO, HTTP, SSE), and managing the server's lifecycle (start, cleanup). It also integrates global functionalities like API Key authentication (with optional random token generation) and centralizes tool permission checks.
+---
 
-### `src/cli/`
+## Source Directory (`src/`)
 
-Handles command-line interface related functionalities.
+### Entry Points
 
-- **`configure.ts`**: Provides the interactive CLI configuration tool (`infected --configure`). This tool guides users through setting up modules, transports, ports, tool directories, and saving the configuration.
-- **`plugin-cli.ts`**: Manages plugin operations from the CLI, such as adding or removing plugins from the server's configuration.
+#### `src/index.ts`
+Main entry point for CLI. Handles:
+- `--configure` flag → interactive configuration wizard
+- `plugin add/remove <name>` → plugin management
+- Server startup via `InfectedServer`
 
-### `src/config/`
+#### `src/server.ts`
+Core `InfectedServer` class:
+- Initializes MCP server with SDK
+- Loads configuration
+- Sets up transport (stdio/http/sse)
+- Orchestrates managers and modules
+- Handles authentication
 
-Manages server configuration.
+---
 
-- **`index.ts`**: Implements the `ConfigManager` class, responsible for loading the server's configuration from various sources (environment variables, `infected.config.json`) and providing it to other components.
-- **`schema.ts`**: Defines the `InfectedConfigSchema` using Zod, which validates the structure and types of the server's configuration. This includes detailed schemas for `auth` (with `enabled`, `apiKey` supporting single/multiple keys and 8-character minimum length, `randomAuthTokenEnabled`), `permissions` (with `defaultPolicy`, `toolAllowlist`, `toolBlocklist`), and `llmSecurity` (with `enabled`, `provider`, `model`, `apiKey`, `elicitationEnabled`, `skipSafeCommands`), among other settings.
+## CLI Module (`src/cli/`)
 
-### `src/core/`
+| File | Description |
+|------|-------------|
+| `configure.ts` | Interactive `infected --configure` wizard |
+| `plugin-cli.ts` | `PluginCliManager` for `plugin add/remove` |
 
-Contains core server functionalities and managers.
+---
 
-- **`config.ts`**: (Might be deprecated or merged into `config/index.ts` or `server.ts`) Historically could have contained generic configuration logic.
-- **`enhanced-history-manager.ts`**: Manages the command history, potentially with enhanced features like context and security-related metadata. Ported from `mcp-shell-server`.
-- **`file-manager.ts`**: Manages file-related operations for the process manager, including handling execution outputs. Ported from `mcp-shell-server`.
-- **`file-storage-subscriber.ts`**: A subscriber for the streaming pipeline that stores process outputs to files. Part of the real-time output system from `mcp-shell-server`.
-- **`logger.ts`**: Centralized logging utility based on `winston`, used consistently across the entire server for structured and configurable logging. Overrides global console methods.
-- **`monitoring-manager.ts`**: Manages server and process monitoring, providing insights into resource usage and performance.
-- **`permission-manager.ts`**: Enforces tool execution permissions based on the `permissions` configuration.
-- **`process-manager.ts`**: Manages the execution of shell commands, including foreground, background, and detached modes, orchestrating real-time output streaming.
-- **`plugin-loader.ts`**: Acts as an adapter, listening to `ModuleManager` events to initialize and shut down plugins, ensuring their `onLoad` and `onUnload` lifecycle methods are invoked.
-- **`tool-loader.ts`**: Acts as an adapter, listening to `ModuleManager` events to register and deregister tools with the `McpServer`, wrapping their execution with security, caching, and monitoring.
-- **`tool-cache-manager.ts`**: Implements an in-memory caching system for tool execution results.
+## Config Module (`src/config/`)
 
-### `src/core/module-system/`
+| File | Description |
+|------|-------------|
+| `index.ts` | `ConfigManager` - loads/validates config from JSON + env |
+| `schema.ts` | Zod `InfectedConfigSchema` for validation |
 
-This directory contains the core implementation of the new unified, dynamic module system.
+---
 
--   **`module-manager.ts`**: The central orchestrator for all unified modules (tools and plugins). It extends `EventEmitter` and is responsible for module discovery, loading, unloading, hot-reloading (debounced), and validation. It uses `ModuleWatcher` for file system events and provides methods for module access and tool registration with added security, caching, and monitoring wrappers.
--   **`module-watcher.ts`**: A generic file system watcher that monitors specified directories for file `added`, `changed`, or `removed` events. It uses `fs.watch` with recursive monitoring and debounces events to prevent excessive notifications, providing a reliable source of file system changes to the `ModuleManager`.
--   **`module-types.ts`**: Defines the foundational TypeScript interfaces and Zod schemas for the unified module system, including:
-    *   `ModuleType` (`tool`, `plugin`).
-    *   `UnifiedModuleContext`: The standardized context passed to all module lifecycle methods.
-    *   `UnifiedModuleManifestSchema`: The Zod schema for `module.json` files, defining required metadata (`id`, `name`, `version`, `type`, `entry`) and optional properties.
-    *   `IUnifiedModule`, `IUnifiedTool`, `IUnifiedPlugin`: Base interfaces for all modules and their specific types, including lifecycle methods (`onLoad`, `onUnload`, `onError`) and an `execute` method for tools.
-    *   Type guards (`isUnifiedTool`, `isUnifiedPlugin`) for safe type checking.
+## Core Modules (`src/core/`)
 
-### `src/modules/`
+### Module System (`src/core/module-system/`)
 
-Contains the implementations of individual server modules. Each module is a self-contained unit that registers its own tools and functionalities.
+| File | Description |
+|------|-------------|
+| `module-manager.ts` | Central orchestrator for unified modules. Handles discovery, loading, hot-reload via `ModuleWatcher`. |
+| `module-types.ts` | Defines `IUnifiedModule`, `IUnifiedTool`, `IUnifiedPlugin` interfaces + `UnifiedModuleManifest` schema |
+| `module-watcher.ts` | File watcher for development hot-reload with debouncing |
 
-- **`fetch/`**: Implements the Fetch module for making HTTP requests.
-  - **`index.ts`**: The main entry point for the Fetch module, registering `fetch` and `fetch_html` tools. It acts as a Node.js wrapper for an assumed Python microservice, handling security validations (robots.txt, domain whitelist, local network block).
-- **`filesystem/`**: Implements the Filesystem module for file and directory operations.
-  - **`filesystem-helpers.ts`**: Contains helper functions for filesystem operations, extracted from original `src/filesystem/index.ts`.
-  - **`index.ts`**: The main entry point for the Filesystem module, registering tools like `read_text_file`, `write_file`, `list_directory`, etc. It manages allowed directories based on server configuration and client roots.
-  - **`lib.ts`**: Core logic for various file operations, including reading, writing, editing, and listing.
-  - **`path-utils.ts`**: Utility functions for path manipulation and normalization.
-  - **`path-validation.ts`**: Logic for validating file paths against allowed directories to enforce sandboxing.
-  - **`roots-utils.ts`**: Utility functions for managing root directories and their validation.
-- **`memory/`**: Implements the Memory module for knowledge graph management.
-  - **`index.ts`**: The main entry point for the Memory module, registering tools for creating, reading, updating, and deleting entities and relations in a knowledge graph.
-  - **`memory-core.ts`**: Contains the core logic for the `KnowledgeGraphManager`, defining data structures for entities and relations, and handling persistence.
-- **`sequentialthinking/`**: Implements the Sequential Thinking module for step-by-step reasoning.
-  - **`index.ts`**: The main entry point for the Sequential Thinking module, registering the `sequentialthinking` tool.
-  - **`lib.ts`**: Contains the core `SequentialThinkingServer` logic for processing thoughts, managing thought history, and emitting real-time notifications.
-- **`ssh/`**: Implements the ShellKeeper-inspired terminal module for persistent PTY sessions and SSH-friendly tooling.
-  - **`index.ts`**: Registers tools such as `ssh_execute`, `ssh_new_session`, and helpers that keep a PTY session alive across commands.
-  - Provides clean command output, structured responses, and session utilities so agents can maintain long-lived shells or SSH bridges.
-- **`shell/`**: Implements the Shell module for executing system commands.
-  - **`entrypoint.ts`**: The original entry point of the `mcp-shell-server`, now integrated as part of the Shell module.
-  - **`index.ts`**: The main entry point for the Shell module, registering tools like `shell_execute`, `process_get_execution`, etc. It integrates with `ProcessManager` for real-time output and `SecurityManager` for command allowlisting.
-  - **`main.ts`**: Contains the core logic of the original `mcp-shell-server`, now adapted to fit within the unified server architecture.
-  - **`schemas.ts`**: Defines Zod schemas specific to shell tools.
-  - **`shell-tools.ts`**: Contains the implementation of the shell-related tool handlers, encapsulating the logic for executing commands and managing processes.
+### Manager Classes
 
-### `src/security/`
+| Class | File | Purpose |
+|-------|------|---------|
+| `ProcessManager` | `process-manager.ts` | Shell command execution, foreground/background/detached modes |
+| `TerminalManager` | `terminal-manager.ts` | PTY terminal sessions |
+| `FileManager` | `file-manager.ts` | Output file storage, cleanup |
+| `MonitoringManager` | `monitoring-manager.ts` | System metrics (CPU, memory, processes) |
+| `PermissionManager` | `permission-manager.ts` | Tool execution permissions |
+| `CommandHistoryManager` | `enhanced-history-manager.ts` | Persistent command history |
+| `SecurityManager` | `security/manager.ts` | Command auditing, LLM evaluation |
+| `ToolLoader` | `tool-loader.ts` | Tool registration with MCP server |
+| `PluginLoader` | `plugin-loader.ts` | Plugin lifecycle management |
+| `ToolCacheManager` | `tool-cache-manager.ts` | Execution result caching |
 
-Handles security-related functionalities, primarily ported from `mcp-shell-server`.
+---
 
-- **`chat-completion-adapter.ts`**: Adapts chat completion APIs for security evaluation.
-- **`enhanced-evaluator.ts`**: Implements an enhanced security evaluator, which utilizes the `llmSecurity` configuration (provider, model, API key, elicitation settings) for its LLM-driven analysis of shell commands.
-- **`evaluator-types.ts`**: Defines types related to the security evaluator.
-- **`manager.ts`**: Implements the `SecurityManager`, which orchestrates security checks and evaluations for command execution. It is initialized with both `mcpShellConfigManager`'s enhanced security config and the `llmSecurity` configuration, consolidating LLM-related settings for consistent use.
-- **`security-llm-prompt-generator.ts`**: Generates prompts for LLM-based security evaluations.
-- **`security-tools.ts`**: Defines security-related tools (if any).
-- **`validator-criteria-manager.ts`**: Manages criteria used by the security validator.
+## Built-in Modules (`src/modules/`)
 
-### `src/transports/`
+| Module | Directory | Tools Provided |
+|--------|-----------|----------------|
+| **Shell** | `shell/` | shell_execute, process_get_execution, terminal_operate, etc. (13 tools) |
+| **Filesystem** | `filesystem/` | read_text_file, write_file, list_directory, search_files, etc. (14 tools) |
+| **Memory** | `memory/` | create_entities, create_relations, add_observations, search_nodes (9 tools) |
+| **SequentialThinking** | `sequentialthinking/` | sequentialthinking (1 tool) |
+| **Fetch** | `fetch/` | fetch, fetch_html |
+| **SSH** | `ssh/` | ssh_execute, ssh_new_session, ssh_upload_file, etc. (7 tools) |
 
-Contains implementations for different MCP transport mechanisms.
+---
 
-- **`http.ts`**: Implements the HTTP stream transport factory, allowing clients to interact with the server over HTTP.
-- **`sse.ts`**: Implements the Server-Sent Events (SSE) transport factory, enabling real-time event streaming to clients.
-- **`stdio.ts`**: Implements the standard input/output (STDIO) transport, typically used for local CLI interactions.
+## Security (`src/security/`)
 
-### `src/types/`
+| File | Description |
+|------|-------------|
+| `manager.ts` | `SecurityManager` - orchestrates security checks |
+| `enhanced-evaluator.ts` | LLM-based command safety evaluation |
+| `chat-completion-adapter.ts` | Adapter for OpenAI/Anthropic APIs |
+| `validator-criteria-manager.ts` | Criteria document management |
+| `security-llm-prompt-generator.ts` | Prompt generation for LLM |
 
-Defines TypeScript interfaces and types used across the project.
+---
 
-- **`index.ts`**: Contains core interfaces like `ManagerInstances`, which define the collection of all instantiated managers. It now references unified module types (`IUnifiedModule`, `UnifiedModuleManifest`) from `src/core/module-system/module-types.ts`, replacing older, specific `Module`, `Plugin`, and `Skill` interfaces.
-- **`shell-server/`**: Directory containing types specific to the original `mcp-shell-server`, now re-exported for convenience or directly used.
-  - **`enhanced-security.ts`**: Types related to enhanced security features.
-  - **`index.ts`**: Main index for `shell-server` types.
-  - **`quick-schemas.ts`**: Quick Zod schemas for shell-server responses.
-  - **`response-schemas.ts`**: Zod schemas for various shell-server responses.
-  - **`schemas.ts`**: General Zod schemas for shell-server operations.
+## Transports (`src/transports/`)
 
-### `src/utils/`
+| Transport | File | Use Case |
+|-----------|------|----------|
+| STDIO | `stdio.ts` | Local CLI usage |
+| HTTP | `http.ts` | REST API access |
+| SSE | `sse.ts` | Real-time streaming |
 
-Contains general utility functions.
+---
 
-- **`criteria-manager.ts`**: Manages criteria for various evaluations.
-- **`json-repair.ts`**: Utility for repairing malformed JSON strings.
-- **`process-utils.ts`**: Utility functions for process management.
-- **`server-helpers.ts`**: Helper functions for server-related tasks, suchs listening and closing servers.
-- **`shell-errors.ts`**: Custom error classes specific to shell operations, including `MCPShellError` and `ResourceNotFoundError`. Renamed from `errors.ts` in `mcp-shell-server`.
-- **`shell-helpers.ts`**: General helper functions specific to shell operations. Renamed from `helpers.ts` in `mcp-shell-server`.
+## Types (`src/types/`)
+
+| File | Description |
+|------|-------------|
+| `index.ts` | Main exports including `Module`, `ManagerInstances`, `InfectedConfig` |
+| `shell-server/index.ts` | ExecutionInfo, ExecutionMode, ShellType, etc. |
+| `shell-server/schemas.ts` | Zod schemas for shell tools |
+
+---
+
+## Utilities (`src/utils/`)
+
+| File | Description |
+|------|-------------|
+| `shell-helpers.ts` | ID generation, safe env vars, string sanitization |
+| `shell-errors.ts` | MCPShellError, TimeoutError, SecurityError classes |
+| `criteria-manager.ts` | Security criteria document management |
+| `json-repair.ts` | Repair malformed JSON |
+
+---
+
+## Documentation (`docs/`)
+
+| File | Description |
+|------|-------------|
+| `STRUCTURE.md` | This file - project architecture |
+| `GUIDE.md` | Plugin & tool creation guide |
+| `CONFIGURATION_EXAMPLES.md` | Config examples |
+| `SHELL.md` | Shell module documentation |
+| `FILESYSTEM.md` | Filesystem module docs |
+| `MEMORY.md` | Memory module docs |
+| `SEQUENTALTHINKING.md` | Sequential thinking docs |
+| `SSH.md` | SSH module docs |
+
+---
+
+## External Tools (`tools/`)
+
+| Directory | Description |
+|-----------|-------------|
+| `tools/github/` | GitHub integration tools (issues, PRs, search) |
+
+---
+
+## Plugins (`plugins/`)
+
+| Directory | Description |
+|-----------|-------------|
+| `plugins/test-plugin/` | Example plugin demonstrating plugin development |
+
+---
+
+## Architecture Overview
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                    Infected MCP Server                      │
+├────────────────────────────────────────────────────────────┤
+│  CLI (src/index.ts)                                        │
+│    ├── --configure → ConfigWizard                         │
+│    ├── plugin add/remove → PluginCliManager               │
+│    └── Default → InfectedServer                           │
+├────────────────────────────────────────────────────────────┤
+│  InfectedServer (src/server.ts)                           │
+│    ├── ConfigManager → Load infected.config.json          │
+│    ├── McpServer (SDK)                                    │
+│    ├── Transport (stdio/http/sse)                        │
+│    ├── ManagerInstances                                   │
+│    │   ├── ProcessManager                                │
+│    │   ├── TerminalManager                               │
+│    │   ├── FileManager                                   │
+│    │   ├── SecurityManager                               │
+│    │   └── ...                                           │
+│    ├── ModuleManager                                      │
+│    │   ├── Built-in Modules (src/modules/)               │
+│    │   │   ├── shell/                                    │
+│    │   │   ├── filesystem/                               │
+│    │   │   ├── memory/                                   │
+│    │   │   └── ...                                       │
+│    │   ├── Plugins (plugins/)                            │
+│    │   └── Tools (tools/)                                │
+│    └── SecurityManager                                    │
+│        ├── PermissionManager                              │
+│        └── EnhancedEvaluator (LLM)                        │
+└────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Configuration Schema Highlights
+
+### Auth Configuration
+```typescript
+{
+  auth: {
+    enabled: boolean,
+    apiKey: string | string[],      // Single or multiple keys
+    randomAuthTokenEnabled: boolean,  // Auto-generate tokens
+  }
+}
+```
+
+### Permissions Configuration
+```typescript
+{
+  permissions: {
+    defaultPolicy: "allow" | "deny",
+    toolAllowlist: string[],         // Allowed tool names
+    toolBlocklist: string[],         // Blocked tool names
+  }
+}
+```
+
+### LLM Security Configuration
+```typescript
+{
+  llmSecurity: {
+    enabled: boolean,
+    provider: "openai" | "anthropic" | "custom",
+    model: string,
+    apiKey: string,
+    elicitationEnabled: boolean,
+    skipSafeCommands: boolean,
+  }
+}
+```
+
+---
+
+## Key Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `@modelcontextprotocol/sdk` | MCP protocol implementation |
+| `express` | HTTP transport |
+| `node-pty` | PTY emulation |
+| `zod` | Schema validation |
+| `winston` | Logging |
+| `minimatch` | Glob patterns |
+| `diff` | Unified diffs |
+
+---
+
+## File Count
+
+| Category | Count |
+|----------|-------|
+| Source TypeScript Files | ~75 |
+| Core Manager Classes | 15 |
+| Built-in Modules | 6 |
+| Total MCP Tools | ~50 |
+| Documentation Files | 12 |
+
+---
+
+*Last updated: March 2026*
