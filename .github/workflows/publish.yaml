@@ -19,7 +19,8 @@ jobs:
       - name: Read version
         id: read_version
         run: |
-          echo "version=$(node -p 'require(\"./package.json\").version')" >> $GITHUB_OUTPUT
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> $GITHUB_OUTPUT
 
       - name: Install Dependencies
         run: npm install
