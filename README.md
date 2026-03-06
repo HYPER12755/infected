@@ -91,7 +91,7 @@ The Infected ecosystem is comprised of several integrated components:
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
 │   │    Shell    │  │ Filesystem  │  │   Memory    │            │
 │   │   Module    │  │   Module    │  │   Module    │            │
-│   │  13 tools   │  │  14 tools   │  │   9 tools   │            │
+│   │  12 tools   │  │  14 tools   │  │   9 tools   │            │
 │   └─────────────┘  └─────────────┘  └─────────────┘            │
 │                                                                  │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
@@ -356,7 +356,7 @@ Infected was built with security as a first-class concern:
 
 | Module | Tools | Description |
 |--------|-------|-------------|
-| **Shell** | 13 | Command execution, process management, terminals |
+| **Shell** | 12 | Command execution, process management, terminals, interactive sessions |
 | **Filesystem** | 14 | File operations, directory management, search |
 | **Memory** | 9 | Knowledge graph, entities, relations |
 | **SequentialThinking** | 1 | Chain-of-thought reasoning |

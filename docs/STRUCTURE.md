@@ -227,7 +227,7 @@ Core `InfectedServer` class:
 
 | Module | Directory | Tools Provided |
 |--------|-----------|----------------|
-| **Shell** | `shell/` | shell_execute, process_get_execution, terminal_operate, etc. (13 tools) |
+| **Shell** | `shell/` | shell_execute, process_get_execution, terminal_operate, etc. (12 tools) |
 | **Filesystem** | `filesystem/` | read_text_file, write_file, list_directory, search_files, etc. (14 tools) |
 | **Memory** | `memory/` | create_entities, create_relations, add_observations, search_nodes (9 tools) |
 | **SequentialThinking** | `sequentialthinking/` | sequentialthinking (1 tool) |

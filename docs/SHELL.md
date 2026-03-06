@@ -34,6 +34,92 @@ The Shell module (`src/modules/shell/main.ts` and `src/modules/shell/shell-tools
 - Multiple shell types support (bash, zsh, fish, cmd, powershell)
 - **Code**: `ShellTools` terminal methods (shell-tools.ts lines 402-532), `TerminalOperateParamsSchema`
 
+### 4.1 **Interactive Sessions with terminal_operate** ⚡
+
+The `terminal_operate` tool is designed specifically for **interactive sessions** where commands require user input (like yes/no prompts, passwords, menus).
+
+#### Key Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `terminal_id` | string? | Use existing terminal (if not provided, creates new one) |
+| `command` | string? | Command to execute (required when creating new terminal) |
+| `input` | string? | Input to send to existing terminal |
+| `execute` | boolean | Press Enter after input (default: true) |
+| `get_output` | boolean | Retrieve output after operations (default: true) |
+| `output_delay_ms` | number | Delay before retrieving output (default: 500ms) |
+| `output_lines` | number | Number of output lines to retrieve (default: 20) |
+
+#### Example: Running apt upgrade
+
+**Step 1: Start the command**
+```json
+{
+  "name": "terminal_operate",
+  "arguments": {
+    "command": "sudo apt upgrade",
+    "shell_type": "bash",
+    "session_name": "apt-session",
+    "get_output": true,
+    "output_delay_ms": 1000
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "terminal_id": "term_abc123",
+  "success": true,
+  "output": "Reading package lists... Done\nBuilding dependency tree...\nThe following packages will be upgraded:\n...\nDo you want to continue? [Y/n]"
+}
+```
+
+**Step 2: Send "y" to confirm**
+```json
+{
+  "name": "terminal_operate",
+  "arguments": {
+    "terminal_id": "term_abc123",
+    "input": "y",
+    "execute": true,
+    "get_output": true,
+    "output_delay_ms": 2000
+  }
+}
+```
+
+**Step 3: Close when done**
+```json
+{
+  "name": "terminal_operate",
+  "arguments": {
+    "terminal_id": "term_abc123",
+    "input": "exit",
+    "execute": true
+  }
+}
+```
+
+Or use `terminal_close`:
+```json
+{
+  "name": "terminal_close",
+  "arguments": {
+    "terminal_id": "term_abc123"
+  }
+}
+```
+
+#### Use Cases
+
+| Use Case | Tool | Example |
+|----------|------|---------|
+| Run command to completion | `shell_execute` | `ls -la`, `git status` |
+| Interactive session | `terminal_operate` | `sudo apt upgrade`, `mysql -u root` |
+| Check terminal status | `terminal_get_info` | Get terminal details |
+| List all terminals | `terminal_list` | See active sessions |
+
 ### 5. **Output File Management**
 - List, read, and delete command output files (stdout, stderr, logs)
 - Chunked reading with offset support for large files
@@ -303,23 +389,22 @@ read_execution_output retrieves full content
 
 ## Integration
 
-### MCP Tools Registered
+### MCP Tools Registered (12 Tools)
 
-| Tool Name | Description |
-|-----------|-------------|
-| `shell_execute` | Execute shell commands with adaptive execution |
-| `process_get_execution` | Get execution details by ID |
-| `shell_set_default_workdir` | Set default working directory |
-| `list_execution_outputs` | List output files |
-| `read_execution_output` | Read output file content |
-| `delete_execution_outputs` | Delete output files |
-| `get_cleanup_suggestions` | Get cleanup recommendations |
-| `perform_auto_cleanup` | Perform automatic cleanup |
-| `terminal_operate` | Unified terminal operations |
-| `terminal_list` | List terminal sessions |
-| `terminal_get_info` | Get terminal details |
-| `terminal_close` | Close terminal session |
-| `command_history_query` | Query command history |
+| Tool Name | Description | Interactive |
+|-----------|-------------|-------------|
+| `shell_execute` | Execute shell commands with adaptive execution | ❌ |
+| `process_get_execution` | Get execution details by ID | - |
+| `process_list_executions` | List all command executions | - |
+| `process_kill` | Kill a running process | - |
+| `shell_set_default_workdir` | Set default working directory | - |
+| `list_execution_outputs` | List output files from executions | - |
+| `get_cleanup_suggestions` | Get cleanup recommendations | - |
+| `perform_auto_cleanup` | Perform automatic cleanup | - |
+| **`terminal_operate`** | **Unified terminal operations for interactive sessions** | ✅ |
+| `terminal_list` | List terminal sessions | - |
+| `terminal_get_info` | Get terminal details | - |
+| `terminal_close` | Close terminal session | - |
 
 ### Component Dependencies
 
