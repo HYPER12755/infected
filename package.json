@@ -1,6 +1,6 @@
 {
   "name": "@_nazmiforreal/infected",
-  "version": "1.0.1",
+  "version": "8.4.6",
   "description": "A unified MCP server for modular operations.",
   "main": "dist/index.js",
   "type": "module",

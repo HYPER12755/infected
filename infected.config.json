@@ -13,7 +13,8 @@
   },
   "fetch": {
     "domainWhitelist": [],
-    "blockLocalNetwork": false
+    "blockLocalNetwork": false,
+    "allowInsecureTls": false
   },
   "plugins": [
     {
