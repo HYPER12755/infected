@@ -1,8 +1,42 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
-import { getRuntimeModuleRoot, resolveRuntimePath } from '../../src/utils/runtime-roots.js';
-import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../src/core/module-system/module-types.js';
+
+interface UnifiedModuleManifest {
+  id: string;
+  name: string;
+  version: string;
+  type: 'plugin' | 'tool';
+  entry?: string;
+  description?: string;
+  timeout?: number;
+}
+
+interface UnifiedModuleContext {
+  moduleManager: {
+    registerToolExecution: (
+      toolId: string,
+      executeFn: (args: any) => Promise<any>,
+      name: string,
+      description?: string,
+      inputSchema?: any,
+      moduleId?: string,
+      skipTimeout?: boolean
+    ) => () => void;
+  };
+  logger: {
+    info: (message: string, meta?: Record<string, unknown>) => void;
+    error: (message: string, meta?: Record<string, unknown>) => void;
+  };
+}
+
+interface IUnifiedPlugin {
+  manifest: UnifiedModuleManifest;
+  onLoad(context: UnifiedModuleContext): Promise<void> | void;
+  onUnload?(): Promise<void> | void;
+  onError?(error: Error, context: UnifiedModuleContext): Promise<void> | void;
+}
 
 type FlagValue = string | number | boolean | null | undefined;
 
@@ -46,7 +80,19 @@ const SharedInputSchema = {
   stdin: z.string().optional().describe('Optional stdin content piped into the gh command.'),
 };
 
-const RUNTIME_MODULE_ROOT = getRuntimeModuleRoot();
+function getRuntimeModuleRoot(): string {
+  return path.resolve(process.cwd());
+}
+
+function resolveRuntimePath(relativeOrAbsolute?: string): string {
+  if (!relativeOrAbsolute || relativeOrAbsolute.trim().length === 0) {
+    return getRuntimeModuleRoot();
+  }
+  const cleaned = relativeOrAbsolute.trim();
+  return path.isAbsolute(cleaned)
+    ? path.resolve(cleaned)
+    : path.resolve(getRuntimeModuleRoot(), cleaned);
+}
 
 class GithubCommandsPlugin implements IUnifiedPlugin {
   manifest: UnifiedModuleManifest = {
@@ -359,7 +405,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     if (requested && requested.trim()) {
       return resolveRuntimePath(requested);
     }
-    return RUNTIME_MODULE_ROOT;
+    return getRuntimeModuleRoot();
   }
 
   private async killConflictingGitProcesses(cwd: string, excludePids: number[] = []): Promise<void> {
@@ -535,13 +581,15 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     stdin?: string
   ): Promise<GhRunResult> {
     await this.killConflictingGitProcesses(cwd);
-    let child;
+    let childPid: number | undefined;
     const result = await new Promise<GhRunResult>((resolve, reject) => {
-      child = spawn('git', commandArgs, {
+      const childProcess = spawn('git', commandArgs, {
         cwd,
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+
+      childPid = childProcess.pid;
 
       let stdout = '';
       let stderr = '';
@@ -551,24 +599,24 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
       const timer = setTimeout(() => {
         if (done) return;
         timedOut = true;
-        child.kill('SIGKILL');
+        childProcess.kill('SIGKILL');
       }, timeoutMs);
 
-      child.stdout.on('data', (chunk) => {
+      childProcess.stdout.on('data', (chunk) => {
         stdout += chunk.toString();
       });
-      child.stderr.on('data', (chunk) => {
+      childProcess.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
       });
 
-      child.on('error', (error) => {
+      childProcess.on('error', (error) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         reject(error);
       });
 
-      child.on('close', (code) => {
+      childProcess.on('close', (code) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
@@ -585,12 +633,12 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
       });
 
       if (stdin && stdin.length > 0) {
-        child.stdin.write(stdin);
+        childProcess.stdin.write(stdin);
       }
-      child.stdin.end();
+      childProcess.stdin.end();
     });
 
-    await this.killConflictingGitProcesses(cwd, child?.pid ? [child.pid] : []);
+    await this.killConflictingGitProcesses(cwd, childPid ? [childPid] : []);
     return result;
   }
 

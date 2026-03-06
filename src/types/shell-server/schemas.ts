@@ -10,7 +10,7 @@ import {
 } from './index.js'; // Adapted import
 
 // Shell Operations
-export const ShellExecuteParamsSchema = z
+const ShellExecuteParamsBaseSchema = z
   .object({
     command: z
       .string()
@@ -112,8 +112,11 @@ export const ShellExecuteParamsSchema = z
         'Force user confirmation regardless of LLM evaluation result. Use this to test ELICITATION functionality or when you want direct user confirmation even for safe commands.'
       ),
   })
-  .strict()
-  .refine((data) => !(data.input_data && data.input_output_id), {
+  .strict();
+
+export const ShellExecuteParamsInputSchema = ShellExecuteParamsBaseSchema;
+
+export const ShellExecuteParamsSchema = ShellExecuteParamsBaseSchema.refine((data) => !(data.input_data && data.input_output_id), {
     message: 'input_data and input_output_id cannot be specified simultaneously.',
     path: ['input_data', 'input_output_id'],
   });

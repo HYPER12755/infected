@@ -8,6 +8,7 @@ import { ShellTools } from './shell-tools.js'; // Adapted import
 import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.js'; // Adapted custom errors
 import {
   ShellExecuteParamsSchema,
+  ShellExecuteParamsInputSchema,
   ShellGetExecutionParamsSchema,
   ProcessListParamsSchema,
   ProcessKillParamsSchema,
@@ -78,7 +79,7 @@ export class ShellModule implements Module {
       {
         title: 'Shell Execute',
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
-        inputSchema: ShellExecuteParamsSchema,
+        inputSchema: ShellExecuteParamsInputSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellExecuteParamsSchema.parse(rawArgs);
@@ -126,9 +127,10 @@ export class ShellModule implements Module {
       {
         title: 'Get Execution Details',
         description: 'Retrieves detailed information about a specific command execution.',
-        inputSchema: ShellGetExecutionParamsSchema,
+        inputSchema: ShellGetExecutionParamsSchema.shape,
       },
-      async (args, _extra: ToolRequestExtra) => {
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ShellGetExecutionParamsSchema.parse(rawArgs);
         const executionInfo = await this.shellTools.getExecution({
           execution_id: args.execution_id,
         });
@@ -149,9 +151,10 @@ export class ShellModule implements Module {
       {
         title: 'List Command Executions',
         description: 'Lists active and completed command executions with filtering and pagination.',
-        inputSchema: ProcessListParamsSchema,
+        inputSchema: ProcessListParamsSchema.shape,
       },
-      async (args, _extra: ToolRequestExtra) => {
+      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+        const args = ProcessListParamsSchema.parse(rawArgs);
         const statusFilter = args.status_filter === 'all' ? undefined : args.status_filter;
         const result = await this.shellTools.listProcesses({
           status_filter: statusFilter,
@@ -174,7 +177,7 @@ export class ShellModule implements Module {
       {
         title: 'Kill Process',
         description: 'Sends a signal to terminate a running process by its process ID.',
-        inputSchema: ProcessKillParamsSchema,
+        inputSchema: ProcessKillParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ProcessKillParamsSchema.parse(rawArgs);
@@ -196,7 +199,7 @@ export class ShellModule implements Module {
       {
         title: 'Set Default Working Directory',
         description: 'Sets the default working directory for subsequent shell commands.',
-        inputSchema: ShellSetDefaultWorkdirParamsSchema,
+        inputSchema: ShellSetDefaultWorkdirParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = ShellSetDefaultWorkdirParamsSchema.parse(rawArgs);

@@ -14,5 +14,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
       - run: npm install
       - run: npm run build
+      - name: Package npm bundle
+        run: npm pack
+      - name: Rename npm package
+        id: package-info
+        run: |
+          version=$(node -p "require('./package.json').version")
+          original=$(ls *.tgz | head -n1)
+          mv "$original" "infected-$version.tgz"
+          echo "artifact_name=infected-$version.tgz" >> $GITHUB_OUTPUT
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Upload npm package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package-info.outputs.artifact_name }}
+          path: ${{ steps.package-info.outputs.artifact_name }}

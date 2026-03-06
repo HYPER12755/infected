@@ -1,23 +1,36 @@
 {
-  "name": "@infected/infected",
+  "name": "@_nazmiforreal/infected",
   "version": "1.0.0",
   "description": "A unified MCP server for modular operations.",
   "main": "dist/index.js",
   "type": "module",
   "types": "dist/index.d.ts",
   "bin": {
-    "infected": "./dist/index.js"
+    "infected": "./index.js"
   },
   "scripts": {
-    "start": "mkdir -p logs && npx kill-port 3001 || true && LOG_LEVEL=debug nohup tsx src/index.ts > logs/start.log 2>&1 &",
-    "dev": "mkdir -p logs && LOG_LEVEL=debug NODE_OPTIONS='--enable-source-maps' tsx watch --clear-screen=false src/index.ts | stdbuf -o L tee logs/dev.log",
+    "start": "mkdir -p logs && npx kill-port 3001 || true && INFECTED_RUNTIME_MODE=development LOG_LEVEL=debug nohup tsx src/index.ts > logs/start.log 2>&1 &",
+    "dev": "mkdir -p logs && INFECTED_RUNTIME_MODE=development LOG_LEVEL=debug NODE_OPTIONS='--enable-source-maps' tsx watch --clear-screen=false src/index.ts | stdbuf -o L tee logs/dev.log",
     "build:server": "tsc",
-    "build": "npm run build:server",
+    "build:tools": "tsc --project tsconfig.tools.json",
+    "build": "npm run build:server && npm run build:tools",
+    "pack": "npm run build && npm pack",
+    "publish:npm": "npm run pack && npm publish --access public",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "files": [
+    "dist",
+    "tools",
+    "plugins",
+    "docs",
+    "infected.config.json",
+    "infected.config.json.example",
+    ".env.example",
+    "index.js"
+  ],
   "devDependencies": {
     "@types/cheerio": "^0.22.35",
     "@types/chokidar": "^2.1.7",
@@ -27,13 +40,13 @@
     "@types/minimatch": "^5.1.2",
     "@types/node": "^20.11.5",
     "@types/turndown": "^5.0.4",
-    "inquirer": "^9.2.16",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "inquirer": "^9.2.16",
     "@modelcontextprotocol/inspector": "^0.21.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "axios": "^1.6.8",

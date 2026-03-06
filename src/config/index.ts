@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultInstallRoot = path.resolve(moduleDir, '../..');
 const defaultWorkspaceRoot = process.cwd();
+type RuntimeMode = 'development' | 'production';
 
 export function getInstallRoot(): string {
   return process.env['INFECTED_INSTALL_ROOT'] || defaultInstallRoot;
@@ -15,6 +16,20 @@ export function getInstallRoot(): string {
 
 export function getWorkspaceRoot(): string {
   return process.env['INFECTED_WORKSPACE_ROOT'] || defaultWorkspaceRoot;
+}
+
+export function getRuntimeMode(): RuntimeMode {
+  const explicitMode = process.env['INFECTED_RUNTIME_MODE']?.trim().toLowerCase();
+  if (explicitMode === 'production' || explicitMode === 'development') {
+    return explicitMode;
+  }
+
+  const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+  if (entryPath.includes(`${path.sep}dist${path.sep}`)) {
+    return 'production';
+  }
+
+  return 'development';
 }
 
 function normalizeTransportValue(value: unknown): unknown {
@@ -34,10 +49,12 @@ export class ConfigManager {
   async loadConfig(): Promise<InfectedConfig> {
     const installRoot = getInstallRoot();
     const workspaceRoot = getWorkspaceRoot();
+    const runtimeMode = getRuntimeMode();
 
     // Expose canonical runtime roots to all components.
     process.env['INFECTED_INSTALL_ROOT'] = installRoot;
     process.env['INFECTED_WORKSPACE_ROOT'] = workspaceRoot;
+    process.env['INFECTED_RUNTIME_MODE'] = runtimeMode;
 
     // 1. Load from .env file
     dotenv.config({ path: path.resolve(installRoot, '.env') });
@@ -95,10 +112,20 @@ export class ConfigManager {
       // CLI arguments would be merged here, for now they are handled in index.ts directly for --configure
     });
 
+    this.adjustInstallDefaults(installRoot, workspaceRoot, runtimeMode);
+
     return this.config;
   }
 
   getConfig(): InfectedConfig {
     return this.config;
+  }
+
+  private adjustInstallDefaults(installRoot: string, workspaceRoot: string, runtimeMode: RuntimeMode): void {
+    // Keep configured tools/plugins directories stable across dev/prod.
+    // Production runtime path isolation is handled by ModuleManager/runtime root logic.
+    void installRoot;
+    void workspaceRoot;
+    void runtimeMode;
   }
 }

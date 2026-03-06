@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { InfectedConfig, getInstallRoot, getWorkspaceRoot } from '../../config/index.js';
+import { InfectedConfig, getInstallRoot, getRuntimeMode, getWorkspaceRoot } from '../../config/index.js';
 import logger from '../logger.js';
 import * as path from 'node:path';
 import * as url from 'node:url';
@@ -43,6 +43,20 @@ export class ModuleManager extends EventEmitter {
   private monitoringManager: MonitoringManager;
   private workspaceRoot: string;
   private installRoot: string;
+  private runtimeMode: 'development' | 'production';
+
+  private resolveConfiguredDir(root: string, configuredPath: string | undefined, defaultDirName: string): string {
+    const candidate = configuredPath && configuredPath.trim().length > 0 ? configuredPath.trim() : `./${defaultDirName}`;
+    return path.isAbsolute(candidate)
+      ? path.resolve(candidate)
+      : path.resolve(root, candidate);
+  }
+
+  private isInstallPath(moduleDirPath: string): boolean {
+    const normalizedInstallRoot = path.resolve(this.installRoot) + path.sep;
+    const normalizedModuleDir = path.resolve(moduleDirPath);
+    return normalizedModuleDir.startsWith(normalizedInstallRoot);
+  }
 
   constructor(server: McpServer, config: InfectedConfig, managers: ManagerInstances, toolCacheManager: ToolCacheManager, permissionManager: PermissionManager, monitoringManager: MonitoringManager) {
     super(); // Call EventEmitter constructor
@@ -54,22 +68,33 @@ export class ModuleManager extends EventEmitter {
     this.monitoringManager = monitoringManager;
     this.workspaceRoot = getWorkspaceRoot();
     this.installRoot = getInstallRoot();
+    this.runtimeMode = getRuntimeMode();
+    const isProductionRuntime = this.runtimeMode === 'production';
 
-    const workspaceToolsDir = path.resolve(this.workspaceRoot, this.config.toolsDir || './tools');
-    const workspacePluginsDir = path.resolve(this.workspaceRoot, this.config.pluginsDir || './plugins');
+    const workspaceToolsDir = this.resolveConfiguredDir(this.workspaceRoot, this.config.toolsDir, 'tools');
+    const installToolsDir = this.resolveConfiguredDir(this.installRoot, this.config.toolsDir, 'tools');
+    const workspacePluginsDir = this.resolveConfiguredDir(this.workspaceRoot, this.config.pluginsDir, 'plugins');
+    const installPluginsDir = this.resolveConfiguredDir(this.installRoot, this.config.pluginsDir, 'plugins');
     const workspaceSrcModulesDir = path.resolve(this.workspaceRoot, 'src/modules');
     const workspaceDistModulesDir = path.resolve(this.workspaceRoot, 'dist/modules');
     const installSrcModulesDir = path.resolve(this.installRoot, 'src/modules');
     const installDistModulesDir = path.resolve(this.installRoot, 'dist/modules');
-
-    const candidateWatchDirs = Array.from(new Set([
-      workspaceToolsDir,
-      workspacePluginsDir,
-      workspaceSrcModulesDir,
-      workspaceDistModulesDir,
-      installSrcModulesDir,
-      installDistModulesDir,
-    ]));
+    const candidateWatchDirs = isProductionRuntime
+      ? Array.from(new Set([
+          installToolsDir,
+          installPluginsDir,
+          installDistModulesDir,
+        ]))
+      : Array.from(new Set([
+          workspaceToolsDir,
+          installToolsDir,
+          workspacePluginsDir,
+          installPluginsDir,
+          workspaceSrcModulesDir,
+          workspaceDistModulesDir,
+          installSrcModulesDir,
+          installDistModulesDir,
+        ]));
     const directoriesToWatch = candidateWatchDirs.filter((dirPath) => {
       try {
         fs.accessSync(dirPath, fs.constants.R_OK);
@@ -133,9 +158,11 @@ export class ModuleManager extends EventEmitter {
 
     for (const moduleName of this.config.modules || []) {
       addDirIfReadable(path.resolve(this.installRoot, 'dist/modules', moduleName));
-      addDirIfReadable(path.resolve(this.installRoot, 'src/modules', moduleName));
-      addDirIfReadable(path.resolve(this.workspaceRoot, 'dist/modules', moduleName));
-      addDirIfReadable(path.resolve(this.workspaceRoot, 'src/modules', moduleName));
+      if (this.runtimeMode === 'development') {
+        addDirIfReadable(path.resolve(this.installRoot, 'src/modules', moduleName));
+        addDirIfReadable(path.resolve(this.workspaceRoot, 'dist/modules', moduleName));
+        addDirIfReadable(path.resolve(this.workspaceRoot, 'src/modules', moduleName));
+      }
     }
 
     logger.info(`ModuleManager: Performing initial load of ${moduleDirsToProcess.size} potential module directories...`);
@@ -209,11 +236,20 @@ export class ModuleManager extends EventEmitter {
 
 
   private getModuleTypeFromPath(fullPath: string): ModuleType | null {
-    const relativePath = path.relative(process.cwd(), fullPath);
+    let relativePath = path.relative(process.cwd(), fullPath);
+    if (path.sep === '\\') {
+      relativePath = relativePath.replace(/\\/g, '/');
+    }
     if (relativePath.startsWith((this.config.toolsDir || 'tools') + path.sep) || fullPath.includes('tools/')) {
       return 'tool';
     }
+    if (relativePath.startsWith('dist/tools' + path.sep) || fullPath.includes(`${path.sep}dist${path.sep}tools${path.sep}`)) {
+      return 'tool';
+    }
     if (relativePath.startsWith((this.config.pluginsDir || 'plugins') + path.sep) || fullPath.includes('plugins/')) {
+      return 'plugin';
+    }
+    if (relativePath.startsWith('dist/plugins' + path.sep) || fullPath.includes(`${path.sep}dist${path.sep}plugins${path.sep}`)) {
       return 'plugin';
     }
     return null;
@@ -312,21 +348,47 @@ export class ModuleManager extends EventEmitter {
 
     // 2. If no valid module.json or entry found, try to infer from index.ts/js
     if (!moduleEntryFile) {
-        const potentialEntryTs = path.join(moduleDirPath, 'index.ts');
         const potentialEntryJs = path.join(moduleDirPath, 'index.js');
+        const potentialEntryTs = path.join(moduleDirPath, 'index.ts');
+        const preferJs = this.runtimeMode === 'production' && this.isInstallPath(moduleDirPath);
         try {
-            await fs.promises.access(potentialEntryTs);
-            moduleEntryFile = potentialEntryTs;
+            if (preferJs) {
+              await fs.promises.access(potentialEntryJs);
+              moduleEntryFile = potentialEntryJs;
+            } else {
+              await fs.promises.access(potentialEntryTs);
+              moduleEntryFile = potentialEntryTs;
+            }
         } catch {
             try {
-                await fs.promises.access(potentialEntryJs);
-                moduleEntryFile = potentialEntryJs;
+                if (preferJs) {
+                  await fs.promises.access(potentialEntryTs);
+                  moduleEntryFile = potentialEntryTs;
+                } else {
+                  await fs.promises.access(potentialEntryJs);
+                  moduleEntryFile = potentialEntryJs;
+                }
             } catch {
                 logger.debug(`ModuleManager: No module.json or index.ts/js found in ${moduleDirPath}. Skipping.`);
                 this.loadingModules.delete(moduleDirPath);
                 return;
             }
         }
+    }
+
+    const isProductionInstallModule = this.runtimeMode === 'production' && this.isInstallPath(moduleDirPath);
+    if (isProductionInstallModule && moduleEntryFile?.endsWith('.ts')) {
+      const jsFallback = moduleEntryFile.slice(0, -3) + '.js';
+      try {
+        await fs.promises.access(jsFallback);
+        moduleEntryFile = jsFallback;
+      } catch {
+        logger.warn(
+          `ModuleManager: Skipping TypeScript entry in production for ${moduleDirPath}. Expected transpiled JS entry at ${jsFallback}.`
+        );
+        this.loadingModules.delete(moduleDirPath);
+        return;
+      }
     }
 
     if (!moduleEntryFile || (!moduleEntryFile.endsWith('.js') && !moduleEntryFile.endsWith('.ts'))) {
