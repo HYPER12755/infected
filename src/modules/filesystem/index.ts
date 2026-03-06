@@ -17,6 +17,8 @@ import {
   getFileStats,
   readFileContent,
   writeFileContent,
+  createUnifiedDiff,
+  formatDiffAsMarkdown,
   searchFilesWithValidation,
   applyFileEdits,
   tailFile,
@@ -303,8 +305,18 @@ export class FilesystemModule implements Module {
       },
       async (args: z.infer<typeof WriteFileArgsSchema>) => {
         const validPath = await validatePath(args.path);
+        let previousContent = '';
+        try {
+          previousContent = await readFileContent(validPath);
+        } catch (error) {
+          const errorCode = (error as NodeJS.ErrnoException).code;
+          if (errorCode !== 'ENOENT') {
+            throw error;
+          }
+        }
         await writeFileContent(validPath, args.content);
-        const text = `Successfully wrote to ${args.path}`;
+        const diff = createUnifiedDiff(previousContent, args.content, args.path);
+        const text = formatDiffAsMarkdown(diff);
         return {
           content: [{ type: "text" as const, text }],
           structuredContent: { content: text }
@@ -534,7 +546,7 @@ export class FilesystemModule implements Module {
         }
 
         const treeData = await buildTree(rootPath, args.excludePatterns);
-        const text = JSON.stringify(treeData, null, 2);
+        const text = JSON.stringify(treeData);
         const contentBlock = { type: "text" as const, text };
         return {
           content: [contentBlock],

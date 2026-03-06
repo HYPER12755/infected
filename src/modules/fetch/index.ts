@@ -136,7 +136,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           }
 
           return {
-            content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }],
+            content: [{ type: "text", text: typeof data === 'string' ? data : JSON.stringify(data) }],
             structuredContent: {
               status: response.status,
               headers: response.headers,

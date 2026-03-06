@@ -23,10 +23,120 @@ import {
   FileDeleteParamsSchema,
   CommandHistoryQueryParamsSchema,
 } from '../../types/shell-server/schemas.js';
-import { TerminalOperateParamsSchema } from '../../types/shell-server/quick-schemas.js';
+import { TerminalOperateParamsInputSchema, TerminalOperateParamsSchema } from '../../types/shell-server/quick-schemas.js';
 
 type ToolRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
+const PREVIEW_LIMIT = 6000;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return (value && typeof value === 'object') ? (value as Record<string, unknown>) : {};
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function toCompactPreview(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  const json = JSON.stringify(value);
+  if (!json) {
+    return '';
+  }
+  return json.length > PREVIEW_LIMIT ? `${json.slice(0, PREVIEW_LIMIT)}\n...(truncated)` : json;
+}
+
+function formatExecutionText(result: unknown): string {
+  const data = asRecord(result);
+  const lines: string[] = [];
+  const executionId = asString(data['execution_id']);
+  const status = asString(data['status']);
+  const exitCode = asNumber(data['exit_code']);
+  const duration = asNumber(data['execution_time_ms']);
+  const workingDirectory = asString(data['working_directory']);
+  const stdout = asString(data['stdout']) || '';
+  const stderr = asString(data['stderr']) || '';
+  const message = asString(data['message']);
+  const outputId = asString(data['output_id']);
+  const outputTruncated = data['output_truncated'] === true;
+
+  if (executionId) lines.push(`execution_id: ${executionId}`);
+  if (status) lines.push(`status: ${status}`);
+  if (exitCode !== undefined) lines.push(`exit_code: ${exitCode}`);
+  if (duration !== undefined) lines.push(`execution_time_ms: ${duration}`);
+  if (workingDirectory) lines.push(`working_directory: ${workingDirectory}`);
+  if (outputId) lines.push(`output_id: ${outputId}`);
+  if (outputTruncated) lines.push('output_truncated: true');
+  if (message) lines.push(`message: ${message}`);
+
+  if (stdout) {
+    lines.push('', 'stdout:', stdout);
+  }
+  if (stderr) {
+    lines.push('', 'stderr:', stderr);
+  }
+
+  if (!stdout && !stderr && status && status !== 'completed') {
+    lines.push('', 'No immediate output available yet.');
+  }
+
+  return lines.join('\n');
+}
+
+function formatProcessListText(result: unknown): string {
+  const data = asRecord(result);
+  const executions = asArray(data['executions']);
+  const processes = executions.length > 0 ? executions : asArray(data['processes']);
+  const total = asNumber(data['total']) ?? processes.length;
+
+  const lines: string[] = [`count: ${processes.length}`, `total: ${total}`];
+  for (const entry of processes.slice(0, 20)) {
+    const item = asRecord(entry);
+    const id = asString(item['execution_id']) || asString(item['id']) || 'unknown';
+    const status = asString(item['status']) || 'unknown';
+    const command = (asString(item['command']) || '').replace(/\s+/g, ' ').trim();
+    const preview = command.length > 80 ? `${command.slice(0, 77)}...` : command;
+    lines.push(`${id} | ${status}${preview ? ` | ${preview}` : ''}`);
+  }
+
+  if (processes.length > 20) {
+    lines.push(`...and ${processes.length - 20} more`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatShellToolText(toolName: string, result: unknown): string {
+  if (toolName === 'shell_execute' || toolName === 'process_get_execution') {
+    return formatExecutionText(result);
+  }
+  if (toolName === 'process_list_executions') {
+    return formatProcessListText(result);
+  }
+  if (toolName === 'read_execution_output') {
+    const data = asRecord(result);
+    const output =
+      asString(data['content']) ||
+      asString(data['output']) ||
+      asString(data['stdout']) ||
+      asString(data['stderr']);
+    if (output) {
+      return output;
+    }
+  }
+  const preview = toCompactPreview(result);
+  return preview || '(no output)';
+}
 
 export class ShellModule implements Module {
   name = 'shell';
@@ -108,8 +218,9 @@ export class ShellModule implements Module {
         try {
           const executionInfo = await this.shellTools.executeShell(args);
           logger.info(`shell_execute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
+          const text = formatShellToolText('shell_execute', executionInfo);
           return {
-            content: [{ type: 'text', text: `Command execution started. ID: ${executionInfo.execution_id}. Status: ${executionInfo.status}.` }],
+            content: [{ type: 'text', text }],
             structuredContent: executionInfo,
           };
         } catch (error) {
@@ -148,8 +259,9 @@ export class ShellModule implements Module {
           throw new ResourceNotFoundError('execution', args.execution_id);
         }
         const structuredContent = executionInfo as unknown as Record<string, unknown>;
+        const text = formatShellToolText('process_get_execution', executionInfo);
         return {
-          content: [{ type: 'text', text: JSON.stringify(executionInfo, null, 2) }],
+          content: [{ type: 'text', text }],
           structuredContent,
         };
       }
@@ -174,8 +286,9 @@ export class ShellModule implements Module {
           session_id: args.session_id,
         });
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('process_list_executions', result);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text }],
           structuredContent,
         };
       }
@@ -196,8 +309,9 @@ export class ShellModule implements Module {
           signal: args.signal,
           force: args.force,
         });
+        const text = formatShellToolText('process_kill', result);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
@@ -216,8 +330,9 @@ export class ShellModule implements Module {
         const result = await this.shellTools.setDefaultWorkingDirectory({
           working_directory: args.working_directory,
         });
+        const text = formatShellToolText('shell_set_default_workdir', result);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
@@ -234,14 +349,15 @@ export class ShellModule implements Module {
       {
         title: 'Terminal Operate',
         description: 'Unified terminal operations: create sessions, send input, get output with automatic position tracking. Combines terminal_create, terminal_send_input, and terminal_get_output into a single streamlined interface. USE THIS for interactive sessions like "apt upgrade" that ask for yes/no.',
-        inputSchema: TerminalOperateParamsSchema,
+        inputSchema: TerminalOperateParamsInputSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalOperateParamsSchema.parse(rawArgs);
         const result = await this.shellTools.terminalOperate(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('terminal_operate', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -259,8 +375,9 @@ export class ShellModule implements Module {
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalListParamsSchema.parse(rawArgs);
         const result = await this.shellTools.listTerminals(args);
+        const text = formatShellToolText('terminal_list', result);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
@@ -279,8 +396,9 @@ export class ShellModule implements Module {
         const args = TerminalGetParamsSchema.parse(rawArgs);
         const result = await this.shellTools.getTerminal(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('terminal_get_info', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -298,8 +416,9 @@ export class ShellModule implements Module {
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalCloseParamsSchema.parse(rawArgs);
         const result = await this.shellTools.closeTerminal(args);
+        const text = formatShellToolText('terminal_close', result);
         return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
@@ -322,8 +441,9 @@ export class ShellModule implements Module {
         const args = FileListParamsSchema.parse(rawArgs);
         const result = await this.shellTools.listFiles(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('list_execution_outputs', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -342,8 +462,9 @@ export class ShellModule implements Module {
         const args = FileReadParamsSchema.parse(rawArgs);
         const result = await this.shellTools.readFile(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('read_execution_output', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -362,8 +483,9 @@ export class ShellModule implements Module {
         const args = FileDeleteParamsSchema.parse(rawArgs);
         const result = await this.shellTools.deleteFiles(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('delete_execution_outputs', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -382,8 +504,9 @@ export class ShellModule implements Module {
         const args = CleanupSuggestionsParamsSchema.parse(rawArgs);
         const result = await this.shellTools.getCleanupSuggestions(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('get_cleanup_suggestions', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -402,8 +525,9 @@ export class ShellModule implements Module {
         const args = AutoCleanupParamsSchema.parse(rawArgs);
         const result = await this.shellTools.performAutoCleanup(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('perform_auto_cleanup', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
@@ -422,8 +546,9 @@ export class ShellModule implements Module {
         const args = CommandHistoryQueryParamsSchema.parse(rawArgs);
         const result = await this.shellTools.queryCommandHistory(args);
         const structuredContent = result as unknown as Record<string, unknown>;
+        const text = formatShellToolText('command_history_query', result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }

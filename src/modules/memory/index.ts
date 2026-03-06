@@ -115,7 +115,7 @@ export class MemoryModule implements Module {
       createZodToolHandler(createEntitiesSchema, async (args) => {
         const result = await knowledgeGraphManager.createEntities(args.entities);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
           structuredContent: { entities: result }
         };
       })
@@ -133,7 +133,7 @@ export class MemoryModule implements Module {
       createZodToolHandler(createRelationsSchema, async (args) => {
         const result = await knowledgeGraphManager.createRelations(args.relations);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
           structuredContent: { relations: result }
         };
       })
@@ -151,7 +151,7 @@ export class MemoryModule implements Module {
       createZodToolHandler(observationInputSchema, async (args) => {
         const result = await knowledgeGraphManager.addObservations(args.observations);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
           structuredContent: { results: result }
         };
       })
@@ -223,7 +223,7 @@ export class MemoryModule implements Module {
       createZodToolHandler(emptySchema, async () => {
         const graph = await knowledgeGraphManager.readGraph();
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(graph) }],
           structuredContent: { ...graph }
         };
       })
@@ -241,7 +241,7 @@ export class MemoryModule implements Module {
       createZodToolHandler(searchNodesSchema, async (args) => {
         const graph = await knowledgeGraphManager.searchNodes(args.query);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(graph) }],
           structuredContent: { ...graph }
         };
       })
@@ -259,7 +259,7 @@ export class MemoryModule implements Module {
       createZodToolHandler(openNodesSchema, async (args) => {
         const graph = await knowledgeGraphManager.openNodes(args.names);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(graph) }],
           structuredContent: { ...graph }
         };
       })

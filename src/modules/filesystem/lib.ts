@@ -73,6 +73,14 @@ export function createUnifiedDiff(originalContent: string, newContent: string, f
   );
 }
 
+export function formatDiffAsMarkdown(diff: string): string {
+  let numBackticks = 3;
+  while (diff.includes('`'.repeat(numBackticks))) {
+    numBackticks++;
+  }
+  return `${'`'.repeat(numBackticks)}diff\n${diff}${'`'.repeat(numBackticks)}\n\n`;
+}
+
 // Helper function to resolve relative paths against allowed directories
 function resolveRelativePathAgainstAllowedDirectories(relativePath: string): string {
   if (allowedDirectories.length === 0) {
@@ -256,12 +264,7 @@ export async function applyFileEdits(
   // Create unified diff
   const diff = createUnifiedDiff(content, modifiedContent, filePath);
 
-  // Format diff with appropriate number of backticks
-  let numBackticks = 3;
-  while (diff.includes('`'.repeat(numBackticks))) {
-    numBackticks++;
-  }
-  const formattedDiff = `${'`'.repeat(numBackticks)}diff\n${diff}${'`'.repeat(numBackticks)}\n\n`;
+  const formattedDiff = formatDiffAsMarkdown(diff);
 
   if (!dryRun) {
     // Security: Use atomic rename to prevent race conditions where symlinks
