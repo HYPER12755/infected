@@ -6,7 +6,8 @@ import https from 'node:https';
 import TurndownService from 'turndown';
 import * as cheerio from 'cheerio';
 import robotsParser from 'robots-parser';
-import logger from '../../core/logger.js'; // Use our central logger
+import logger from '../../core/logger.js';
+import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
 
 // Define the URL for the external Python Fetch Microservice
 // This can be configured via environment variables or infected.config.json
@@ -194,9 +195,9 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
         outputSchema: z.object({
           status: z.number(),
           headers: z.record(z.string(), z.string()),
-          data: z.union([z.string(), z.record(z.unknown())]),
+          data: z.unknown(),
           bodySnippet: z.string().optional(),
-          url: z.string().url(),
+          url: z.string(),
         }),
       },
       async (args: z.infer<typeof fetchArgsSchema>) => {
@@ -242,10 +243,22 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           const allowInsecureTls = resolveAllowInsecureTls(args.allowInsecureTls);
           const message = formatFetchError(error, allowInsecureTls);
           logger.error(`Error fetching URL ${args.url}: ${message}`);
-          return {
-            content: [{ type: "text", text: `Error fetching URL: ${message}` }],
-            isError: true,
-          };
+          
+          let errorCode: string = ERROR_CODES.FETCH_ERROR;
+          if (message.includes('ENOTFOUND') || message.includes('404')) {
+            errorCode = ERROR_CODES.NOT_FOUND;
+          } else if (message.includes('timeout')) {
+            errorCode = ERROR_CODES.COMMAND_TIMEOUT;
+          } else if (message.includes('ECONNREFUSED')) {
+            errorCode = ERROR_CODES.CONNECTION_FAILED;
+          } else if (message.includes('certificate') || message.includes('TLS')) {
+            errorCode = ERROR_CODES.NETWORK_ERROR;
+          }
+          
+          return createErrorResponse(errorCode as any, `Fetch failed for ${args.url}: ${message}`, {
+            details: { url: args.url, method: args.method },
+            suggestion: getErrorSuggestion(errorCode as any),
+          });
         }
       },
     ));
@@ -262,7 +275,7 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           headers: z.record(z.string(), z.string()),
           content: z.string(),
           bodySnippet: z.string().optional(),
-          url: z.string().url(),
+          url: z.string(),
         }),
       },
       async (args: z.infer<typeof fetchHtmlArgsSchema>) => {
@@ -318,10 +331,20 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
           const allowInsecureTls = resolveAllowInsecureTls(args.allowInsecureTls);
           const message = formatFetchError(error, allowInsecureTls);
           logger.error(`Error fetching HTML from ${args.url}: ${message}`);
-          return {
-            content: [{ type: "text", text: `Error fetching HTML: ${message}` }],
-            isError: true,
-          };
+          
+          let errorCode: string = ERROR_CODES.FETCH_ERROR;
+          if (message.includes('ENOTFOUND') || message.includes('404')) {
+            errorCode = ERROR_CODES.NOT_FOUND;
+          } else if (message.includes('timeout')) {
+            errorCode = ERROR_CODES.COMMAND_TIMEOUT;
+          } else if (message.includes('ECONNREFUSED')) {
+            errorCode = ERROR_CODES.CONNECTION_FAILED;
+          }
+          
+          return createErrorResponse(errorCode as any, `Fetch HTML failed for ${args.url}: ${message}`, {
+            details: { url: args.url },
+            suggestion: getErrorSuggestion(errorCode as any),
+          });
         }
       },
     ));

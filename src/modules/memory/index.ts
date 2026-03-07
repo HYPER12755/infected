@@ -47,7 +47,9 @@ const deleteEntitiesSchema = z.object({
 
 const deleteSuccessSchema = z.object({
   success: z.boolean(),
-  message: z.string()
+  message: z.string().optional(),
+  deleted: z.array(z.unknown()).optional(),
+  notFound: z.array(z.unknown()).optional()
 });
 
 const deleteObservationsSchema = z.object({
@@ -167,10 +169,13 @@ export class MemoryModule implements Module {
         outputSchema: deleteSuccessSchema
       },
       createZodToolHandler(deleteEntitiesSchema, async (args) => {
-        await knowledgeGraphManager.deleteEntities(args.entityNames);
+        const result = await knowledgeGraphManager.deleteEntities(args.entityNames);
+        const message = result.notFound.length > 0 
+          ? `Deleted ${result.deleted.length} entities. Not found: ${result.notFound.join(', ')}`
+          : `Deleted ${result.deleted.length} entities successfully`;
         return {
-          content: [{ type: "text" as const, text: "Entities deleted successfully" }],
-          structuredContent: { success: true, message: "Entities deleted successfully" }
+          content: [{ type: "text" as const, text: message }],
+          structuredContent: { success: true, deleted: result.deleted, notFound: result.notFound }
         };
       })
     ));
@@ -185,10 +190,13 @@ export class MemoryModule implements Module {
         outputSchema: deleteSuccessSchema
       },
       createZodToolHandler(deleteObservationsSchema, async (args) => {
-        await knowledgeGraphManager.deleteObservations(args.deletions);
+        const result = await knowledgeGraphManager.deleteObservations(args.deletions);
+        const message = result.notFound.length > 0 
+          ? `Deleted observations from ${result.deleted.length} entities. Entities not found: ${result.notFound.join(', ')}`
+          : `Deleted observations from ${result.deleted.length} entities successfully`;
         return {
-          content: [{ type: "text" as const, text: "Observations deleted successfully" }],
-          structuredContent: { success: true, message: "Observations deleted successfully" }
+          content: [{ type: "text" as const, text: message }],
+          structuredContent: { success: true, deleted: result.deleted, notFound: result.notFound }
         };
       })
     ));
@@ -203,10 +211,13 @@ export class MemoryModule implements Module {
         outputSchema: deleteSuccessSchema
       },
       createZodToolHandler(deleteRelationsSchema, async (args) => {
-        await knowledgeGraphManager.deleteRelations(args.relations);
+        const result = await knowledgeGraphManager.deleteRelations(args.relations);
+        const message = result.notFound.length > 0 
+          ? `Deleted ${result.deleted.length} relations. Not found: ${result.notFound.length}`
+          : `Deleted ${result.deleted.length} relations successfully`;
         return {
-          content: [{ type: "text" as const, text: "Relations deleted successfully" }],
-          structuredContent: { success: true, message: "Relations deleted successfully" }
+          content: [{ type: "text" as const, text: message }],
+          structuredContent: { success: true, deleted: result.deleted, notFound: result.notFound }
         };
       })
     ));

@@ -4,6 +4,7 @@ import { promises as fsPromises } from 'node:fs';
 import { spawn, type IPty } from 'node-pty';
 import { z } from 'zod';
 import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../core/module-system/module-types.js';
+import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
 
 const DEFAULT_SESSION_ID = 'default';
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -38,8 +39,8 @@ const sshExecuteSchema = z.object({
 const sshTargetSchema = z
   .object({
     host: z.string().min(1).describe('Remote hostname or IP address.'),
-    port: z.number().int().min(1).max(65535).optional().default(22).describe('Remote SSH port.'),
-    user: z.string().min(1).optional().describe('Remote username (defaults to current user).'),
+    port: z.number().int().min(1).max(65535).describe('Remote SSH port.'),
+    user: z.string().min(1).describe('Remote username.'),
     identityFile: z.string().min(1).optional().describe('Path to private key file for authentication.'),
     extraArgs: z
       .array(z.string())
@@ -57,6 +58,49 @@ const sshNewSessionSchema = z.object({
 
 const sshCloseSessionSchema = z.object({
   session_id: z.string().min(1).describe('Session ID to close.'),
+});
+
+const sshOperateSchema = z.object({
+  session_id: z
+    .string()
+    .optional()
+    .describe('Session ID to use. If session exists, use it. If not found, create new session (requires target).'),
+  target: z.union([sshTargetSchema, z.object({}).strip()]).optional().describe('SSH connection target. Used to create new session if session_id not provided or not found.'),
+  command: z
+    .string()
+    .optional()
+    .describe('Command to execute in the session.'),
+  input: z
+    .string()
+    .optional()
+    .describe('Input to send to the session (alternative to command).'),
+  execute: z
+    .boolean()
+    .default(true)
+    .describe('Whether to press Enter after sending input (execute command).'),
+  get_output: z
+    .boolean()
+    .default(true)
+    .describe('Whether to retrieve session output after operations.'),
+  output_delay_ms: z
+    .number()
+    .int()
+    .min(0)
+    .max(10000)
+    .default(500)
+    .describe('Delay in milliseconds before retrieving output.'),
+  clean: z
+    .boolean()
+    .default(true)
+    .describe('Strip ANSI/control sequences from output.'),
+  timeout: z
+    .number()
+    .int()
+    .min(1000)
+    .max(MAX_TIMEOUT_MS)
+    .optional()
+    .default(DEFAULT_TIMEOUT_MS)
+    .describe('Timeout in milliseconds for command execution.'),
 });
 
 const sshBufferSchema = z.object({
@@ -109,6 +153,7 @@ interface TerminalSession {
   ptyProcess: IPty;
   outputBuffer: string;
   isReady: boolean;
+  isConnected: boolean;
   lastCommand: string;
   createdAt: Date;
   target?: SSHConnectionTarget;
@@ -133,6 +178,7 @@ export default class SshModule implements IUnifiedPlugin {
   async onLoad(context: UnifiedModuleContext): Promise<void> {
     this.registerSshExecute(context);
     this.registerSshNewSession(context);
+    this.registerSshOperate(context);
     this.registerSshListSessions(context);
     this.registerSshCloseSession(context);
     this.registerSshBuffer(context);
@@ -186,6 +232,21 @@ export default class SshModule implements IUnifiedPlugin {
     this.deregisterFns.push(deregister);
   }
 
+  private registerSshOperate(context: UnifiedModuleContext): void {
+    const deregister = context.moduleManager.registerToolExecution(
+      'ssh_operate',
+      async (rawArgs: any) => {
+        const args = sshOperateSchema.parse(rawArgs);
+        return this.handleSshOperate(args, context);
+      },
+      'ssh_operate',
+      'Unified SSH operations: create sessions, send input, get output with automatic position tracking. Combines ssh_new_session, ssh_execute, and ssh_get_buffer into a single streamlined interface.',
+      sshOperateSchema,
+      this.manifest.id
+    );
+    this.deregisterFns.push(deregister);
+  }
+
   private registerSshListSessions(context: UnifiedModuleContext): void {
     const deregister = context.moduleManager.registerToolExecution(
       'ssh_list_sessions',
@@ -196,6 +257,57 @@ export default class SshModule implements IUnifiedPlugin {
       this.manifest.id
     );
     this.deregisterFns.push(deregister);
+  }
+
+  private handleError(
+    error: unknown,
+    context: UnifiedModuleContext,
+    options: {
+      toolName: string;
+      code?: string;
+      details?: Record<string, unknown>;
+      sessionId?: string;
+      command?: string;
+    }
+  ) {
+    const message = error instanceof Error ? error.message : String(error);
+    let errorCode = options.code || ERROR_CODES.INTERNAL_ERROR;
+
+    if (message.includes('not found')) {
+      errorCode = ERROR_CODES.SESSION_NOT_FOUND;
+    } else if (message.includes('already exists')) {
+      errorCode = ERROR_CODES.SESSION_EXISTS;
+    } else if (message.includes('busy executing')) {
+      errorCode = ERROR_CODES.SESSION_BUSY;
+    } else if (message.includes('timeout')) {
+      errorCode = ERROR_CODES.COMMAND_TIMEOUT;
+    } else if (message.includes('authentication') || message.includes('Auth')) {
+      errorCode = ERROR_CODES.AUTHENTICATION_FAILED;
+    } else if (message.includes('Connection') || message.includes('ECONNREFUSED')) {
+      errorCode = ERROR_CODES.CONNECTION_FAILED;
+    } else if (message.includes('ENOENT') || message.includes('not exist')) {
+      errorCode = ERROR_CODES.NOT_FOUND;
+    } else if (message.includes('EACCES') || message.includes('permission')) {
+      errorCode = ERROR_CODES.PERMISSION_DENIED;
+    }
+
+    context.logger.error(`${options.toolName} failed`, {
+      component: this.manifest.id,
+      error,
+      ...options.details,
+    });
+
+    return createErrorResponse(
+      errorCode as any,
+      message,
+      {
+        details: {
+          tool: options.toolName,
+          ...options.details,
+        },
+        suggestion: getErrorSuggestion(errorCode as any, message),
+      }
+    );
   }
 
   private registerSshCloseSession(context: UnifiedModuleContext): void {
@@ -269,12 +381,17 @@ export default class SshModule implements IUnifiedPlugin {
       }
       const validTimeout = Math.min(Math.max(args.timeout, 1000), MAX_TIMEOUT_MS);
       const result = await this.executeCommand(session, args.command, validTimeout);
+      
+      // Check buffer for interactive prompts
+      const promptInfo = this.detectInteractivePrompts(session.outputBuffer);
+      
       if (result.exitCode !== 0 && !args.allowFailure) {
         throw new Error(
           `Command exited with code ${result.exitCode}\nOutput: ${result.output || '(no output)'}`
         );
       }
-      return {
+      
+      const response: any = {
         content: [
           {
             type: 'text',
@@ -295,27 +412,22 @@ export default class SshModule implements IUnifiedPlugin {
           durationMs: result.durationMs,
         },
       };
+      
+      // Add prompt detection info if detected
+      if (promptInfo.detected) {
+        response.structuredContent.awaitingInput = true;
+        response.structuredContent.promptType = promptInfo.type;
+        response.structuredContent.promptText = promptInfo.prompt;
+        response.content[0].text += `\n\n⚠️ Awaiting input: ${promptInfo.type} prompt detected. Use ssh_operate with input parameter to respond.`;
+      }
+      
+      return response;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      context.logger.error('ssh_execute failed', {
-        component: this.manifest.id,
-        error,
+      return this.handleError(error, context, {
+        toolName: 'ssh_execute',
         sessionId: args.session_id,
         command: args.command,
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-        structuredContent: {
-          sessionId: args.session_id,
-          command: args.command,
-        },
-      };
     }
   }
 
@@ -329,15 +441,51 @@ export default class SshModule implements IUnifiedPlugin {
       }
       const connectionTarget = args.target;
       this.createSession(args.session_id, connectionTarget);
-      await this.sleep(250);
+      
+      // Wait and verify session is actually connected
+      const session = this.sessions.get(args.session_id);
+      if (!session) {
+        throw new Error('Failed to create session - not found after creation');
+      }
+      
+      // Wait for SSH connection to establish
+      await this.sleep(1500);
+      
+      // Check if process exited (connection failed)
+      if (!session || !session.isConnected) {
+        // Check buffer for error messages
+        const bufferError = session?.outputBuffer || '';
+        let errorMsg = `SSH connection failed - could not connect to ${connectionTarget.host}:${connectionTarget.port}.`;
+        
+        if (bufferError.includes('permission denied') || bufferError.includes('Permission denied')) {
+          errorMsg += ' Authentication failed. Check username, password or SSH key.';
+        } else if (bufferError.includes('connection refused') || bufferError.includes('Connection refused')) {
+          errorMsg += ' SSH service may not be running on the remote host.';
+        } else if (bufferError.includes('no route') || bufferError.includes('No route')) {
+          errorMsg += ' Network issue - check host address.';
+        } else if (bufferError.includes('name or service not known') || bufferError.includes('Could not resolve')) {
+          errorMsg += ' Could not resolve hostname.';
+        } else if (bufferError) {
+          errorMsg += ` Server said: ${bufferError.substring(0, 200)}`;
+        }
+        
+        this.sessions.delete(args.session_id);
+        throw new Error(errorMsg);
+      }
+      
       const label = ` (remote: ${connectionTarget.user ? `${connectionTarget.user}@` : ''}${connectionTarget.host}:${connectionTarget.port})`;
       return {
         content: [
           {
             type: 'text',
-            text: `Created session ${args.session_id}${label}.`,
+            text: `Created session ${args.session_id}${label}. Session is ready for commands.`,
           },
         ],
+        structuredContent: {
+          session_id: args.session_id,
+          target: connectionTarget,
+          status: 'ready'
+        }
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -346,16 +494,204 @@ export default class SshModule implements IUnifiedPlugin {
         error,
         sessionId: args.session_id,
       });
+      return this.handleError(error, context, {
+        toolName: 'ssh_new_session',
+        sessionId: args.session_id,
+      });
+    }
+  }
+
+  private async handleSshOperate(
+    args: z.infer<typeof sshOperateSchema>,
+    context: UnifiedModuleContext
+  ) {
+    try {
+      let sessionId = args.session_id;
+      let sessionCreated = false;
+      let session: TerminalSession | undefined;
+
+      // 1. Resolve session: check if session_id exists
+      if (sessionId) {
+        session = this.sessions.get(sessionId) ?? undefined;
+      }
+
+      // 2. Handle session based on its state
+      if (session) {
+        // Session exists - check if it's alive
+        if (!session.isConnected) {
+          // Dead session - clean up
+          try { session.ptyProcess.kill(); } catch { /* ignore */ }
+          this.sessions.delete(sessionId!);
+          session = undefined;
+          
+          // If target provided, will create new below
+          // If no target, will fall through to default session check
+        }
+      }
+
+      // Helper to check if target has valid SSH connection info
+      const hasValidTarget = (t: any): t is { host: string; port: number; user: string } => {
+        return t && typeof t === 'object' && typeof t.host === 'string' && t.host.length > 0;
+      };
+
+      // 3. Create new session if needed
+      if (!session) {
+        if (hasValidTarget(args.target)) {
+          // Create new session with provided target
+          const newSessionId = sessionId || `session_${Date.now()}`;
+          this.createSession(newSessionId, args.target);
+          
+          await this.sleep(1000);
+          
+          session = this.sessions.get(newSessionId);
+          if (!session) {
+            throw new Error(`Failed to create SSH session to ${args.target.host}. Check SSH availability and credentials.`);
+          }
+          
+          if (!session.isConnected) {
+            this.sessions.delete(newSessionId);
+            throw new Error(`SSH connection failed to ${args.target.host}. Process exited.`);
+          }
+          
+          sessionId = newSessionId;
+          sessionCreated = true;
+        } else if (sessionId) {
+          // No target but session_id provided - try default
+          const defaultSession = this.sessions.get(DEFAULT_SESSION_ID);
+          if (defaultSession && defaultSession.isConnected) {
+            sessionId = DEFAULT_SESSION_ID;
+            session = defaultSession;
+          } else {
+            throw new Error(`Session "${sessionId}" not found. Provide target to create new session.`);
+          }
+        } else {
+          // No session_id and no target - try default
+          const defaultSession = this.sessions.get(DEFAULT_SESSION_ID);
+          if (defaultSession && defaultSession.isConnected) {
+            sessionId = DEFAULT_SESSION_ID;
+            session = defaultSession;
+          } else {
+            throw new Error('No active session. Provide session_id or target.');
+          }
+        }
+      }
+
+      let commandOutput = '';
+      let exitCode: number | undefined;
+
+      // 3. Execute command or send input
+      const inputToSend = args.command || args.input;
+      if (inputToSend) {
+        if (!session.isReady) {
+          throw new Error(`Session ${sessionId} is busy executing: ${session.lastCommand}`);
+        }
+
+        const timeout = args.timeout || DEFAULT_TIMEOUT_MS;
+        const result = await this.executeCommand(session, inputToSend, timeout);
+        commandOutput = result.output || '';
+        exitCode = result.exitCode;
+      }
+
+      // 4. Get output
+      let output = null;
+      if (args.get_output !== false && session) {
+        const delayMs = args.output_delay_ms || 500;
+        if (delayMs > 0) {
+          await this.sleep(delayMs);
+        }
+
+        const contentSource = session.historyLog || session.outputBuffer;
+        output = args.clean !== false ? this.cleanOutput(contentSource) : contentSource;
+      }
+
+      // 5. Detect interactive prompts
+      const promptInfo = session.outputBuffer ? this.detectInteractivePrompts(session.outputBuffer) : { detected: false };
+
+      // 6. Build response
+      const response: Record<string, unknown> = {
+        session_id: sessionId,
+        success: true,
+      };
+
+      if (sessionCreated) {
+        response.session_created = true;
+        response.target = hasValidTarget(args.target) ? {
+          host: args.target.host,
+          port: args.target.port,
+          user: args.target.user,
+        } : undefined;
+      }
+
+      if (inputToSend) {
+        response.command = inputToSend;
+        response.exit_code = exitCode;
+      }
+
+      if (output) {
+        response.output = output;
+      }
+
+      // Add prompt detection info
+      if (promptInfo.detected) {
+        response.awaiting_input = true;
+        response.prompt_type = promptInfo.type;
+        response.prompt_text = promptInfo.prompt;
+      }
+
+      const outputText = this.formatSshOperateText(response);
+
       return {
         content: [
           {
             type: 'text',
-            text: `Error: ${message}`,
+            text: outputText,
           },
         ],
-        isError: true,
+        structuredContent: response,
       };
+    } catch (error) {
+      return this.handleError(error, context, {
+        toolName: 'ssh_operate',
+        sessionId: args.session_id,
+        command: args.command,
+      });
     }
+  }
+
+  private formatSshOperateText(response: Record<string, unknown>): string {
+    const lines: string[] = [];
+
+    if (response.session_created) {
+      const target = response.target as { host?: string; port?: number; user?: string } | undefined;
+      if (target) {
+        lines.push(`Created session: ${response.session_id}`);
+        lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
+      }
+    } else {
+      lines.push(`Session: ${response.session_id}`);
+    }
+
+    if (response.command) {
+      lines.push(`Command: ${response.command}`);
+      if (response.exit_code !== undefined) {
+        lines.push(`Exit code: ${response.exit_code}`);
+      }
+    }
+
+    if (response.output) {
+      lines.push('');
+      lines.push(String(response.output));
+    }
+
+    // Add interactive prompt warning
+    if (response.awaiting_input) {
+      lines.push('');
+      lines.push(`⚠️ Awaiting input: ${response.prompt_type} prompt detected.`);
+      lines.push(`Prompt: ${response.prompt_text}`);
+      lines.push(`Use ssh_operate with input parameter to respond.`);
+    }
+
+    return lines.join('\n');
   }
 
   private handleListSessions() {
@@ -364,30 +700,48 @@ export default class SshModule implements IUnifiedPlugin {
         content: [
           {
             type: 'text',
-            text: 'No active sessions.',
+            text: 'No active SSH sessions.',
           },
         ],
+        structuredContent: { sessions: [], count: 0 }
       };
     }
 
-    const formatted = Array.from(this.sessions.values())
-      .map((session) => {
-        const uptimeSeconds = Math.floor((Date.now() - session.createdAt.getTime()) / 1000);
-        return (
-          `• ${session.id}\n  Status: ${session.isReady ? 'ready' : 'busy'}\n` +
-          `  Last command: ${session.lastCommand || '(none)'}\n` +
-          `  Uptime: ${uptimeSeconds}s`
-        );
-      })
-      .join('\n\n');
+    const sessionList = Array.from(this.sessions.values()).map((session) => {
+      const uptimeSeconds = Math.floor((Date.now() - session.createdAt.getTime()) / 1000);
+      const target = session.target;
+      const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
+      const isRunning = session.isConnected;
+      
+      return {
+        id: session.id,
+        status: session.isReady ? 'ready' : 'busy',
+        target: targetStr,
+        lastCommand: session.lastCommand || null,
+        uptimeSeconds,
+        isRunning,
+        createdAt: session.createdAt.toISOString()
+      };
+    });
+
+    const formatted = sessionList.map((s) => {
+      return (
+        `• ${s.id}\n` +
+        `  Status: ${s.isRunning ? 'connected' : 'disconnected'} (${s.status})\n` +
+        `  Target: ${s.target}\n` +
+        `  Last command: ${s.lastCommand || '(none)'}\n` +
+        `  Uptime: ${s.uptimeSeconds}s`
+      );
+    }).join('\n\n');
 
     return {
       content: [
         {
           type: 'text',
-          text: `Active sessions (${this.sessions.size}):\n\n${formatted}`,
+          text: `Active SSH sessions (${this.sessions.size}):\n\n${formatted}`,
         },
       ],
+      structuredContent: { sessions: sessionList, count: this.sessions.size }
     };
   }
 
@@ -411,21 +765,10 @@ export default class SshModule implements IUnifiedPlugin {
         ],
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      context.logger.error('ssh_close_session failed', {
-        component: this.manifest.id,
-        error,
+      return this.handleError(error, context, {
+        toolName: 'ssh_close_session',
         sessionId: args.session_id,
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-      };
     }
   }
 
@@ -454,30 +797,40 @@ export default class SshModule implements IUnifiedPlugin {
 
       const contentSource = session.historyLog || session.outputBuffer;
       const buffer = args.clean ? this.cleanOutput(contentSource) : contentSource;
+      const target = session.target;
+      const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
+      const isRunning = session.isConnected;
+      
+      const info = `Session: ${args.session_id}
+Target: ${targetStr}
+Status: ${isRunning ? 'connected' : 'disconnected'} (${session.isReady ? 'ready' : 'busy'})
+Buffer size: ${buffer.length} chars
+Last command: ${session.lastCommand || '(none)'}
+
+--- Buffer Content ---
+${buffer || '(empty)'}`;
+
       return {
         content: [
           {
             type: 'text',
-            text: buffer || '(Empty buffer)',
+            text: info,
           },
         ],
+        structuredContent: {
+          session_id: args.session_id,
+          target: target,
+          status: isRunning ? 'connected' : 'disconnected',
+          bufferSize: buffer.length,
+          lastCommand: session.lastCommand,
+          buffer: buffer
+        }
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      context.logger.error('ssh_get_buffer failed', {
-        component: this.manifest.id,
-        error,
+      return this.handleError(error, context, {
+        toolName: 'ssh_get_buffer',
         sessionId: args.session_id,
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-      };
     }
   }
 
@@ -509,23 +862,14 @@ export default class SshModule implements IUnifiedPlugin {
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      context.logger.error('ssh_upload_file failed', {
-        component: this.manifest.id,
-        error,
+      return this.handleError(error, context, {
+        toolName: 'ssh_upload_file',
         sessionId: args.session_id,
-        localPath: args.local_path,
-        remotePath: args.remote_path,
+        details: {
+          localPath: args.local_path,
+          remotePath: args.remote_path,
+        },
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-      };
     }
   }
 
@@ -557,23 +901,14 @@ export default class SshModule implements IUnifiedPlugin {
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      context.logger.error('ssh_download_file failed', {
-        component: this.manifest.id,
-        error,
+      return this.handleError(error, context, {
+        toolName: 'ssh_download_file',
         sessionId: args.session_id,
-        remotePath: args.remote_path,
-        localPath: args.local_path,
+        details: {
+          remotePath: args.remote_path,
+          localPath: args.local_path,
+        },
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-      };
     }
   }
 
@@ -601,6 +936,7 @@ export default class SshModule implements IUnifiedPlugin {
     if (!connection) {
       throw new Error('SSH session creation requires a remote target.');
     }
+    
     const shellPath = 'ssh';
     const args = this.buildSshArgs(connection);
 
@@ -623,6 +959,7 @@ export default class SshModule implements IUnifiedPlugin {
       ptyProcess,
       outputBuffer: '',
       isReady: true,
+      isConnected: true,
       lastCommand: '',
       createdAt: new Date(),
       target: connection,
@@ -636,7 +973,9 @@ export default class SshModule implements IUnifiedPlugin {
       }
     });
 
-    ptyProcess.onExit(() => {
+    ptyProcess.onExit((e: { exitCode: number; signal?: number }) => {
+      session.isConnected = false;
+      console.error(`[SSH] Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
       this.sessions.delete(sessionId);
     });
 
@@ -777,6 +1116,42 @@ export default class SshModule implements IUnifiedPlugin {
       .replace(/\r/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  private detectInteractivePrompts(output: string): { detected: boolean; type?: string; prompt?: string } {
+    const patterns = [
+      // Password/passphrase prompts
+      { regex: /(?:password|passphrase)[:\s]/i, type: 'password', suggestion: 'Use ssh_operate with input="your_password" to respond' },
+      // Yes/no confirmation
+      { regex: /(?:yes|no|continue|confirm|accept|approve|delete|overwrite)\s*[\(\[]?[yYnN]?[\)\]]?/i, type: 'yes_no', suggestion: 'Use ssh_operate with input="y" or input="n" to respond' },
+      // Interactive menu - select option
+      { regex: /(?:select|choose|option|menu|enter choice)[:\s]/i, type: 'menu', suggestion: 'Use ssh_operate with input="1" or the desired option number' },
+      // Press any key
+      { regex: /press\s+(any\s+)?key/i, type: 'any_key', suggestion: 'Use ssh_operate with input="" to press Enter' },
+      // Numbered menu
+      { regex: /\[\s*[0-9]+\s*\]\s*$/m, type: 'numbered_menu', suggestion: 'Use ssh_operate with input="1" or desired number' },
+      // Username prompt
+      { regex: /(?:login|username|user)[:\s]/i, type: 'username', suggestion: 'Use ssh_operate with input="username" to respond' },
+      // SSH host key verification
+      { regex: /(?:host\s+key|authenticity|are you sure|known hosts)/i, type: 'host_key', suggestion: 'Use ssh_operate with input="yes" to accept the host key' },
+      // Two-factor authentication
+      { regex: /(?:2fa|verification code|authenticator|sms code|token)[:\s]/i, type: '2fa', suggestion: 'Use ssh_operate with input="code" to provide the verification code' },
+      // sudo password
+      { regex: /\[sudo\]\s*password/i, type: 'sudo_password', suggestion: 'Use ssh_operate with input="sudo_password" to respond' },
+      // Terminal interrupt
+      { regex: /\^C\s*interrupt/i, type: 'interrupted', suggestion: 'Command was interrupted. Session may be waiting for input.' },
+      // EOF/end of file
+      // EOF/end of file
+      { regex: /(?:end of file|ctrl\+d|ctrl\+c)/i, type: 'eof', suggestion: 'Use ssh_operate with input="" to send EOF' },
+    ];
+
+    for (const pattern of patterns) {
+      const match = output.match(pattern.regex);
+      if (match) {
+        return { detected: true, type: pattern.type, prompt: match[0] };
+      }
+    }
+    return { detected: false };
   }
 
   private escapeRegex(value: string) {

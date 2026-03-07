@@ -28,6 +28,7 @@ import {
 import { Module, InfectedConfig } from '../../types/index.js'; // Adjusted path for types
 import logger from '../../core/logger.js'; // Import the new logger
 import { getRuntimeModuleRoot, resolveRuntimePath } from '../../utils/runtime-roots.js';
+import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
 
 export class FilesystemModule implements Module {
   name = 'filesystem';
@@ -56,7 +57,9 @@ export class FilesystemModule implements Module {
     const ReadTextFileArgsSchema = z.object({
       path: z.string(),
       tail: z.number().optional().describe('If provided, returns only the last N lines of the file'),
-      head: z.number().optional().describe('If provided, returns only the first N lines of the file')
+      head: z.number().optional().describe('If provided, returns only the first N lines of the file'),
+      start_line: z.number().int().min(1).optional().describe('Line number to start reading from (1-indexed)'),
+      end_line: z.number().int().min(1).optional().describe('Line number to end reading at (1-indexed, inclusive)')
     });
 
     const ReadMediaFileArgsSchema = z.object({
@@ -87,7 +90,7 @@ export class FilesystemModule implements Module {
     });
 
     const CreateDirectoryArgsSchema = z.object({
-      path: z.string(),
+      path: z.string().min(1, "Directory path cannot be empty"),
     });
 
     const ListDirectoryArgsSchema = z.object({
@@ -107,6 +110,7 @@ export class FilesystemModule implements Module {
     const MoveFileArgsSchema = z.object({
       source: z.string(),
       destination: z.string(),
+      overwrite: z.boolean().default(false).describe("Overwrite destination if it exists"),
     });
 
     const SearchFilesArgsSchema = z.object({
@@ -148,11 +152,22 @@ export class FilesystemModule implements Module {
         throw new Error("Cannot specify both head and tail parameters simultaneously");
       }
 
+      if (args.start_line !== undefined && args.end_line !== undefined && args.start_line > args.end_line) {
+        throw new Error("start_line must be less than or equal to end_line");
+      }
+
       let content: string;
       if (args.tail) {
         content = await tailFile(validPath, args.tail);
       } else if (args.head) {
         content = await headFile(validPath, args.head);
+      } else if (args.start_line !== undefined || args.end_line !== undefined) {
+        // Read specific line range
+        const fullContent = await readFileContent(validPath);
+        const lines = fullContent.split('\n');
+        const start = args.start_line ? args.start_line - 1 : 0;
+        const end = args.end_line ? args.end_line : lines.length;
+        content = lines.slice(start, end).join('\n');
       } else {
         content = await readFileContent(validPath);
       }
@@ -185,12 +200,15 @@ export class FilesystemModule implements Module {
           "if the file cannot be read. Use this tool when you need to examine " +
           "the contents of a single file. Use the 'head' parameter to read only " +
           "the first N lines of a file, or the 'tail' parameter to read only " +
-          "the last N lines of a file. Operates on the file as text regardless of extension. " +
+          "the last N lines of a file. Use 'start_line' and 'end_line' to read " +
+          "a specific range of lines. Operates on the file as text regardless of extension. " +
           "Only works within allowed directories.",
         inputSchema: {
           path: z.string(),
           tail: z.number().optional().describe("If provided, returns only the last N lines of the file"),
-          head: z.number().optional().describe("If provided, returns only the first N lines of the file")
+          head: z.number().optional().describe("If provided, returns only the first N lines of the file"),
+          start_line: z.number().int().min(1).optional().describe("Line number to start reading from (1-indexed)"),
+          end_line: z.number().int().min(1).optional().describe("Line number to end reading at (1-indexed, inclusive)")
         },
         outputSchema: { content: z.string() },
         annotations: { readOnlyHint: true }
@@ -258,7 +276,8 @@ export class FilesystemModule implements Module {
           "efficient than reading files one by one when you need to analyze " +
           "or compare multiple files. Each file's content is returned with its " +
           "path as a reference. Failed reads for individual files won't stop " +
-          "the entire operation. Only works within allowed directories.",
+          "the entire operation. Non-text files (images, binaries) will return " +
+          "an error as they require specialized tools. Only works within allowed directories.",
         inputSchema: {
           paths: z.array(z.string())
             .min(1)
@@ -272,7 +291,22 @@ export class FilesystemModule implements Module {
           args.paths.map(async (filePath: string) => {
             try {
               const validPath = await validatePath(filePath);
+              
+              // Check if file is likely binary
+              const ext = filePath.toLowerCase().split('.').pop();
+              const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg', 'mp3', 'mp4', 'wav', 'ogg', 'zip', 'tar', 'gz', 'rar', '7z', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
+              
+              if (ext && binaryExtensions.includes(ext)) {
+                return `${filePath}: Error - Binary file detected (${ext}). Use read_media_file tool for images/audio, or download the file directly.`;
+              }
+              
               const content = await readFileContent(validPath);
+              
+              // Check for binary content (null bytes)
+              if (content.includes('\0')) {
+                return `${filePath}: Error - Binary file detected. Contains null bytes. Use read_media_file tool for media files.`;
+              }
+              
               return `${filePath}:\n${content}\n`;
             } catch (error) {
               const errorMessage = error instanceof Error ? error.message : String(error);
@@ -294,10 +328,11 @@ export class FilesystemModule implements Module {
         title: "Write File",
         description:
           "Create a new file or completely overwrite an existing file with new content. " +
+          "Will create parent directories if they don't exist. " +
           "Use with caution as it will overwrite existing files without warning. " +
           "Handles text content with proper encoding. Only works within allowed directories.",
         inputSchema: {
-          path: z.string(),
+          path: z.string().min(1, "File path cannot be empty"),
           content: z.string()
         },
         outputSchema: { content: z.string() },
@@ -577,19 +612,38 @@ export class FilesystemModule implements Module {
         title: "Move File",
         description:
           "Move or rename files and directories. Can move files between directories " +
-          "and rename them in a single operation. If the destination exists, the " +
-          "operation will fail. Works across different directories and can be used " +
-          "for simple renaming within the same directory. Both source and destination must be within allowed directories.",
+          "and rename them in a single operation. Use overwrite=true to replace existing files. " +
+          "Works across different directories and can be used for simple renaming within " +
+          "the same directory. Both source and destination must be within allowed directories.",
         inputSchema: {
           source: z.string(),
-          destination: z.string()
+          destination: z.string(),
+          overwrite: z.boolean().default(false).describe("Overwrite destination if it exists")
         },
         outputSchema: { content: z.string() },
-        annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false }
+        annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true }
       },
       async (args: z.infer<typeof MoveFileArgsSchema>) => {
         const validSourcePath = await validatePath(args.source);
         const validDestPath = await validatePath(args.destination);
+        
+        // Check if destination exists
+        try {
+          await fs.access(validDestPath);
+          if (!args.overwrite) {
+            throw new Error(`Destination already exists: ${args.destination}. Use overwrite=true to replace.`);
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw error;
+          }
+          // ENOENT is fine - destination doesn't exist
+        }
+        
+        if (args.overwrite) {
+          await fs.unlink(validDestPath);
+        }
+        
         await fs.rename(validSourcePath, validDestPath);
         const text = `Successfully moved ${args.source} to ${args.destination}`;
         const contentBlock = { type: "text" as const, text };
