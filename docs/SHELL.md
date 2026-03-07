@@ -583,3 +583,16 @@ export EXECUTION_BACKEND=remote
 | `permissive` | Basic safety checks only |
 | `restrictive` | Read-only commands allowed |
 | `custom` | Fine-grained configuration |
+
+---
+
+## Error Handling
+
+The Shell module uses its own `MCPShellError` class for structured error handling. See [ERROR_HANDLING.md](./ERROR_HANDLING.md) for general error handling patterns.
+
+### Error Types
+
+| Error Type | Description |
+|------------|-------------|
+| `MCPShellError` | Base error class with error codes and details |
+| `ResourceNotFoundError` | Resource not found errors |

@@ -7,6 +7,7 @@ import { minimatch } from 'minimatch'; // External dependency
 import { normalizePath, expandHome } from './path-utils.js'; // Adapted import
 import { isPathWithinAllowedDirectories } from './path-validation.js'; // Adapted import
 import { getRuntimeModuleRoot } from '../../utils/runtime-roots.js';
+import { createErrorResponse, ERROR_CODES, getErrorSuggestion, type ErrorCode } from '../../core/tool-error.js';
 
 // Global allowed directories - set by the main module
 let allowedDirectories: string[] = [];
@@ -107,6 +108,21 @@ function resolveRelativePathAgainstAllowedDirectories(relativePath: string): str
 }
 
 // Security & Validation Functions
+export class FilesystemError extends Error {
+  constructor(
+    message: string,
+    public code: ErrorCode,
+    public suggestion?: string
+  ) {
+    super(message);
+    this.name = 'FilesystemError';
+  }
+}
+
+function throwFilesystemError(message: string, code: ErrorCode, customSuggestion?: string): never {
+  throw new FilesystemError(message, code, customSuggestion || getErrorSuggestion(code));
+}
+
 export async function validatePath(requestedPath: string): Promise<string> {
   const expandedPath = expandHome(requestedPath);
   const absolute = path.isAbsolute(expandedPath)
@@ -118,7 +134,10 @@ export async function validatePath(requestedPath: string): Promise<string> {
   // Security: Check if path is within allowed directories before any file operations
   const isAllowed = isPathWithinAllowedDirectories(normalizedRequested, allowedDirectories);
   if (!isAllowed) {
-    throw new Error(`Access denied - path outside allowed directories: ${absolute} not in ${allowedDirectories.join(', ')}`);
+    throwFilesystemError(
+      `Access denied - path outside allowed directories: ${absolute} not in ${allowedDirectories.join(', ')}`,
+      ERROR_CODES.PATH_OUTSIDE_ALLOWED
+    );
   }
 
   // Security: Handle symlinks by checking their real path to prevent symlink attacks
@@ -127,23 +146,31 @@ export async function validatePath(requestedPath: string): Promise<string> {
     const realPath = await fs.realpath(absolute);
     const normalizedReal = normalizePath(realPath);
     if (!isPathWithinAllowedDirectories(normalizedReal, allowedDirectories)) {
-      throw new Error(`Access denied - symlink target outside allowed directories: ${realPath} not in ${allowedDirectories.join(', ')}`);
+      throwFilesystemError(
+        `Access denied - symlink target outside allowed directories: ${realPath} not in ${allowedDirectories.join(', ')}`,
+        ERROR_CODES.PATH_OUTSIDE_ALLOWED
+      );
     }
     return realPath;
   } catch (error) {
     // Security: For new files that don't exist yet, verify parent directory
-    // This ensures we can't create files in unauthorized locations
+    // Skip this check for operations that use recursive creation (like mkdir with recursive: true)
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       const parentDir = path.dirname(absolute);
       try {
         const realParentPath = await fs.realpath(parentDir);
         const normalizedParent = normalizePath(realParentPath);
         if (!isPathWithinAllowedDirectories(normalizedParent, allowedDirectories)) {
-          throw new Error(`Access denied - parent directory outside allowed directories: ${realParentPath} not in ${allowedDirectories.join(', ')}`);
+          throwFilesystemError(
+            `Access denied - parent directory outside allowed directories: ${realParentPath} not in ${allowedDirectories.join(', ')}`,
+            ERROR_CODES.PATH_OUTSIDE_ALLOWED
+          );
         }
         return absolute;
-      } catch {
-        throw new Error(`Parent directory does not exist: ${parentDir}`);
+      } catch (parentError) {
+        // Parent doesn't exist - let the caller handle with recursive creation
+        // Don't throw here since tools like create_directory with recursive: true handle this
+        return absolute;
       }
     }
     throw error;
@@ -259,7 +286,11 @@ export async function applyFileEdits(
     }
 
     if (!matchFound) {
-      throw new Error(`Could not find exact match for edit:\n${edit.oldText}`);
+      throwFilesystemError(
+        `Could not find exact match for edit. The old text may have already been modified or doesn't exist in the file.`,
+        ERROR_CODES.INVALID_INPUT,
+        'Make sure the exact text exists in the file before editing'
+      );
     }
   }
 

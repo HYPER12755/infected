@@ -146,19 +146,24 @@ export class TerminalManager {
   }
 
   private getShellCommand(shellType: ShellType): { command: string; args: string[] } {
+    const fs = require('node:fs');
+    const checkShell = (path: string) => {
+      try { fs.accessSync(path); return path; } catch { return null; }
+    };
+    
     switch (shellType) {
       case 'bash':
-        return { command: '/bin/bash', args: ['--login'] };
+        return { command: checkShell('/bin/bash') || checkShell('/usr/bin/bash') || '/bin/sh', args: ['--login'] };
       case 'zsh':
-        return { command: '/bin/zsh', args: ['--login'] };
+        return { command: checkShell('/bin/zsh') || checkShell('/usr/bin/zsh') || '/bin/sh', args: ['--login'] };
       case 'fish':
-        return { command: '/usr/bin/fish', args: ['--login'] };
+        return { command: checkShell('/usr/bin/fish') || '/bin/sh', args: ['--login'] };
       case 'cmd':
         return { command: 'cmd.exe', args: [] };
       case 'powershell':
         return { command: 'powershell.exe', args: ['-NoLogo'] };
       default:
-        return { command: '/bin/bash', args: ['--login'] };
+        return { command: checkShell('/bin/bash') || '/bin/sh', args: ['--login'] };
     }
   }
 

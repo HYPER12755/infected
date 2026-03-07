@@ -28,7 +28,6 @@ import { ToolLoader } from './core/tool-loader.js';
 import { PluginLoader } from './core/plugin-loader.js';
 import { ToolCacheManager } from './core/tool-cache-manager.js';
 import { generateRandomTokens } from './auth/random-token-generator.js';
-import { LogBroadcastManager } from './core/log-broadcast-manager.js';
 
 export class InfectedServer {
   private server: McpServer;
@@ -45,7 +44,6 @@ export class InfectedServer {
   private moduleManager!: ModuleManager; // Add ModuleManager property
   private toolLoader!: ToolLoader; // Add ToolLoader property
   private pluginLoader!: PluginLoader; // Add PluginLoader property
-  private logBroadcastManager: LogBroadcastManager;
   private app!: express.Application; // Declare the Express app property
 
 
@@ -68,7 +66,6 @@ export class InfectedServer {
         },
       }
     });
-    this.logBroadcastManager = new LogBroadcastManager(this.server);
   }
 
   private async _loadConfiguration(): Promise<void> {
@@ -214,7 +211,6 @@ export class InfectedServer {
 
 
   async start() {
-    this.logBroadcastManager.start();
     logger.info('Server starting...');
     await this._loadConfiguration();
     this._initializeManagers();
@@ -294,6 +290,5 @@ export class InfectedServer {
     await toolLoader.stop(); // Stop ToolLoader's listeners and deregister tools
     await pluginLoader.stop(); // Stop PluginLoader's listeners and unload plugins
     this.toolCacheManager.stopCleanupInterval(); // Stop tool cache cleanup
-    this.logBroadcastManager.stop();
   }
 }

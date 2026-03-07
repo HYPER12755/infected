@@ -67,7 +67,6 @@ export class MCPShellServer {
       {
         capabilities: {
           tools: {},
-          logging: {}, // Enable log notification functionality
         },
       }
     );

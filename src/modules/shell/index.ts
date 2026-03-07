@@ -90,6 +90,7 @@ function formatExecutionText(result: unknown): string {
   const executionId = asString(data['execution_id']);
   const status = asString(data['status']);
   const exitCode = asNumber(data['exit_code']);
+  const pid = asNumber(data['process_id']);
   const duration = asNumber(data['execution_time_ms']);
   const workingDirectory = asString(data['working_directory']);
   const stdout = asString(data['stdout']) || '';
@@ -100,6 +101,7 @@ function formatExecutionText(result: unknown): string {
 
   if (executionId) lines.push(`execution_id: ${executionId}`);
   if (status) lines.push(`status: ${status}`);
+  if (pid) lines.push(`process_id: ${pid}`);
   if (exitCode !== undefined) lines.push(`exit_code: ${exitCode}`);
   if (duration !== undefined) lines.push(`execution_time_ms: ${duration}`);
   if (workingDirectory) lines.push(`working_directory: ${workingDirectory}`);
@@ -131,10 +133,12 @@ function formatProcessListText(result: unknown): string {
   for (const entry of processes.slice(0, 20)) {
     const item = asRecord(entry);
     const id = asString(item['execution_id']) || asString(item['id']) || 'unknown';
+    const pid = asNumber(item['process_id']);
     const status = asString(item['status']) || 'unknown';
     const command = (asString(item['command']) || '').replace(/\s+/g, ' ').trim();
-    const preview = command.length > 80 ? `${command.slice(0, 77)}...` : command;
-    lines.push(`${id} | ${status}${preview ? ` | ${preview}` : ''}`);
+    const preview = command.length > 60 ? `${command.slice(0, 57)}...` : command;
+    const pidStr = pid ? `pid:${pid}` : '';
+    lines.push(`${id} | ${status}${pidStr ? ` | ${pidStr}` : ''}${preview ? ` | ${preview}` : ''}`);
   }
 
   if (processes.length > 20) {
@@ -213,6 +217,7 @@ function formatTerminalInfoText(result: unknown): string {
 function formatTerminalOperateText(result: unknown): string {
   const data = asRecord(result);
   const terminalId = asString(data['terminal_id']) || 'unknown';
+  const sessionId = asString(data['session_id']);
   const success = data['success'] === true;
   const inputRejected = data['input_rejected'] === true;
   const reason = asString(data['reason']);
@@ -222,8 +227,11 @@ function formatTerminalOperateText(result: unknown): string {
   const outputInfo = asRecord(data['output_info']);
   const hasMore = outputInfo['has_more'] === true;
   const lineCount = asNumber(outputInfo['line_count']);
+  const processId = asNumber(data['process_id']);
 
   const lines: string[] = [`terminal_id: ${terminalId}`, `success: ${success}`];
+  if (sessionId) lines.push(`session_id: ${sessionId}`);
+  if (processId) lines.push(`process_id: ${processId}`);
   lines.push(`strip_ansi: ${shouldStripAnsi}`);
   if (inputRejected) lines.push('input_rejected: true');
   if (reason) lines.push(`reason: ${reason}`);
