@@ -20,15 +20,14 @@ The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager*
 - Returns command output, exit code, and execution duration
 - **Code**: `executeCommand()` (lines 619-673), `handleSshExecute()` (lines 243-295)
 
-### 3. **Session Management**
-- Create new sessions with optional shell override
++### 3. **Session Management**
+- Create new sessions by supplying a remote target (host, user, port, etc.)
 - List all active sessions with metadata (status, uptime, last command)
 - Close and clean up sessions
 - **Code**: `handleSshNewSession()` (lines 297-332), `handleListSessions()` (lines 334-365), `handleCloseSession()` (lines 367-403)
 
-### 4. **Output Buffer Inspection**
-- Read the raw terminal buffer for any session
-- Option to strip ANSI control sequences for clean output
+- Read the full history log (commands and outputs) for any session
+- Option to strip ANSI/control sequences for clean output
 - **Code**: `handleGetBuffer()` (lines 405-461), `cleanOutput()` (lines 708-727)
 
 ### 5. **File Transfer (Upload/Download)**
@@ -43,21 +42,21 @@ The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager*
 
 ### Connection & Session Establishment
 
-The module does **NOT** establish actual SSH connections to remote hosts. Instead, it creates **local PTY (pseudo-terminal) sessions** that simulate an SSH-like experience:
+The module only establishes real SSH connections. `ssh_new_session` now requires a `target` object (host, user, port, identity file, etc.). It runs the `ssh` binary to keep an interactive session open on that remote host, and every later `ssh_execute`, upload, download or buffer access works inside that remote shell. There is no local shell fallback, so you cannot run commands on the controller host from these tools anymore.
 
 ```
 createSession() (lines 576-617):
-1. Determines shell path (default: /bin/bash on Linux, powershell.exe on Windows)
-2. Spawns a PTY process with node-pty
+1. Builds `ssh` arguments from the requested host/user/port/identityFile
+2. Spawns a PTY process that runs the `ssh` client with `-tt`, `BatchMode=yes`, and the extra args
 3. Configures terminal (160 cols, 40 rows, xterm-256color)
-4. Inherits entire process.env (SECURITY ISSUE: leaks environment variables - lines 586-592)
+4. Inherits entire process.env (SSH credentials taken from agent/identity file)
 5. Attaches data handler to buffer PTY output
 6. Stores session in Map<string, TerminalSession>
 ```
 
 ### Authentication
 
-There is **no authentication** in this module - it runs commands in the local shell with the same privileges as the parent process. This is by design since it's intended for local command execution.
+The module relies on the SSH client’s own authentication (keys/passwords configured on the target). When you specify `identityFile` or rely on agent forwarding, SSH handles credentials; the tool never stores passwords directly.
 
 ### Command Execution Workflow
 

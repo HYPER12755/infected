@@ -125,6 +125,7 @@ Comprehensive documentation is available to help you get started and master Infe
 | 🌐 **[API_ENDPOINTS.md](docs/API_ENDPOINTS.md)** | HTTP API reference |
 | 🔒 **[MCP_SERVER.md](docs/MCP_SERVER.md)** | MCP server implementation details |
 | 🖥️ **[SHELL.md](docs/SHELL.md)** | Shell module deep dive |
+| ⚡ **[REALTIME-OUTPUT.md](docs/REALTIME-OUTPUT.md)** | Real-time output streaming guide |
 | 📁 **[FILESYSTEM.md](docs/FILESYSTEM.md)** | Filesystem module reference |
 | 🧠 **[MEMORY.md](docs/MEMORY.md)** | Memory module guide |
 | 💭 **[SEQUENTALTHINKING.md](docs/SEQUENTALTHINKING.md)** | Sequential thinking module docs |

@@ -581,6 +581,34 @@ export class ModuleManager extends EventEmitter {
     skipTimeout: boolean = false
   ): () => void {
     const associatedModuleId = moduleId ?? toolId;
+    const formatToolOutput = (result: any) => {
+      if (!result) return '';
+      const content = result.content;
+      if (!content) return '';
+      if (Array.isArray(content)) {
+        return content
+          .map((entry) =>
+            typeof entry?.text === 'string' ? entry.text : JSON.stringify(entry ?? '')
+          )
+          .filter(Boolean)
+          .join(' | ');
+      }
+      if (typeof content === 'object' && typeof content.text === 'string') {
+        return content.text;
+      }
+      return typeof content === 'string' ? content : '';
+    };
+
+    const logToolInvocation = (label: string, args: any, result?: any) => {
+      logger.info(`Tool ${toolId} ${label}`, {
+        toolId,
+        label,
+        args,
+        output: formatToolOutput(result),
+        structuredContent: result?.structuredContent,
+      });
+    };
+
     const permissionAndCachedAndMonitoredExecute = async (args: any) => {
       const startTime = hrtime.bigint();
       let success = false;
@@ -594,15 +622,16 @@ export class ModuleManager extends EventEmitter {
         }
 
         // Only cache if caching is enabled and tool inputs are defined in its manifest
-        if (this.config.cache?.enabled && toolModule?.manifest.inputs) {
-          const cacheKey = toolId;
-          const cachedResult = this.toolCacheManager.get(cacheKey, args);
-          if (cachedResult) {
-            logger.debug(`Returning cached result for tool: ${toolId}`);
-            isCached = true;
-            result = cachedResult;
+          if (this.config.cache?.enabled && toolModule?.manifest.inputs) {
+            const cacheKey = toolId;
+            const cachedResult = this.toolCacheManager.get(cacheKey, args);
+            if (cachedResult) {
+              logger.debug(`Returning cached result for tool: ${toolId}`);
+              isCached = true;
+              result = cachedResult;
+              logToolInvocation('cache hit', args, cachedResult);
+            }
           }
-        }
 
         if (!isCached) {
           if (skipTimeout) {
@@ -617,6 +646,7 @@ export class ModuleManager extends EventEmitter {
             ]);
           }
           success = true;
+          logToolInvocation('executed', args, result);
           if (this.config.cache?.enabled && toolModule?.manifest.inputs) {
             const cacheKey = toolId;
             this.toolCacheManager.set(cacheKey, args, result);
@@ -626,6 +656,11 @@ export class ModuleManager extends EventEmitter {
         }
       } catch (error) {
         success = false;
+        logger.error(`Tool ${toolId} failed`, {
+          toolId,
+          args,
+          error: error instanceof Error ? error.message : String(error),
+        });
         throw error;
       } finally {
         const endTime = hrtime.bigint();
