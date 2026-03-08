@@ -339,6 +339,33 @@ The Filesystem module implements the `Module` interface:
 
 ---
 
+## Error Handling
+
+The Filesystem module uses standardized error responses with error codes and recovery suggestions. See [ERROR_HANDLING.md](./ERROR_HANDLING.md) for detailed documentation.
+
+### Common Error Codes
+
+| Error Code | Description |
+|------------|-------------|
+| `NOT_FOUND` | File or directory not found |
+| `PERMISSION_DENIED` | Access denied to file/directory |
+| `PATH_OUTSIDE_ALLOWED` | Path is outside allowed directories |
+| `INVALID_PATH` | Path is invalid |
+| `DIRECTORY_NOT_EMPTY` | Cannot delete non-empty directory |
+| `FILE_ALREADY_EXISTS` | File already exists |
+| `INVALID_INPUT` | Invalid input parameters |
+
+### Example Error Response
+
+```
+Error: Access denied - path outside allowed directories: /etc/passwd not in /root/sandbox
+Code: PATH_OUTSIDE_ALLOWED
+
+Suggestion: The path is outside the allowed directories
+```
+
+---
+
 ## Known Issues
 
 | Issue | Location | Severity |

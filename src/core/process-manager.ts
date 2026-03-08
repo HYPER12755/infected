@@ -1,5 +1,6 @@
-import { spawn, ChildProcess } from 'node:child_process'; // Use node:child_process
-import * as fs from 'node:fs/promises'; // Use node:fs/promises
+import { spawn, ChildProcess, execSync } from 'node:child_process'; // Use node:child_process
+import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs'; // Use node:fs/promises
 import * as path from 'node:path'; // Use node:path
 import {
   ExecutionInfo,
@@ -31,6 +32,38 @@ import { FileStorageSubscriber } from './file-storage-subscriber.js'; // Adapted
 import { StreamingPipelineReader } from './streaming-pipeline-reader.js'; // Adapted import
 import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // Adapted import
 import logger from './logger.js'; // Use our central logger
+
+// Shell detection helper - finds available shell
+function getShellPath(): string {
+  const shells = ['/bin/bash', '/usr/bin/bash', '/bin/sh', '/usr/bin/sh', '/bin/zsh', '/usr/bin/zsh'];
+  for (const shell of shells) {
+    try {
+      fsSync.accessSync(shell);
+      return shell;
+    } catch {
+      continue;
+    }
+  }
+  // Fallback to SHELL env var
+  const fallback = process.env.SHELL;
+  if (fallback) {
+    try {
+      fsSync.accessSync(fallback);
+      return fallback;
+    } catch {}
+  }
+  logger.warn('Could not find standard shell, defaulting to /bin/sh');
+  return '/bin/sh';
+}
+
+// Cached shell path
+let cachedShellPath: string | null = null;
+function getCachedShellPath(): string {
+  if (!cachedShellPath) {
+    cachedShellPath = getShellPath();
+  }
+  return cachedShellPath;
+}
 
 // Define TerminalOptions here or import from our types if they exist
 export interface TerminalOptions {
@@ -544,7 +577,8 @@ export class ProcessManager {
       );
 
       // プロセスの起動
-      const childProcess = spawn('/bin/bash', ['-c', options.command], {
+      const shellPath = getCachedShellPath();
+      const childProcess = spawn(shellPath, ['-c', options.command], {
         cwd: this.resolveWorkingDirectory(options.workingDirectory),
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -716,7 +750,7 @@ export class ProcessManager {
     // 1. フォアグラウンドタイムアウトに達した場合
     // 2. 出力サイズ制限に達した場合
     const returnPartialOnTimeout = options.returnPartialOnTimeout ?? true;
-    const foregroundTimeout = options.foregroundTimeoutSeconds ?? 10;
+    const foregroundTimeout = options.foregroundTimeoutSeconds ?? 480;
 
     return new Promise((resolve, reject) => {
       const startTime = Date.now();
@@ -732,7 +766,8 @@ export class ProcessManager {
       );
 
       // プロセスの起動（バックグラウンド対応）
-      const childProcess = spawn('/bin/bash', ['-c', options.command], {
+      const shellPath = getCachedShellPath();
+      const childProcess = spawn(shellPath, ['-c', options.command], {
         cwd: this.resolveWorkingDirectory(options.workingDirectory),
         env,
         stdio: ['pipe', 'pipe', 'pipe'],

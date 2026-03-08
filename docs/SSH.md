@@ -24,7 +24,16 @@ The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager*
 - Create new sessions by supplying a remote target (host, user, port, etc.)
 - List all active sessions with metadata (status, uptime, last command)
 - Close and clean up sessions
-- **Code**: `handleSshNewSession()` (lines 297-332), `handleListSessions()` (lines 334-365), `handleCloseSession()` (lines 367-403)
+- **Code**: `handleSshNewSession()`, `handleListSessions()`, `handleCloseSession()`
+
++### 4. **Unified SSH Operations (`ssh_operate`)**
+- Combines session creation, command execution, and output retrieval in a single tool
+- Can create new sessions on-the-fly by providing a `target` parameter
+- Use existing sessions by providing `session_id`
+- Send commands or input to sessions
+- Automatically retrieve output with configurable delay
+- Option to strip ANSI/control sequences
+- **Code**: `handleSshOperate()`, `formatSshOperateText()`
 
 - Read the full history log (commands and outputs) for any session
 - Option to strip ANSI/control sequences for clean output
@@ -99,6 +108,7 @@ executeCommand() (lines 619-673):
 |----------|------|
 | `registerSshExecute()` | Registers `ssh_execute` tool with the module manager |
 | `registerSshNewSession()` | Registers `ssh_new_session` tool |
+| `registerSshOperate()` | Registers `ssh_operate` tool (unified operations) |
 | `registerSshListSessions()` | Registers `ssh_list_sessions` tool |
 | `registerSshCloseSession()` | Registers `ssh_close_session` tool |
 | `registerSshBuffer()` | Registers `ssh_get_buffer` tool |
@@ -109,13 +119,14 @@ executeCommand() (lines 619-673):
 
 | Function | Role |
 |----------|------|
-| `handleSshExecute()` (243-295) | Validates args, gets/creates session, executes command, returns formatted response |
-| `handleSshNewSession()` (297-332) | Creates new named session |
-| `handleListSessions()` (334-365) | Returns formatted list of all sessions |
-| `handleCloseSession()` (367-403) | Kills PTY process and removes session |
-| `handleGetBuffer()` (405-461) | Returns raw or cleaned buffer content |
-| `handleUploadFile()` (463-509) | Handles file upload flow |
-| `handleDownloadFile()` (511-557) | Handles file download flow |
+| `handleSshExecute()` | Validates args, gets/creates session, executes command, returns formatted response |
+| `handleSshNewSession()` | Creates new named session |
+| `handleSshOperate()` | Unified handler: creates sessions, sends input, retrieves output |
+| `handleListSessions()` | Returns formatted list of all sessions |
+| `handleCloseSession()` | Kills PTY process and removes session |
+| `handleGetBuffer()` | Returns raw or cleaned buffer content |
+| `handleUploadFile()` | Handles file upload flow |
+| `handleDownloadFile()` | Handles file download flow |
 
 ### Utility Functions
 
@@ -136,12 +147,13 @@ executeCommand() (lines 619-673):
 
 | Schema | Purpose |
 |--------|---------|
-| `sshExecuteSchema` (24-44) | Validates command, session_id, timeout, allowFailure |
-| `sshNewSessionSchema` (46-49) | Validates session_id, optional shell override |
-| `sshCloseSessionSchema` (51-53) | Validates session_id |
-| `sshBufferSchema` (55-62) | Validates session_id, clean flag |
-| `sshUploadSchema` (64-80) | Validates session_id, local_path, remote_path, timeout |
-| `sshDownloadSchema` (82-98) | Validates session_id, remote_path, local_path, timeout |
+| `sshExecuteSchema` | Validates command, session_id, timeout, allowFailure |
+| `sshNewSessionSchema` | Validates session_id, target |
+| `sshOperateSchema` | Validates session_id, target, command, input, execute, get_output, output_delay_ms, clean, timeout |
+| `sshCloseSessionSchema` | Validates session_id |
+| `sshBufferSchema` | Validates session_id, clean flag |
+| `sshUploadSchema` | Validates session_id, local_path, remote_path, timeout |
+| `sshDownloadSchema` | Validates session_id, remote_path, local_path, timeout |
 
 ---
 
@@ -189,9 +201,9 @@ Return: { content: [{type: 'text', text: ...}], structuredContent: {...} }
 
 The SSH module follows the `IUnifiedPlugin` interface:
 
-1. **onLoad()** (lines 115-124): Registers 7 tools with the module manager
-2. **onUnload()** (lines 126-139): Cleans up all sessions and deregisters tools
-3. **Manifest** (lines 101-110): Declares plugin ID, name, version, provided features
+1. **onLoad()**: Registers 8 tools with the module manager
+2. **onUnload()**: Cleans up all sessions and deregisters tools
+3. **Manifest**: Declares plugin ID, name, version, provided features
 
 ### How Other Modules/Components Use It
 
@@ -256,9 +268,107 @@ The SSH module follows the `IUnifiedPlugin` interface:
          structuredContent: { sessionId, command, exitCode: 0, durationMs: 156 }
        }
 
-7. SESSION STATE
-   └─> session.isReady = true
-   └─> session.lastCommand = "ls -la"
+ 7. SESSION STATE
+    └─> session.isReady = true
+    └─> session.lastCommand = "ls -la"
+```
+
+---
+
+## Example Workflow: Using `ssh_operate` (Unified Tool)
+
+### Scenario: Create session and execute command in one call
+
+```
+Client calls ssh_operate with:
+{
+  target: { host: "server.example.com", user: "admin", port: 22 },
+  command: "uname -a",
+  get_output: true,
+  clean: true
+}
+```
+
+```
+1. REQUEST RECEIVED
+   └─> moduleManager routes to handleSshOperate()
+
+2. INPUT VALIDATION
+   └─> sshOperateSchema.parse({ target, command, get_output, clean })
+
+3. SESSION CREATION (no session_id provided)
+   └─> Generate session ID: "session_{timestamp}"
+   └─> createSession() spawns SSH PTY to remote host
+   └─> Wait 500ms for connection
+
+4. COMMAND EXECUTION
+   └─> executeCommand() runs "uname -a" via PTY
+   └─> Extracts output between markers
+   └─> Returns exit code and output
+
+5. OUTPUT RETRIEVAL (get_output: true)
+   └─> Wait output_delay_ms (default 500ms)
+   └─> Get buffer content
+   └─> cleanOutput() removes ANSI sequences
+
+6. RESPONSE
+   └─> formatSshOperateText() formats output:
+   └─> Return:
+   {
+     content: [{ type: 'text', text: 'Linux server 5.4.0 #1 SMP...' }],
+     structuredContent: {
+       session_id: "session_1234567890",
+       session_created: true,
+       target: { host: "server.example.com", port: 22, user: "admin" },
+       command: "uname -a",
+       exit_code: 0,
+       output: "Linux server 5.4.0..."
+     }
+   }
+```
+
+### Scenario: Using existing session
+
+```
+Client calls ssh_operate with:
+{
+  session_id: "my-session",
+  command: "df -h",
+  get_output: true
+}
+```
+
+- Session is retrieved from sessions Map
+- Command is executed in existing session
+- Output is returned without creating new session
+
+---
+
+## Error Handling
+
+The SSH module uses standardized error responses with error codes and recovery suggestions. See [ERROR_HANDLING.md](./ERROR_HANDLING.md) for detailed documentation.
+
+### Common Error Codes
+
+| Error Code | Description |
+|------------|-------------|
+| `SESSION_NOT_FOUND` | Session does not exist |
+| `SESSION_BUSY` | Session is executing another command |
+| `SESSION_EXISTS` | Session with same ID already exists |
+| `CONNECTION_FAILED` | Cannot connect to SSH server |
+| `AUTHENTICATION_FAILED` | SSH authentication failed |
+| `COMMAND_TIMEOUT` | Command execution timed out |
+
+### Example Error Response
+
+```
+Error: Session my-session not found
+Code: SESSION_NOT_FOUND
+Details:
+  tool: ssh_execute
+  sessionId: my-session
+
+Suggestion: Create a new session using ssh_new_session or provide target in ssh_operate
 ```
 
 ---

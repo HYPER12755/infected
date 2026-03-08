@@ -431,7 +431,7 @@ Hot reloading is enabled by default. To disable:
 1. **Single Responsibility** - One clear purpose per tool
 2. **Idempotency** - Running multiple times yields same result
 3. **Input Validation** - Use Zod schemas for all inputs
-4. **Error Handling** - Return structured errors
+4. **Error Handling** - Return structured errors (see [ERROR_HANDLING.md](./ERROR_HANDLING.md))
 5. **Logging** - Use context.logger with component ID
 6. **Documentation** - Clear description in manifest
 
@@ -515,13 +515,16 @@ class CalculatorTool implements IUnifiedTool {
           ? `Error: ${error}`
           : `${a} ${operation} ${b} = ${result}`
       }],
-      structuredContent: { operation, a, b, result, error }
+      structuredContent: { operation, a, b, result, error },
+      isError: !!error  // Set isError flag for tool errors
     };
   }
 }
 
 export default CalculatorTool;
 ```
+
+> **Note:** For production-grade error handling, use the centralized error utility from `src/core/tool-error.js`. See [ERROR_HANDLING.md](./ERROR_HANDLING.md) for details.
 
 ### Example 2: File Search Plugin
 

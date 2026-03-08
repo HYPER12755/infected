@@ -61,8 +61,8 @@ export const ShellExecuteParamsSchema = z
       .number()
       .int()
       .min(1)
-      .max(300)
-      .default(15)
+      .max(480)
+      .default(480)
       .describe(
         'For adaptive mode: timeout in seconds for the initial foreground phase before switching to background execution. Range: 1-300 seconds (maximum 300). If you need a longer timeout, use execution_mode "background" or "adaptive". Values above 300 will be rejected.'
       ),

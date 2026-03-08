@@ -1,0 +1,9 @@
+export function listenServer(server, host, port) {
+    return new Promise((resolve, reject) => {
+        server.listen(port, host, () => resolve());
+        server.once('error', reject);
+    });
+}
+export function closeServer(server) {
+    return new Promise((resolve) => server.close(() => resolve()));
+}

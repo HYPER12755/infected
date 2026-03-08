@@ -10,8 +10,8 @@ export const ProcessManagerConfigSchema = z.object({
 }).default({});
 
 export const InfectedConfigSchema = z.object({
-  transport: z.union([z.literal('stdio'), z.literal('http'), z.literal('sse')]).default('stdio'),
-  modules: z.array(z.string()).default(['shell', 'filesystem', 'memory', 'sequentialthinking', 'fetch']),
+  transport: z.union([z.literal('stdio'), z.literal('http'), z.literal('sse'), z.literal('websocket')]).default('stdio'),
+  modules: z.array(z.string()).default(['shell', 'filesystem', 'memory', 'sequentialthinking', 'fetch', 'system']),
   port: z.number().int().positive().default(3000),
   hotReload: z.boolean().default(false),
   toolsDir: z.string().default('./tools'),

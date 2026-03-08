@@ -152,7 +152,33 @@ export class KnowledgeGraphManager {
   }
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
+    const errors: string[] = [];
+    
+    // Validate entities
+    for (const entity of entities) {
+      if (!entity.name || typeof entity.name !== 'string' || entity.name.trim() === '') {
+        errors.push('Entity name is required and must be a non-empty string');
+      }
+      if (!entity.entityType || typeof entity.entityType !== 'string') {
+        errors.push(`Entity "${entity.name}": entityType is required`);
+      }
+      if (!Array.isArray(entity.observations)) {
+        errors.push(`Entity "${entity.name}": observations must be an array`);
+      }
+    }
+    
+    if (errors.length > 0) {
+      throw new Error(`Validation failed: ${errors.join('; ')}`);
+    }
+    
     const graph = await this.loadGraph();
+    
+    // Check for duplicates
+    const duplicates = entities.filter(e => graph.entities.some(existingEntity => existingEntity.name === e.name));
+    if (duplicates.length > 0) {
+      throw new Error(`Entities already exist: ${duplicates.map(e => e.name).join(', ')}`);
+    }
+    
     const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name));
     graph.entities.push(...newEntities);
     await this.saveGraph(graph);
@@ -160,7 +186,47 @@ export class KnowledgeGraphManager {
   }
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
+    const errors: string[] = [];
+    
+    // Validate relations
+    for (const relation of relations) {
+      if (!relation.from || typeof relation.from !== 'string' || relation.from.trim() === '') {
+        errors.push('Relation "from" is required and must be a non-empty string');
+      }
+      if (!relation.to || typeof relation.to !== 'string' || relation.to.trim() === '') {
+        errors.push('Relation "to" is required and must be a non-empty string');
+      }
+      if (!relation.relationType || typeof relation.relationType !== 'string') {
+        errors.push(`Relation (${relation.from} -> ${relation.to}): relationType is required`);
+      }
+    }
+    
+    if (errors.length > 0) {
+      throw new Error(`Validation failed: ${errors.join('; ')}`);
+    }
+    
     const graph = await this.loadGraph();
+    
+    // Check if entities exist
+    const missingEntities = relations.filter(r => 
+      !graph.entities.some(e => e.name === r.from) || 
+      !graph.entities.some(e => e.name === r.to)
+    );
+    if (missingEntities.length > 0) {
+      const missing = missingEntities.map(r => !graph.entities.some(e => e.name === r.from) ? r.from : r.to).filter((v, i, a) => a.indexOf(v) === i);
+      throw new Error(`Entities not found: ${missing.join(', ')}. Create entities first before creating relations.`);
+    }
+    
+    // Check for duplicates
+    const duplicates = relations.filter(r => graph.relations.some(existingRelation => 
+      existingRelation.from === r.from && 
+      existingRelation.to === r.to && 
+      existingRelation.relationType === r.relationType
+    ));
+    if (duplicates.length > 0) {
+      throw new Error(`Relations already exist: ${duplicates.map(r => `${r.from} --${r.relationType}--> ${r.to}`).join(', ')}`);
+    }
+    
     const newRelations = relations.filter(r => !graph.relations.some(existingRelation => 
       existingRelation.from === r.from && 
       existingRelation.to === r.to && 
@@ -186,32 +252,67 @@ export class KnowledgeGraphManager {
     return results;
   }
 
-  async deleteEntities(entityNames: string[]): Promise<void> {
+  async deleteEntities(entityNames: string[]): Promise<{ deleted: string[]; notFound: string[] }> {
     const graph = await this.loadGraph();
+    const existingNames = entityNames.filter(name => graph.entities.some(e => e.name === name));
+    const notFound = entityNames.filter(name => !graph.entities.some(e => e.name === name));
+    
     graph.entities = graph.entities.filter(e => !entityNames.includes(e.name));
     graph.relations = graph.relations.filter(r => !entityNames.includes(r.from) && !entityNames.includes(r.to));
     await this.saveGraph(graph);
+    
+    return { deleted: existingNames, notFound };
   }
 
-  async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<void> {
+  async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<{ deleted: { entityName: string; observations: string[] }[]; notFound: string[] }> {
     const graph = await this.loadGraph();
-    deletions.forEach(d => {
+    const deleted: { entityName: string; observations: string[] }[] = [];
+    const notFound: string[] = [];
+    
+    for (const d of deletions) {
       const entity = graph.entities.find(e => e.name === d.entityName);
-      if (entity) {
-        entity.observations = entity.observations.filter(o => !d.observations.includes(o));
+      if (!entity) {
+        notFound.push(d.entityName);
+        continue;
       }
-    });
+      const beforeCount = entity.observations.length;
+      entity.observations = entity.observations.filter(o => !d.observations.includes(o));
+      const deletedCount = beforeCount - entity.observations.length;
+      if (deletedCount > 0) {
+        deleted.push({ entityName: d.entityName, observations: d.observations.slice(0, deletedCount) });
+      }
+    }
     await this.saveGraph(graph);
+    
+    return { deleted, notFound };
   }
 
-  async deleteRelations(relations: Relation[]): Promise<void> {
+  async deleteRelations(relations: Relation[]): Promise<{ deleted: Relation[]; notFound: Relation[] }> {
     const graph = await this.loadGraph();
+    const deleted: Relation[] = [];
+    const notFound: Relation[] = [];
+    
+    for (const r of relations) {
+      const exists = graph.relations.some(existing => 
+        existing.from === r.from && 
+        existing.to === r.to && 
+        existing.relationType === r.relationType
+      );
+      if (exists) {
+        deleted.push(r);
+      } else {
+        notFound.push(r);
+      }
+    }
+    
     graph.relations = graph.relations.filter(r => !relations.some(delRelation => 
       r.from === delRelation.from && 
       r.to === delRelation.to && 
       r.relationType === delRelation.relationType
     ));
     await this.saveGraph(graph);
+    
+    return { deleted, notFound };
   }
 
   async readGraph(): Promise<KnowledgeGraph> {

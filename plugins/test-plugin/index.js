@@ -19,7 +19,11 @@ class ExamplePlugin {
       'plugin.tool_greet',
       async (args = {}) => {
         const name = typeof args.name === 'string' && args.name.trim() ? args.name.trim() : 'world';
-        return { message: `Hello, ${name}!` };
+        const message = `Hello, ${name}!`;
+        return {
+          content: [{ type: 'text', text: message }],
+          structuredContent: { message }
+        };
       },
       'example_plugin_greet',
       'Returns a friendly greeting.',
