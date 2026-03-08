@@ -192,13 +192,13 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
         title: "Fetch URL",
         description: "Fetches content from a URL using HTTP. Supports GET, POST, PUT, DELETE methods, headers, and body. Can return text, JSON, or markdown. Performs security validation (robots.txt, domain whitelist, local network block).",
         inputSchema: fetchArgsSchema,
-        outputSchema: z.object({
+        outputSchema: {
           status: z.number(),
-          headers: z.record(z.string(), z.string()),
+          headers: z.record(z.string(), z.unknown()),
           data: z.unknown(),
           bodySnippet: z.string().optional(),
           url: z.string(),
-        }),
+        },
       },
       async (args: z.infer<typeof fetchArgsSchema>) => {
         try {
@@ -270,13 +270,13 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
         title: "Fetch HTML Content",
         description: "Fetches HTML content from a URL, converts it to markdown, or extracts specific elements using a CSS selector. Performs security validation (robots.txt, domain whitelist, local network block).",
         inputSchema: fetchHtmlArgsSchema,
-        outputSchema: z.object({
+        outputSchema: {
           status: z.number(),
-          headers: z.record(z.string(), z.string()),
+          headers: z.record(z.string(), z.unknown()),
           content: z.string(),
           bodySnippet: z.string().optional(),
           url: z.string(),
-        }),
+        },
       },
       async (args: z.infer<typeof fetchHtmlArgsSchema>) => {
         try {

@@ -138,7 +138,7 @@ export class ShellTools {
       if (
         params.execution_mode === 'foreground' &&
         typeof params.foreground_timeout_seconds === 'number' &&
-        params.foreground_timeout_seconds > 300
+        params.foreground_timeout_seconds > 480
       ) {
         throw new MCPShellError(
           'TIMEOUT_LIMIT_EXCEEDED',

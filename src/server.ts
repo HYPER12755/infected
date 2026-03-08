@@ -1,27 +1,25 @@
-import { ConfigManager } from './config/index.js'; // Our own ConfigManager
-import { InfectedConfig } from './config/index.js'; // Corrected import path for InfectedConfig
+import { ConfigManager } from './config/index.js';
+import { InfectedConfig } from './config/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import express from 'express';
+import os from 'node:os';
 import logger from './core/logger.js';
-import { SecurityError } from './utils/shell-errors.js'; // Import SecurityError
-import { randomBytes } from 'node:crypto'; // Import for random token generation
-import { hrtime } from 'node:process'; // Import hrtime for performance monitoring
+import { randomBytes } from 'node:crypto';
 
-
-// Import all manager classes
 import { ProcessManager } from './core/process-manager.js';
 import { TerminalManager } from './core/terminal-manager.js';
 import { FileManager } from './core/file-manager.js';
-import { MonitoringManager } from './core/monitoring-manager.js'; // Import MonitoringManager
+import { MonitoringManager } from './core/monitoring-manager.js';
 import { SecurityManager } from './security/manager.js';
 import { CommandHistoryManager } from './core/enhanced-history-manager.js';
-import { McpShellConfigManager } from './core/shell-config-manager.js'; // The mcp-shell-server's config manager
-import { ManagerInstances } from './types/index.js'; // Import ManagerInstances
+import { McpShellConfigManager } from './core/shell-config-manager.js';
+import { ManagerInstances } from './types/index.js';
 
 import { ServiceContainer } from './core/service-container.js';
 import { createStdioTransport } from './transports/stdio.js';
 import { httpStreamTransportFactory } from './transports/http.js';
 import { SSETransportFactory } from './transports/sse.js';
+import { websocketTransportFactory } from './transports/websocket.js';
 import { authenticationMiddleware, authorizationMiddleware, setAuthConfig } from './auth/index.js';
 import { ModuleManager } from './core/module-system/module-manager.js';
 import { ToolLoader } from './core/tool-loader.js';
@@ -29,24 +27,23 @@ import { PluginLoader } from './core/plugin-loader.js';
 import { ToolCacheManager } from './core/tool-cache-manager.js';
 import { generateRandomTokens } from './auth/random-token-generator.js';
 
+const startTime = Date.now();
+
 export class InfectedServer {
   private server: McpServer;
   private configManager: ConfigManager;
-  private config!: InfectedConfig; // Initialized in start()
+  private config!: InfectedConfig;
   private transport: ReturnType<typeof createStdioTransport> | undefined;
-  private container!: ServiceContainer; // Initialized in start()
-  // Add manager properties
+  private container!: ServiceContainer;
   private processManager!: ProcessManager;
   private terminalManager!: TerminalManager;
   private fileManager!: FileManager;
   private monitoringManager!: MonitoringManager;
   private toolCacheManager!: ToolCacheManager;
-  private moduleManager!: ModuleManager; // Add ModuleManager property
-  private toolLoader!: ToolLoader; // Add ToolLoader property
-  private pluginLoader!: PluginLoader; // Add PluginLoader property
-  private app!: express.Application; // Declare the Express app property
-
-
+  private moduleManager!: ModuleManager;
+  private toolLoader!: ToolLoader;
+  private pluginLoader!: PluginLoader;
+  private app!: express.Application;
 
   constructor() {
     this.configManager = new ConfigManager();
@@ -58,24 +55,37 @@ export class InfectedServer {
     }, {
       instructions: "This server provides tools and plugins for various operations. Interact to discover capabilities.",
       capabilities: {
-        tools: {
-          listChanged: true
-        },
-        resources: {
-          listChanged: true
-        },
+        tools: { listChanged: true },
+        resources: { listChanged: true },
       }
+    });
+    logger.info('InfectedServer instance created', { 
+      version: '1.0.0', 
+      platform: process.platform,
+      arch: process.arch,
+      nodeVersion: process.version,
+      cpus: os.cpus().length,
+      totalMemory: `${Math.round(os.totalmem() / 1024 / 1024 / 1024)}GB`
     });
   }
 
   private async _loadConfiguration(): Promise<void> {
+    logger.info('Loading configuration...');
+    const configLoadStart = Date.now();
     this.config = await this.configManager.loadConfig();
-    this.container = new ServiceContainer(this.server, this.config);
-    setAuthConfig(this.config); // Initialize auth middleware with config
+    const configLoadTime = Date.now() - configLoadStart;
+    logger.info(`Configuration loaded in ${configLoadTime}ms`, {
+      transport: this.config.transport,
+      port: this.config.port,
+      modules: this.config.modules.length,
+      hotReload: this.config.hotReload
+    });
+    setAuthConfig(this.config);
   }
 
   private _initializeManagers(): void {
-    // Instantiate the ServiceContainer, which handles internal instantiation of all managers
+    logger.info('Initializing service container and managers...');
+    const managerInitStart = Date.now();
     this.container = new ServiceContainer(this.server, this.config);
     const managers = this.container.getAllManagers();
 
@@ -87,20 +97,25 @@ export class InfectedServer {
     this.moduleManager = managers.moduleManager;
     this.toolLoader = managers.toolLoader;
     this.pluginLoader = managers.pluginLoader;
+    
+    const managerInitTime = Date.now() - managerInitStart;
+    logger.info(`Managers initialized in ${managerInitTime}ms`);
   }
 
   private async _configureSecurity(): Promise<void> {
-    const { permissionManager, commandHistoryManager, securityManager, mcpShellConfigManager, toolCacheManager, toolLoader, monitoringManager } = this.container.getAllManagers();
-
-
+    logger.info('Configuring security...');
+    const securityStart = Date.now();
+    const { permissionManager, commandHistoryManager, securityManager, mcpShellConfigManager, toolCacheManager } = this.container.getAllManagers();
 
     securityManager.initializeEnhancedEvaluator(commandHistoryManager, this.server);
+    logger.debug('Enhanced evaluator initialized');
 
     await mcpShellConfigManager.loadConfig();
-    logger.info('MCP Shell Server Configuration loaded.');
+    logger.info('Shell security configuration loaded');
 
     const advancedAuth = this.config.auth?.randomAuthTokenAdvanced;
     if (advancedAuth?.enabled) {
+      logger.info('Generating advanced random auth tokens...');
       const tokens = generateRandomTokens({
         count: advancedAuth.tokenCount,
         lengthBytes: advancedAuth.tokenLength,
@@ -109,186 +124,273 @@ export class InfectedServer {
       });
       this.config.auth.apiKey = tokens;
       this.config.auth.enabled = true;
-      logger.warn('----------------------------------------------------');
+      logger.warn('==================================================');
       logger.warn('  ADVANCED RANDOM AUTH TOKENS GENERATED:');
       tokens.forEach((token, index) => {
         logger.warn('  TOKEN %d: %s', index + 1, token);
       });
       logger.warn('  TOKENS ARE VALID FOR THIS SESSION ONLY.');
-      logger.warn('----------------------------------------------------');
+      logger.warn('==================================================');
     } else if (this.config.auth?.randomAuthTokenEnabled) {
+      logger.info('Generating random auth token...');
       const generatedKey = randomBytes(32).toString('hex');
       this.config.auth.apiKey = [generatedKey];
       this.config.auth.enabled = true;
-      logger.warn('----------------------------------------------------');
+      logger.warn('==================================================');
       logger.warn('  RANDOM AUTH TOKEN GENERATED: %s', generatedKey);
       logger.warn('  THIS TOKEN IS VALID FOR THIS SESSION ONLY.');
-      logger.warn('----------------------------------------------------');
+      logger.warn('==================================================');
+    } else if (this.config.auth?.enabled && this.config.auth.apiKey) {
+      const keyCount = Array.isArray(this.config.auth.apiKey) ? this.config.auth.apiKey.length : 1;
+      logger.info(`Authentication enabled with ${keyCount} API key(s) configured`);
     }
 
     securityManager.setConfig(mcpShellConfigManager.getEnhancedSecurityConfig(), this.config.llmSecurity);
+    logger.debug('Security manager configured');
 
-    // moduleManager.setConfig(this.config); // Set moduleManager config here if needed, but it's done in _initializeManagers
     toolCacheManager.setConfig(this.config.cache);
     permissionManager.setConfig(this.config);
+    
+    const securityTime = Date.now() - securityStart;
+    logger.info(`Security configured in ${securityTime}ms`);
   }
 
   private async _setupBackgroundProcessCallbacks(): Promise<void> {
+    logger.info('Setting up background process callbacks...');
     const { processManager } = this.container.getAllManagers();
     processManager.setBackgroundProcessCallbacks({
       onComplete: async (executionId, executionInfo) => {
-        logger.info(`Background process ${executionId} completed.`);
+        logger.info(`Background process completed`, { executionId, exitCode: (executionInfo as any).exit_code });
         await this.server.server.notification({ method: 'notifications/message', params: { level: 'info', data: `Process ${executionId} completed.` } });
       },
       onError: async (executionId, executionInfo, error) => {
-        logger.error(`Background process ${executionId} failed: ${error}`);
+        logger.error(`Background process failed`, { executionId, error: String(error) });
         await this.server.server.notification({ method: 'notifications/message', params: { level: 'error', data: `Process ${executionId} failed: ${error}` } });
       },
       onTimeout: async (executionId, executionInfo) => {
-        logger.warn(`Background process ${executionId} timed out.`);
+        logger.warn(`Background process timed out`, { executionId });
         await this.server.server.notification({ method: 'notifications/message', params: { level: 'warn', data: `Process ${executionId} timed out.` } });
       },
       onOutputData: async (executionId, data, isStderr) => {
         await this.server.server.notification({
           method: 'notifications/progress',
-          params: {
-            execution_id: executionId,
-            type: isStderr ? 'stderr' : 'stdout',
-            data: data,
-          },
+          params: { execution_id: executionId, type: isStderr ? 'stderr' : 'stdout', data },
         });
       },
     });
+    logger.debug('Background process callbacks registered');
   }
 
-
-
   private _logConfigurationSummary(): void {
-    logger.info('----------------------------------------------------');
-    logger.info('  Server Configuration Summary:');
-    logger.info(`  Transport: ${this.config.transport}`);
-    logger.info(`  Port: ${this.config.port}`);
-    logger.info(`  Hot-Reload Enabled: ${this.config.hotReload}`);
-    logger.info(`  Modules Loaded: ${this.config.modules.join(', ')}`);
-    logger.info(`  Tools Directory: ${this.config.toolsDir}`);
-    logger.info(`  Cache Enabled: ${this.config.cache?.enabled}`);
-    logger.info(`  Auth Enabled: ${this.config.auth?.enabled}`);
-    if (this.config.auth?.enabled) {
-        if (this.config.auth.randomAuthTokenEnabled) {
-            logger.info('  Auth Method: Randomly Generated Token (displayed above)');
-        } else {
-            logger.info(`  Auth Method: Static API Key(s) (configured: ${Array.isArray(this.config.auth.apiKey) ? this.config.auth.apiKey.length : (this.config.auth.apiKey ? 1 : 0)} key(s))`);
-        }
-    }
-    logger.info(`  Permissions Default Policy: ${this.config.permissions?.defaultPolicy}`);
-    logger.info(`  LLM Security Enabled: ${this.config.llmSecurity?.enabled}`);
-    logger.info('----------------------------------------------------');
+    const uptime = process.uptime();
+    const totalTime = Date.now() - startTime;
+    
+    logger.info('==================================================');
+    logger.info('  SERVER CONFIGURATION SUMMARY');
+    logger.info('==================================================');
+    logger.info(`  Server:        Infected MCP Server v1.0.0`);
+    logger.info(`  Platform:     ${process.platform} ${process.arch}`);
+    logger.info(`  Node.js:      ${process.version}`);
+    logger.info(`  Transport:    ${this.config.transport}`);
+    logger.info(`  Port:         ${this.config.port}`);
+    logger.info(`  Hot-Reload:   ${this.config.hotReload ? 'Enabled' : 'Disabled'}`);
+    logger.info(`  Auth:         ${this.config.auth?.enabled ? 'Enabled' : 'Disabled'}`);
+    logger.info(`  Cache:        ${this.config.cache?.enabled ? 'Enabled' : 'Disabled'}`);
+    logger.info(`  Permissions:   ${this.config.permissions?.defaultPolicy || 'default'}`);
+    logger.info('--------------------------------------------------');
+    logger.info(`  Modules:      ${this.config.modules.join(', ')}`);
+    logger.info(`  Tools Dir:    ${this.config.toolsDir}`);
+    logger.info(`  Plugins Dir:  ${this.config.pluginsDir}`);
+    logger.info('--------------------------------------------------');
+    logger.info(`  Startup Time: ${totalTime}ms`);
+    logger.info(`  Server Uptime: ${Math.floor(uptime)}s`);
+    logger.info('==================================================');
   }
 
   private _logSecurityWarnings(): void {
-    logger.info('----------------------------------------------------');
+    const warnings: string[] = [];
+    
     if (!this.config.auth?.enabled) {
-      logger.warn('SECURITY WARNING: Authentication is DISABLED. The server is exposed to unauthorized access.');
+      warnings.push('Authentication is DISABLED - server is exposed to unauthorized access');
     }
     if (this.config.permissions?.defaultPolicy === 'allow') {
-      logger.warn('SECURITY WARNING: Default permission policy is "allow". All tools are allowed by default. Configure toolAllowlist/toolBlocklist for stricter control.');
+      warnings.push('Default permission policy is "allow" - all tools are allowed by default');
     }
     if (this.config.shell?.allowlist?.length === 0) {
-      logger.warn('SECURITY WARNING: Shell allowlist is EMPTY. All shell commands are allowed. Restrict with "shell.allowlist".');
+      warnings.push('Shell allowlist is EMPTY - all shell commands are allowed');
     }
     if (this.config.fetch?.domainWhitelist?.length === 0) {
-      logger.warn('SECURITY WARNING: Fetch domain whitelist is EMPTY. All domains are allowed for fetch operations. Restrict with "fetch.domainWhitelist".');
+      warnings.push('Fetch domain whitelist is EMPTY - all domains are allowed');
     }
     if (this.config.fetch?.blockLocalNetwork === false) {
-      logger.warn('SECURITY WARNING: Local network access for fetch is ENABLED. This may expose internal resources. Set "fetch.blockLocalNetwork" to true.');
+      warnings.push('Local network access for fetch is ENABLED - may expose internal resources');
     }
     if (!this.config.llmSecurity?.enabled) {
-      logger.warn('SECURITY WARNING: LLM-based security evaluation is DISABLED. Malicious commands may not be detected.');
+      warnings.push('LLM-based security evaluation is DISABLED - malicious commands may not be detected');
     }
-    logger.info('----------------------------------------------------');
+
+    if (warnings.length > 0) {
+      logger.warn('==================================================');
+      logger.warn('  SECURITY WARNINGS');
+      logger.warn('==================================================');
+      warnings.forEach((warning, i) => {
+        logger.warn(`  ${i + 1}. ${warning}`);
+      });
+      logger.warn('==================================================');
+    } else {
+      logger.info('No security warnings - configuration looks good');
+    }
   }
-
-
 
   async start() {
-    logger.info('Server starting...');
-    await this._loadConfiguration();
-    this._initializeManagers();
-    await this._configureSecurity();
-    await this._setupBackgroundProcessCallbacks();
-    this._logConfigurationSummary();
-    this._logSecurityWarnings();
-
-    // Ensure all modules and tools are loaded and registered before initializing transport
-    await this.moduleManager.start();
-    await this.toolLoader.start();
-    await this.pluginLoader.start();
-
-    await this._initializeTransport();
+    const startupStart = Date.now();
+    try {
+      logger.info('==================================================');
+      logger.info('  STARTING INFECTED MCP SERVER');
+      logger.info('==================================================');
+      
+      const step1Start = Date.now();
+      await this._loadConfiguration();
+      logger.info(`[1/7] Configuration loaded (${Date.now() - step1Start}ms)`);
+      
+      const step2Start = Date.now();
+      this._initializeManagers();
+      logger.info(`[2/7] Managers initialized (${Date.now() - step2Start}ms)`);
+      
+      const step3Start = Date.now();
+      await this._configureSecurity();
+      logger.info(`[3/7] Security configured (${Date.now() - step3Start}ms)`);
+      
+      const step4Start = Date.now();
+      await this._setupBackgroundProcessCallbacks();
+      logger.info(`[4/7] Background callbacks setup (${Date.now() - step4Start}ms)`);
+      
+      const step5Start = Date.now();
+      await this.moduleManager.start();
+      const moduleCount = this.moduleManager.listLoadedModules().length;
+      logger.info(`[5/7] Modules loaded: ${moduleCount} modules (${Date.now() - step5Start}ms)`);
+      
+      const step6Start = Date.now();
+      await this.toolLoader.start();
+      const toolCount = this.toolLoader.listTools().length;
+      logger.info(`[6/7] Tools loaded: ${toolCount} tools (${Date.now() - step6Start}ms)`);
+      
+      const step7Start = Date.now();
+      await this.pluginLoader.start();
+      const pluginCount = this.pluginLoader.listPlugins().length;
+      logger.info(`[7/7] Plugins loaded: ${pluginCount} plugins (${Date.now() - step7Start}ms)`);
+      
+      this._logConfigurationSummary();
+      this._logSecurityWarnings();
+      await this._initializeTransport();
+      
+      const totalStartup = Date.now() - startupStart;
+      logger.info('==================================================');
+      logger.info(`  SERVER STARTUP COMPLETE in ${totalStartup}ms`);
+      logger.info('==================================================');
+      
+    } catch (error) {
+      logger.error('Failed to start server:', error);
+      process.exit(1);
+    }
   }
-
 
   private async _initializeTransport(): Promise<void> {
     logger.info(`Initializing ${this.config.transport} transport...`);
     
-    // Create Express app once for HTTP/SSE transports
     this.app = express(); 
-    this.app.use(express.json()); // For parsing application/json
-    this.app.use(express.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
+
+    this.app.use((req, res, next) => {
+      logger.debug('Incoming request', { method: req.method, path: req.path, ip: req.ip });
+      next();
+    });
 
     this.app.use(authenticationMiddleware);
-    this.app.use(authorizationMiddleware);
+    logger.debug('Authentication middleware applied');
 
-    // Common endpoints for HTTP/SSE
+    this.app.use(authorizationMiddleware);
+    logger.debug('Authorization middleware applied');
+
     this.app.get('/health', (req, res) => {
-        res.status(200).json({ status: 'ok', uptime: process.uptime() });
+      res.status(200).json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
     });
     this.app.get('/messages', (req, res) => {
-        res.status(200).json({ messages: [] });
+      res.status(200).json({ messages: [] });
     });
 
     if (this.config.transport === 'http') {
-      // Initialize MCP http transport and mount its router
+      logger.info('Creating HTTP stream transport...');
       const { httpStreamRouter } = httpStreamTransportFactory(this.server);
       this.app.use(httpStreamRouter);
+      logger.debug('HTTP stream router mounted');
       
       this.app.listen(this.config.port, () => {
-        logger.info(`Server listening on port ${this.config.port} with ${this.config.transport} transport.`, { component: 'server' });
-      }).on('error', (err) => {
-        logger.error(`Failed to start server on port ${this.config.port}: ${err.message}`, { error: err, component: 'server' });
+        logger.info(`HTTP Server listening on port ${this.config.port}`, { transport: 'http', port: this.config.port, host: '0.0.0.0' });
+      }).on('error', (err: any) => {
+        logger.error(`HTTP Server failed to start: ${err.message}`, { port: this.config.port, error: err.code });
         process.exit(1);
       });
     } else if (this.config.transport === 'sse') {
-        // Initialize MCP sse transport and mount its router
-        const { sseRouter } = SSETransportFactory(this.server);
-        this.app.use(sseRouter);
+      logger.info('Creating SSE transport...');
+      const { sseRouter } = SSETransportFactory(this.server);
+      this.app.use(sseRouter);
+      logger.debug('SSE router mounted');
 
-        this.app.listen(this.config.port, () => {
-            logger.info(`Server listening on port ${this.config.port} with ${this.config.transport} transport.`, { component: 'server' });
-        }).on('error', (err) => {
-            logger.error(`Failed to start server on port ${this.config.port}: ${err.message}`, { error: err, component: 'server' });
-            process.exit(1);
-        });
+      this.app.listen(this.config.port, () => {
+        logger.info(`SSE Server listening on port ${this.config.port}`, { transport: 'sse', port: this.config.port, host: '0.0.0.0' });
+      }).on('error', (err: any) => {
+        logger.error(`SSE Server failed to start: ${err.message}`, { port: this.config.port, error: err.code });
+        process.exit(1);
+      });
     } else if (this.config.transport === 'stdio') {
-      // In stdio mode, there's a single long-lived transport that McpServer connects to
+      logger.info('Initializing STDIO transport...');
       this.transport = createStdioTransport();
       await this.server.connect(this.transport);
-      // No app.listen for stdio as it's not HTTP-based
+      logger.info('STDIO transport connected and ready');
+    } else if (this.config.transport === 'websocket') {
+      logger.info('Creating WebSocket transport...');
+      const { router, initializeWebSocket } = websocketTransportFactory(this.server);
+      this.app.use(router);
+      logger.debug('WebSocket router mounted');
+      
+      await initializeWebSocket(this.config.port);
+      logger.info(`WebSocket Server listening on port ${this.config.port}`, { transport: 'websocket', port: this.config.port, host: '0.0.0.0' });
     } else {
       throw new Error(`Unsupported transport: ${this.config.transport}`);
     }
   }
 
-
   async cleanup(): Promise<void> {
+    logger.info('Cleaning up server...');
+    
+    logger.debug('Cleaning up process manager...');
     this.processManager.cleanup();
+    
+    logger.debug('Cleaning up terminal manager...');
     this.terminalManager.cleanup();
+    
+    logger.debug('Cleaning up file manager...');
     await this.fileManager.cleanup();
+    
+    logger.debug('Cleaning up monitoring manager...');
     this.monitoringManager.cleanup();
+    
     const { moduleManager, pluginLoader, toolLoader } = this.container.getAllManagers();
-    await moduleManager.stop(); // Stop module management and unload all modules
-    await toolLoader.stop(); // Stop ToolLoader's listeners and deregister tools
-    await pluginLoader.stop(); // Stop PluginLoader's listeners and unload plugins
-    this.toolCacheManager.stopCleanupInterval(); // Stop tool cache cleanup
+    
+    logger.debug('Stopping module manager...');
+    await moduleManager.stop();
+    
+    logger.debug('Stopping tool loader...');
+    await toolLoader.stop();
+    
+    logger.debug('Stopping plugin loader...');
+    await pluginLoader.stop();
+    
+    logger.debug('Stopping tool cache cleanup...');
+    this.toolCacheManager.stopCleanupInterval();
+    
+    logger.info('Server cleanup complete');
   }
 }

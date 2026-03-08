@@ -1,0 +1,116 @@
+import { InfectedConfigSchema } from './schema.js';
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+import * as fs from 'fs';
+import { fileURLToPath } from 'node:url';
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const defaultInstallRoot = path.resolve(moduleDir, '../..');
+const defaultWorkspaceRoot = process.cwd();
+export function getInstallRoot() {
+    return process.env['INFECTED_INSTALL_ROOT'] || defaultInstallRoot;
+}
+export function getWorkspaceRoot() {
+    return process.env['INFECTED_WORKSPACE_ROOT'] || defaultWorkspaceRoot;
+}
+export function getRuntimeMode() {
+    const explicitMode = process.env['INFECTED_RUNTIME_MODE']?.trim().toLowerCase();
+    if (explicitMode === 'production' || explicitMode === 'development') {
+        return explicitMode;
+    }
+    const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+    if (entryPath.includes(`${path.sep}dist${path.sep}`)) {
+        return 'production';
+    }
+    return 'development';
+}
+function normalizeTransportValue(value) {
+    if (value === 'http-streams') {
+        return 'http';
+    }
+    return value;
+}
+export class ConfigManager {
+    constructor() {
+        this.config = InfectedConfigSchema.parse({}); // Start with defaults
+    }
+    async loadConfig() {
+        const installRoot = getInstallRoot();
+        const workspaceRoot = getWorkspaceRoot();
+        const runtimeMode = getRuntimeMode();
+        // Expose canonical runtime roots to all components.
+        process.env['INFECTED_INSTALL_ROOT'] = installRoot;
+        process.env['INFECTED_WORKSPACE_ROOT'] = workspaceRoot;
+        process.env['INFECTED_RUNTIME_MODE'] = runtimeMode;
+        // 1. Load from .env file
+        dotenv.config({ path: path.resolve(installRoot, '.env') });
+        // 2. Load from infected.config.json
+        const configFilePath = path.resolve(installRoot, 'infected.config.json');
+        let fileConfig = {};
+        if (fs.existsSync(configFilePath)) {
+            try {
+                const configFileContent = await fs.promises.readFile(configFilePath, 'utf-8');
+                fileConfig = JSON.parse(configFileContent);
+                if (typeof fileConfig === 'object' && fileConfig !== null && 'transport' in fileConfig) {
+                    fileConfig.transport = normalizeTransportValue(fileConfig.transport);
+                }
+            }
+            catch (error) {
+                console.warn(`Could not read or parse infected.config.json: ${error}`);
+            }
+        }
+        // 3. Merge configurations (env vars have highest precedence after CLI, then file, then defaults)
+        // For simplicity, directly merge environment variables that match schema keys.
+        // A more robust solution might involve a dedicated CLI arg parser.
+        const envConfig = {};
+        if (process.env.TRANSPORT)
+            envConfig.transport = normalizeTransportValue(process.env.TRANSPORT);
+        if (process.env.MODULES)
+            envConfig.modules = process.env.MODULES.split(',');
+        if (process.env.PORT)
+            envConfig.port = parseInt(process.env.PORT);
+        if (process.env.HOT_RELOAD)
+            envConfig.hotReload = process.env.HOT_RELOAD === 'true';
+        if (process.env.TOOLS_DIR)
+            envConfig.toolsDir = process.env.TOOLS_DIR;
+        if (process.env.PLUGINS_DIR)
+            envConfig.pluginsDir = process.env.PLUGINS_DIR;
+        // Handle nested module configs
+        if (process.env.SHELL_ALLOWLIST) {
+            envConfig.shell = { allowlist: process.env.SHELL_ALLOWLIST.split(',') };
+        }
+        if (process.env.MEMORY_FILE_PATH) {
+            envConfig.memory = { filePath: process.env.MEMORY_FILE_PATH };
+        }
+        if (process.env.FETCH_DOMAIN_WHITELIST || process.env.FETCH_BLOCK_LOCAL_NETWORK || process.env.FETCH_ALLOW_INSECURE_TLS) {
+            const fetchEnv = {};
+            if (process.env.FETCH_DOMAIN_WHITELIST) {
+                fetchEnv.domainWhitelist = process.env.FETCH_DOMAIN_WHITELIST.split(',').map((value) => value.trim()).filter(Boolean);
+            }
+            if (process.env.FETCH_BLOCK_LOCAL_NETWORK) {
+                fetchEnv.blockLocalNetwork = process.env.FETCH_BLOCK_LOCAL_NETWORK === 'true';
+            }
+            if (process.env.FETCH_ALLOW_INSECURE_TLS) {
+                fetchEnv.allowInsecureTls = process.env.FETCH_ALLOW_INSECURE_TLS === 'true';
+            }
+            envConfig.fetch = fetchEnv;
+        }
+        this.config = InfectedConfigSchema.parse({
+            ...this.config, // Default values
+            ...fileConfig,
+            ...envConfig,
+            // CLI arguments would be merged here, for now they are handled in index.ts directly for --configure
+        });
+        this.adjustInstallDefaults(installRoot, workspaceRoot, runtimeMode);
+        return this.config;
+    }
+    getConfig() {
+        return this.config;
+    }
+    adjustInstallDefaults(installRoot, workspaceRoot, runtimeMode) {
+        // Keep configured tools/plugins directories stable across dev/prod.
+        // Production runtime path isolation is handled by ModuleManager/runtime root logic.
+        void installRoot;
+        void workspaceRoot;
+        void runtimeMode;
+    }
+}

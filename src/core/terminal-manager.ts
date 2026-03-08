@@ -1,4 +1,5 @@
-import * as pty from 'node-pty'; // External dependency
+import * as pty from 'node-pty';
+import * as fs from 'node:fs'; // External dependency
 import { EventEmitter } from 'node:events'; // Use node:events
 import {
   TerminalInfo,
@@ -146,7 +147,7 @@ export class TerminalManager {
   }
 
   private getShellCommand(shellType: ShellType): { command: string; args: string[] } {
-    const fs = require('node:fs');
+    
     const checkShell = (path: string) => {
       try { fs.accessSync(path); return path; } catch { return null; }
     };

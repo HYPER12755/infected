@@ -62,27 +62,33 @@ export default class SystemModule implements IUnifiedPlugin {
         const arch = os.arch();
         const hostname = os.hostname();
         
-        const networkInterfaces = os.networkInterfaces();
-        const networks: string[] = [];
-        for (const [name, addrs] of Object.entries(networkInterfaces)) {
-          if (addrs) {
-            for (const addr of addrs) {
-              if (addr.family === 'IPv4' && !addr.internal) {
-                networks.push(`${name}: ${addr.address}`);
+        // Wrap networkInterfaces in try-catch to handle EACCES (permission denied)
+        let networks: string[] = [];
+        try {
+          const networkInterfaces = os.networkInterfaces();
+          for (const [name, addrs] of Object.entries(networkInterfaces)) {
+            if (addrs) {
+              for (const addr of addrs) {
+                if (addr.family === 'IPv4' && !addr.internal) {
+                  networks.push(name + ': ' + addr.address);
+                }
               }
             }
           }
+        } catch (netErr) {
+          // os.networkInterfaces() can fail with EACCES in some environments (containers, etc.)
+          networks = ['(unavailable: ' + String(netErr) + ')'];
         }
 
-        const info = `=== System Information ===
-Hostname: ${hostname}
-OS: ${platform} ${release} (${arch})
-CPU: ${cpuModel} (${cpuCount} cores)
-Memory: ${Math.round(usedMem / 1024 / 1024 / 1024 * 100) / 100} GB / ${Math.round(totalMem / 1024 / 1024 / 1024 * 100) / 100} GB (${Math.round(freeMem / totalMem * 100)}% free)
-Load Average: ${loadAvg[0].toFixed(2)}, ${loadAvg[1].toFixed(2)}, ${loadAvg[2].toFixed(2)}
-Uptime: ${days}d ${hours}h ${minutes}m
-Network Interfaces:
-${networks.join('\n')}`;
+        const info = '=== System Information ===\n' +
+          'Hostname: ' + hostname + '\n' +
+          'OS: ' + platform + ' ' + release + ' (' + arch + ')\n' +
+          'CPU: ' + cpuModel + ' (' + cpuCount + ' cores)\n' +
+          'Memory: ' + Math.round(usedMem / 1024 / 1024 / 1024 * 100) / 100 + ' GB / ' + Math.round(totalMem / 1024 / 1024 / 1024 * 100) / 100 + ' GB (' + Math.round(freeMem / totalMem * 100) + '% free)\n' +
+          'Load Average: ' + loadAvg[0].toFixed(2) + ', ' + loadAvg[1].toFixed(2) + ', ' + loadAvg[2].toFixed(2) + '\n' +
+          'Uptime: ' + days + 'd ' + hours + 'h ' + minutes + 'm\n' +
+          'Network Interfaces:\n' +
+          networks.join('\n');
 
         return {
           content: [{ type: 'text', text: info }],
@@ -138,13 +144,13 @@ ${networks.join('\n')}`;
     try {
       const output = execSync(`ping -c 4 ${target}`, { encoding: 'utf-8', timeout: 10000 });
       return {
-        content: [{ type: 'text', text: `=== Ping Results for ${target} ===\n${output}` }],
+        content: [{ type: 'text', text: '=== Ping Results for ' + target + ' ===\n' + output }],
         structuredContent: { target, type: 'ping', output }
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
-        content: [{ type: 'text', text: `Ping failed: ${message}` }],
+        content: [{ type: 'text', text: 'Ping failed: ' + message }],
         isError: true,
         structuredContent: { target, type: 'ping', error: message }
       };
@@ -156,12 +162,12 @@ ${networks.join('\n')}`;
       dns.resolve4(target, (err: Error | null, addresses: string[]) => {
         if (err) {
           resolve({
-            content: [{ type: 'text', text: `DNS lookup failed: ${err.message}` }],
+            content: [{ type: 'text', text: 'DNS lookup failed: ' + err.message }],
             isError: true,
             structuredContent: { target, type: 'dns', error: err.message }
           });
         } else {
-          const result = `=== DNS Results for ${target} ===\nAddresses: ${addresses.join(', ')}`;
+          const result = '=== DNS Results for ' + target + ' ===\nAddresses: ' + addresses.join(', ');
           resolve({
             content: [{ type: 'text', text: result }],
             structuredContent: { target, type: 'dns', addresses }
@@ -200,13 +206,13 @@ ${networks.join('\n')}`;
       const isOpen = await checkPort(port);
       if (isOpen) {
         openPorts.push(port);
-        results.push(`Port ${port}: OPEN`);
+        results.push('Port ' + port + ': OPEN');
       } else {
-        results.push(`Port ${port}: closed`);
+        results.push('Port ' + port + ': closed');
       }
     }
     
-    const result = `=== Port Check for ${target} ===\n${results.join('\n')}`;
+    const result = '=== Port Check for ' + target + ' ===\n' + results.join('\n');
     return {
       content: [{ type: 'text', text: result }],
       structuredContent: { target, type: 'ports', openPorts, allResults: results }

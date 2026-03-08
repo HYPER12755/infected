@@ -62,6 +62,15 @@ export class FilesystemModule implements Module {
       end_line: z.number().int().min(1).optional().describe('Line number to end reading at (1-indexed, inclusive)')
     });
 
+    // Deprecated schema
+    const ReadTextFileArgsSchemaDeprecated = z.object({
+      path: z.string(),
+      tail: z.number().optional().describe('If provided, returns only the last N lines of the file'),
+      head: z.number().optional().describe('If provided, returns only the first N lines of the file'),
+      start_line: z.number().int().min(1).optional().describe('Line number to start reading from (1-indexed)'),
+      end_line: z.number().int().min(1).optional().describe('Line number to end reading at (1-indexed, inclusive)')
+    });
+
     const ReadMediaFileArgsSchema = z.object({
       path: z.string()
     });
@@ -70,12 +79,13 @@ export class FilesystemModule implements Module {
       paths: z
         .array(z.string())
         .min(1, "At least one file path must be provided")
-        .describe("Array of file paths to read. Each path must be a string pointing to a valid file within allowed directories."),
+        .describe("Array of file paths to read. Each path must be a string pointing to a valid file within allowed directories.")
     });
 
     const WriteFileArgsSchema = z.object({
       path: z.string(),
       content: z.string(),
+      base_dir: z.string().optional().describe("Base directory for relative paths. Defaults to the current working directory where the server was started.")
     });
 
     const EditOperation = z.object({
@@ -142,10 +152,18 @@ export class FilesystemModule implements Module {
       });
     }
 
+    // Helper function - kept for potential future use but not currently applied
+    // function formatContentWithLineNumbers(content: string): string {
+    //   const lines = content.split('\n');
+    //   return lines.map((line, index) => `${index + 1}+- ${line}`).join('\n');
+    // }
+
     // Tool registrations
 
     // read_file (deprecated) and read_text_file
-    const readTextFileHandler = async (args: z.infer<typeof ReadTextFileArgsSchema>) => {
+    const readTextFileHandler = async (
+      args: z.infer<typeof ReadTextFileArgsSchema>
+    ) => {
       const validPath = await validatePath(args.path);
 
       if (args.head && args.tail) {
@@ -174,7 +192,42 @@ export class FilesystemModule implements Module {
 
       return {
         content: [{ type: "text" as const, text: content }],
-        structuredContent: { content }
+        structuredContent: { content: content }
+      };
+    };
+
+    // Handler for deprecated read_file
+    const readFileDeprecatedHandler = async (
+      args: z.infer<typeof ReadTextFileArgsSchemaDeprecated>
+    ) => {
+      const validPath = await validatePath(args.path);
+
+      if (args.head && args.tail) {
+        throw new Error("Cannot specify both head and tail parameters simultaneously");
+      }
+
+      if (args.start_line !== undefined && args.end_line !== undefined && args.start_line > args.end_line) {
+        throw new Error("start_line must be less than or equal to end_line");
+      }
+
+      let content: string;
+      if (args.tail) {
+        content = await tailFile(validPath, args.tail);
+      } else if (args.head) {
+        content = await headFile(validPath, args.head);
+      } else if (args.start_line !== undefined || args.end_line !== undefined) {
+        const fullContent = await readFileContent(validPath);
+        const lines = fullContent.split('\n');
+        const start = args.start_line ? args.start_line - 1 : 0;
+        const end = args.end_line ? args.end_line : lines.length;
+        content = lines.slice(start, end).join('\n');
+      } else {
+        content = await readFileContent(validPath);
+      }
+
+      return {
+        content: [{ type: "text" as const, text: content }],
+        structuredContent: { content: content }
       };
     };
 
@@ -183,11 +236,11 @@ export class FilesystemModule implements Module {
       {
         title: "Read File (Deprecated)",
         description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
-        inputSchema: ReadTextFileArgsSchema.shape,
+        inputSchema: ReadTextFileArgsSchemaDeprecated.shape,
         outputSchema: { content: z.string() },
         annotations: { readOnlyHint: true }
       },
-      readTextFileHandler
+      readFileDeprecatedHandler
     ));
 
     this.deregisterFunctions.push(server.registerTool(
@@ -201,8 +254,7 @@ export class FilesystemModule implements Module {
           "the contents of a single file. Use the 'head' parameter to read only " +
           "the first N lines of a file, or the 'tail' parameter to read only " +
           "the last N lines of a file. Use 'start_line' and 'end_line' to read " +
-          "a specific range of lines. Operates on the file as text regardless of extension. " +
-          "Only works within allowed directories.",
+          "a specific range of lines. Only works within allowed directories.",
         inputSchema: {
           path: z.string(),
           tail: z.number().optional().describe("If provided, returns only the last N lines of the file"),
@@ -315,6 +367,7 @@ export class FilesystemModule implements Module {
           }),
         );
         const text = results.join("\n---\n");
+        
         return {
           content: [{ type: "text" as const, text }],
           structuredContent: { content: text }
@@ -330,16 +383,37 @@ export class FilesystemModule implements Module {
           "Create a new file or completely overwrite an existing file with new content. " +
           "Will create parent directories if they don't exist. " +
           "Use with caution as it will overwrite existing files without warning. " +
-          "Handles text content with proper encoding. Only works within allowed directories.",
+          "Handles text content with proper encoding. Only works within allowed directories. " +
+          "Use 'base_dir' parameter to specify the base directory for relative paths.",
         inputSchema: {
           path: z.string().min(1, "File path cannot be empty"),
-          content: z.string()
+          content: z.string(),
+          base_dir: z.string().optional().describe("Base directory for relative paths. Defaults to the server's root directory.")
         },
         outputSchema: { content: z.string() },
         annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true }
       },
       async (args: z.infer<typeof WriteFileArgsSchema>) => {
-        const validPath = await validatePath(args.path);
+        // If base_dir is provided, resolve relative paths against it
+        // Otherwise, resolve against current working directory
+        let validPath: string;
+        if (args.base_dir) {
+          // Resolve against provided base_dir
+          const baseDirValid = await validatePath(args.base_dir);
+          validPath = path.resolve(baseDirValid, args.path);
+          // Verify the resolved path is still within allowed directories
+          validPath = await validatePath(validPath);
+        } else {
+          // Resolve against current working directory for relative paths
+          const cwd = process.cwd();
+          if (path.isAbsolute(args.path)) {
+            validPath = await validatePath(args.path);
+          } else {
+            const resolvedPath = path.resolve(cwd, args.path);
+            validPath = await validatePath(resolvedPath);
+          }
+        }
+        
         let previousContent = '';
         try {
           previousContent = await readFileContent(validPath);

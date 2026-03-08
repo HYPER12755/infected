@@ -1,5 +1,6 @@
 import { spawn, ChildProcess, execSync } from 'node:child_process'; // Use node:child_process
-import * as fs from 'node:fs/promises'; // Use node:fs/promises
+import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs'; // Use node:fs/promises
 import * as path from 'node:path'; // Use node:path
 import {
   ExecutionInfo,
@@ -37,7 +38,7 @@ function getShellPath(): string {
   const shells = ['/bin/bash', '/usr/bin/bash', '/bin/sh', '/usr/bin/sh', '/bin/zsh', '/usr/bin/zsh'];
   for (const shell of shells) {
     try {
-      require('node:fs').accessSync(shell);
+      fsSync.accessSync(shell);
       return shell;
     } catch {
       continue;
@@ -47,7 +48,7 @@ function getShellPath(): string {
   const fallback = process.env.SHELL;
   if (fallback) {
     try {
-      require('node:fs').accessSync(fallback);
+      fsSync.accessSync(fallback);
       return fallback;
     } catch {}
   }
@@ -749,7 +750,7 @@ export class ProcessManager {
     // 1. フォアグラウンドタイムアウトに達した場合
     // 2. 出力サイズ制限に達した場合
     const returnPartialOnTimeout = options.returnPartialOnTimeout ?? true;
-    const foregroundTimeout = options.foregroundTimeoutSeconds ?? 10;
+    const foregroundTimeout = options.foregroundTimeoutSeconds ?? 480;
 
     return new Promise((resolve, reject) => {
       const startTime = Date.now();

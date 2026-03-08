@@ -341,6 +341,10 @@ export class ShellModule implements Module {
   private shellTools!: ShellTools;
   private serverInstance!: McpServer; // To store the McpServer instance for notifications
   private deregisterFunctions: any[] = []; // Store SDK tool handles/deregister functions
+  
+  // Store active execution contexts for progress streaming
+  // Maps executionId -> { progressToken, sessionId }
+  private executionContexts = new Map<string, { sessionId?: string; progressToken?: string | number }>();
 
   async register(
     server: McpServer, 
@@ -360,34 +364,91 @@ export class ShellModule implements Module {
 
     managers.processManager.setBackgroundProcessCallbacks({
       onComplete: async (executionId, executionInfo) => {
+        const context = this.executionContexts.get(executionId);
+        const progressToken = context?.progressToken;
+        
         const message = `✅ Command '${executionInfo.command.substring(0, 50)}...' completed. ID: ${executionId}`;
+        const params: Record<string, unknown> = { 
+          level: 'info', 
+          data: message, 
+          execution_id: executionId, 
+          status: 'completed' 
+        };
+        if (progressToken !== undefined) {
+          params.progressToken = progressToken;
+        }
+        
         await this.serverInstance.server.notification({
           method: 'notifications/message',
-          params: { level: 'info', data: message, execution_id: executionId, status: 'completed' },
+          params,
         });
+        
+        // Clean up execution context
+        this.executionContexts.delete(executionId);
       },
       onError: async (executionId, executionInfo, error) => {
+        const context = this.executionContexts.get(executionId);
+        const progressToken = context?.progressToken;
+        
         const message = `❌ Command '${executionInfo.command.substring(0, 50)}...' failed. ID: ${executionId}`;
+        const params: Record<string, unknown> = { 
+          level: 'error', 
+          data: message, 
+          execution_id: executionId, 
+          status: 'failed', 
+          error: String(error) 
+        };
+        if (progressToken !== undefined) {
+          params.progressToken = progressToken;
+        }
+        
         await this.serverInstance.server.notification({
           method: 'notifications/message',
-          params: { level: 'error', data: message, execution_id: executionId, status: 'failed', error: String(error) },
+          params,
         });
+        
+        // Clean up execution context
+        this.executionContexts.delete(executionId);
       },
       onTimeout: async (executionId, executionInfo) => {
+        const context = this.executionContexts.get(executionId);
+        const progressToken = context?.progressToken;
+        
         const message = `⏰ Command '${executionInfo.command.substring(0, 50)}...' timed out. ID: ${executionId}`;
+        const params: Record<string, unknown> = { 
+          level: 'warn', 
+          data: message, 
+          execution_id: executionId, 
+          status: 'timeout' 
+        };
+        if (progressToken !== undefined) {
+          params.progressToken = progressToken;
+        }
+        
         await this.serverInstance.server.notification({
           method: 'notifications/message',
-          params: { level: 'warn', data: message, execution_id: executionId, status: 'timeout' },
+          params,
         });
+        
+        // Clean up execution context
+        this.executionContexts.delete(executionId);
       },
       onOutputData: async (executionId, data, isStderr) => {
+        const context = this.executionContexts.get(executionId);
+        const progressToken = context?.progressToken;
+        
+        const params: Record<string, unknown> = {
+          execution_id: executionId,
+          type: isStderr ? 'stderr' : 'stdout',
+          data: data,
+        };
+        if (progressToken !== undefined) {
+          params.progressToken = progressToken;
+        }
+        
         await this.serverInstance.server.notification({
-          method: 'notifications/progress', // Use progress notification for streaming output
-          params: {
-            execution_id: executionId,
-            type: isStderr ? 'stderr' : 'stdout',
-            data: data,
-          },
+          method: 'notifications/progress',
+          params,
         });
       },
     });
@@ -399,10 +460,14 @@ export class ShellModule implements Module {
         description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
         inputSchema: ShellExecuteParamsInputSchema.shape,
       },
-      async (rawArgs: unknown, _extra: ToolRequestExtra) => {
+      async (rawArgs: unknown, extra: ToolRequestExtra) => {
         const args = ShellExecuteParamsSchema.parse(rawArgs);
         const allowlist = config.shell?.allowlist;
         const commandExecutable = args.command.trim().split(' ')[0];
+
+        // Extract progressToken and sessionId from request for streaming
+        const progressToken = extra._meta?.progressToken;
+        const sessionId = extra.sessionId;
 
         if (allowlist && allowlist.length > 0 && !allowlist.includes(commandExecutable)) {
           logger.warn(`Attempted to execute disallowed command: ${commandExecutable}`);
@@ -415,6 +480,16 @@ export class ShellModule implements Module {
 
         try {
           const executionInfo = await this.shellTools.executeShell(args);
+          
+          // Store execution context for progress streaming
+          if (executionInfo.execution_id) {
+            const execId = executionInfo.execution_id as string;
+            this.executionContexts.set(execId, {
+              sessionId,
+              progressToken
+            });
+          }
+          
           logger.info(`shell_execute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
           const text = formatShellToolText('shell_execute', executionInfo);
           return {
@@ -764,6 +839,8 @@ export class ShellModule implements Module {
       }
     });
     this.deregisterFunctions = []; // Clear the array (fixed typo)
+    // Clear execution contexts
+    this.executionContexts.clear();
     logger.info('  ShellModule: All tools deregistered.');
   }
 }

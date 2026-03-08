@@ -273,22 +273,30 @@ export default class SshModule implements IUnifiedPlugin {
     const message = error instanceof Error ? error.message : String(error);
     let errorCode = options.code || ERROR_CODES.INTERNAL_ERROR;
 
-    if (message.includes('not found')) {
+    // More specific error classification - check more specific errors first
+    // Check for session-specific errors first (they should take precedence)
+    if (message.includes('Session') && message.includes('not found')) {
       errorCode = ERROR_CODES.SESSION_NOT_FOUND;
-    } else if (message.includes('already exists')) {
-      errorCode = ERROR_CODES.SESSION_EXISTS;
     } else if (message.includes('busy executing')) {
       errorCode = ERROR_CODES.SESSION_BUSY;
-    } else if (message.includes('timeout')) {
+    } else if (message.includes('already exists')) {
+      errorCode = ERROR_CODES.SESSION_EXISTS;
+    } else if (message.includes('timeout') || message.includes('timeout after')) {
       errorCode = ERROR_CODES.COMMAND_TIMEOUT;
-    } else if (message.includes('authentication') || message.includes('Auth')) {
-      errorCode = ERROR_CODES.AUTHENTICATION_FAILED;
-    } else if (message.includes('Connection') || message.includes('ECONNREFUSED')) {
+    } else if (message.includes('Connection') || message.includes('ECONNREFUSED') || message.includes('connection failed')) {
       errorCode = ERROR_CODES.CONNECTION_FAILED;
-    } else if (message.includes('ENOENT') || message.includes('not exist')) {
+    } else if (message.includes('authentication') || message.includes('Auth')) {
+      // SSH/authentication errors - but NOT 'permission denied' which is for file access
+      errorCode = ERROR_CODES.AUTHENTICATION_FAILED;
+    } else if (message.includes('ENOENT') || message.includes('not exist') || message.includes('No such file')) {
+      // File/directory not found errors
       errorCode = ERROR_CODES.NOT_FOUND;
-    } else if (message.includes('EACCES') || message.includes('permission')) {
+    } else if (message.includes('EACCES') || message.includes('permission denied') || message.includes('Permission denied')) {
+      // File permission denied - comes after auth check to avoid false positives
       errorCode = ERROR_CODES.PERMISSION_DENIED;
+    } else if (message.includes('Command exited with code')) {
+      // This is a remote command failure - use a more specific code
+      errorCode = ERROR_CODES.TOOL_EXECUTION_ERROR;
     }
 
     context.logger.error(`${options.toolName} failed`, {
@@ -382,9 +390,6 @@ export default class SshModule implements IUnifiedPlugin {
       const validTimeout = Math.min(Math.max(args.timeout, 1000), MAX_TIMEOUT_MS);
       const result = await this.executeCommand(session, args.command, validTimeout);
       
-      // Check buffer for interactive prompts
-      const promptInfo = this.detectInteractivePrompts(session.outputBuffer);
-      
       if (result.exitCode !== 0 && !args.allowFailure) {
         throw new Error(
           `Command exited with code ${result.exitCode}\nOutput: ${result.output || '(no output)'}`
@@ -413,20 +418,30 @@ export default class SshModule implements IUnifiedPlugin {
         },
       };
       
-      // Add prompt detection info if detected
-      if (promptInfo.detected) {
-        response.structuredContent.awaitingInput = true;
-        response.structuredContent.promptType = promptInfo.type;
-        response.structuredContent.promptText = promptInfo.prompt;
-        response.content[0].text += `\n\n⚠️ Awaiting input: ${promptInfo.type} prompt detected. Use ssh_operate with input parameter to respond.`;
+      // Only check for interactive prompts if command didn't complete normally
+      // (i.e., the end marker was not found, indicating potential interactive state)
+      if (!result.completedNormally) {
+        const promptInfo = this.detectInteractivePrompts(session.outputBuffer);
+        if (promptInfo.detected) {
+          response.structuredContent.awaitingInput = true;
+          response.structuredContent.promptType = promptInfo.type;
+          response.structuredContent.promptText = promptInfo.prompt;
+          response.content[0].text += `\n\n⚠️ Awaiting input: ${promptInfo.type} prompt detected. Use ssh_operate with input parameter to respond.`;
+        }
       }
       
       return response;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Extract exit code from error message if present
+      const exitCodeMatch = message.match(/Command exited with code (\d+)/);
+      const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1], 10) : undefined;
+      
       return this.handleError(error, context, {
         toolName: 'ssh_execute',
         sessionId: args.session_id,
         command: args.command,
+        details: exitCode !== undefined ? { exitCode } : undefined,
       });
     }
   }
@@ -578,6 +593,7 @@ export default class SshModule implements IUnifiedPlugin {
 
       let commandOutput = '';
       let exitCode: number | undefined;
+      let commandCompletedNormally = true;
 
       // 3. Execute command or send input
       const inputToSend = args.command || args.input;
@@ -590,6 +606,7 @@ export default class SshModule implements IUnifiedPlugin {
         const result = await this.executeCommand(session, inputToSend, timeout);
         commandOutput = result.output || '';
         exitCode = result.exitCode;
+        commandCompletedNormally = result.completedNormally ?? true;
       }
 
       // 4. Get output
@@ -604,8 +621,10 @@ export default class SshModule implements IUnifiedPlugin {
         output = args.clean !== false ? this.cleanOutput(contentSource) : contentSource;
       }
 
-      // 5. Detect interactive prompts
-      const promptInfo = session.outputBuffer ? this.detectInteractivePrompts(session.outputBuffer) : { detected: false };
+      // 5. Detect interactive prompts - only if command didn't complete normally
+      const promptInfo = (!commandCompletedNormally && session.outputBuffer) 
+        ? this.detectInteractivePrompts(session.outputBuffer) 
+        : { detected: false };
 
       // 6. Build response
       const response: Record<string, unknown> = {
@@ -1003,7 +1022,8 @@ ${buffer || '(empty)'}`;
     session.isReady = false;
     session.outputBuffer = '';
 
-    const timestamp = Date.now();
+    // Use session ID + timestamp for unique markers to avoid collision
+    const timestamp = `${session.id}-${Date.now()}`;
     const startMarker = `===START${timestamp}===`;
     const endMarker = `===END${timestamp}===`;
     const exitMarker = `===EXIT${timestamp}===`;
@@ -1054,6 +1074,7 @@ ${buffer || '(empty)'}`;
       output: cleaned,
       exitCode,
       durationMs: Date.now() - startTime,
+      completedNormally: true,
     };
   }
 
@@ -1176,8 +1197,20 @@ ${buffer || '(empty)'}`;
     remotePath: string,
     timeout: number
   ): Promise<{ message: string; remotePath: string; size: number }> {
-    await fsPromises.access(localPath);
-    const stats = await fsPromises.stat(localPath);
+    let stats;
+    try {
+      stats = await fsPromises.stat(localPath);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === 'ENOENT') {
+        throw new Error(`Local file not found: ${localPath}`);
+      } else if (err.code === 'EACCES') {
+        throw new Error(`Permission denied accessing local file: ${localPath}`);
+      } else if (err.code === 'ENOTDIR') {
+        throw new Error(`Invalid path: ${localPath} is not in a valid directory`);
+      }
+      throw new Error(`Failed to access local file: ${err.message}`);
+    }
     if (!stats.isFile()) {
       throw new Error('Upload source must be a regular file.');
     }
@@ -1221,36 +1254,45 @@ ${buffer || '(empty)'}`;
       // ignore
     }
 
+    // Use simpler approach - encode locally and decode on remote
     const base64Content = (await fsPromises.readFile(localPath)).toString('base64');
-    const chunkSize = 50000;
-    const tempBase64File = `/tmp/mcp_upload_${Date.now()}_${Math.random().toString(
-      36
-    ).slice(2, 8)}.b64`;
-
-    await this.executeCommand(
-      session,
-      `rm -f ${this.escapeShellArg(tempBase64File)}`,
-      10000
-    ).catch(() => {});
-
-    for (let i = 0; i < base64Content.length; i += chunkSize) {
-      const chunk = base64Content.substring(i, i + chunkSize);
-      const cmd = `printf '%s' '${chunk}' >> ${this.escapeShellArg(tempBase64File)}`;
-      await this.executeCommand(session, cmd, 30000);
+    const tempBase64File = `/tmp/mcp_upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
+    
+    // First create the base64 file on remote using echo with base64
+    const createCmd = `echo '${base64Content}' | base64 -d > ${this.escapeShellArg(finalRemotePath)}`;
+    const createResult = await this.executeCommand(session, createCmd, timeout);
+    const decodeResult = createResult;
+    
+    // Check if decode was successful
+    if (decodeResult.exitCode !== 0) {
+      const output = decodeResult.output || '';
+      // Check for specific error types
+      if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
+        throw new Error(`Permission denied writing to remote path: ${finalRemotePath}. Check write permissions for the target directory.`);
+      } else if (output.includes('no such file') || output.includes('No such file')) {
+        throw new Error(`Remote directory does not exist: ${path.dirname(finalRemotePath)}`);
+      }
+      throw new Error(`Failed to decode and write file to remote: ${output || 'Unknown error'}`);
     }
 
-    const decodeCmd = `(base64 -D -i ${this.escapeShellArg(tempBase64File)} -o ${this.escapeShellArg(
-      finalRemotePath
-    )} 2>/dev/null || base64 -d ${this.escapeShellArg(tempBase64File)} > ${
-      this.escapeShellArg(finalRemotePath)
-    }) && rm -f ${this.escapeShellArg(tempBase64File)}`;
-    await this.executeCommand(session, decodeCmd, timeout);
-
+    // Verify the file was actually created on the remote system
     const verify = await this.executeCommand(
       session,
       `ls -lh ${this.escapeShellArg(finalRemotePath)}`,
       10000
     );
+    
+    if (verify.exitCode !== 0) {
+      const output = verify.output || '';
+      if (output.includes('permission denied') || output.includes('Permission denied')) {
+        throw new Error(`Permission denied accessing remote file after upload: ${finalRemotePath}`);
+      }
+      throw new Error(`File upload verification failed. Remote file may not have been created: ${output || 'File not found'}`);
+    }
+    
+    if (!verify.output.includes(path.basename(finalRemotePath))) {
+      throw new Error(`File upload verification failed. Remote file may not have been created: ${verify.output || 'File not found'}`);
+    }
 
     return {
       message: `File uploaded successfully: ${localPath} -> ${finalRemotePath}\n${verify.output}`,
@@ -1265,13 +1307,42 @@ ${buffer || '(empty)'}`;
     localPath: string,
     timeout: number
   ): Promise<{ message: string; localPath: string; size: number }> {
-    const sizeCheckCmd = `test -f ${this.escapeShellArg(remotePath)} && stat -f%z ${this.escapeShellArg(
-      remotePath
-    )} 2>/dev/null || stat -c%s ${this.escapeShellArg(remotePath)} 2>/dev/null`;
-    const sizeOutput = await this.executeCommand(session, sizeCheckCmd, 10000);
-    const fileSize = parseInt(sizeOutput.output.trim(), 10);
+    // First, check if file exists and get its size - use proper quoting
+    const escapedPath = this.escapeShellArg(remotePath);
+    const sizeCheckCmd = `if [ -f ${escapedPath} ]; then stat -c%s ${escapedPath} 2>&1 || stat -f%z ${escapedPath} 2>&1; else echo "FILE_NOT_FOUND"; fi`;
+    const sizeResult = await this.executeCommand(session, sizeCheckCmd, 10000);
+    
+    // Check if command failed (exit code non-zero indicates an error)
+    if (sizeResult.exitCode !== 0) {
+      const output = sizeResult.output || '';
+      // Check if it's a permission issue vs not found
+      if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
+        throw new Error(`Permission denied accessing remote file: ${remotePath}. Check read permissions for the file.`);
+      }
+      if (output.includes('No such file') || output.includes('no such file') || output.includes('cannot stat')) {
+        throw new Error(`Remote file not found: ${remotePath}`);
+      }
+      throw new Error(`Failed to access remote file: ${output || 'Unknown error'}`);
+    }
+    
+    // Check if file doesn't exist (command succeeded but output is FILE_NOT_FOUND)
+    // Extract just the last line that might be the file size or FILE_NOT_FOUND
+    const outputLines = sizeResult.output.trim().split('\n').filter((l: string) => l.trim());
+    const lastLine = outputLines[outputLines.length - 1]?.trim() || '';
+    
+    if (lastLine === 'FILE_NOT_FOUND' || lastLine === '') {
+      throw new Error(`Remote file not found: ${remotePath}`);
+    }
+    
+    // Extract just numeric values from the output (file size)
+    const numericMatch = lastLine.match(/(\d+)/);
+    if (!numericMatch) {
+      throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${sizeResult.output}`);
+    }
+    
+    const fileSize = parseInt(numericMatch[1], 10);
     if (Number.isNaN(fileSize) || fileSize <= 0) {
-      throw new Error(`Failed to determine remote file size for ${remotePath}`);
+      throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${sizeResult.output}`);
     }
     if (fileSize > MAX_FILE_SIZE) {
       throw new Error(
@@ -1279,10 +1350,28 @@ ${buffer || '(empty)'}`;
       );
     }
 
-    const encodeCmd = `base64 ${this.escapeShellArg(remotePath)}`;
-    const base64Content = await this.executeCommand(session, encodeCmd, timeout);
-    const cleaned = base64Content.output.replace(/\s/g, '');
-    const buffer = Buffer.from(cleaned, 'base64');
+    // Download file using base64 encoding
+    const encodeCmd = `base64 ${escapedPath}`;
+    const base64Result = await this.executeCommand(session, encodeCmd, timeout);
+    
+    if (base64Result.exitCode !== 0) {
+      const output = base64Result.output || '';
+      if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
+        throw new Error(`Permission denied reading remote file: ${remotePath}. Check read permissions.`);
+      }
+      if (output.includes('No such file') || output.includes('no such file')) {
+        throw new Error(`Remote file not found: ${remotePath}`);
+      }
+      throw new Error(`Failed to encode remote file: ${output || 'Unknown error'}`);
+    }
+    
+    const cleaned = base64Result.output.replace(/\s/g, '');
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(cleaned, 'base64');
+    } catch (e) {
+      throw new Error(`Failed to decode base64 content: ${e}`);
+    }
 
     await fsPromises.mkdir(path.dirname(localPath), { recursive: true });
     await fsPromises.writeFile(localPath, buffer);

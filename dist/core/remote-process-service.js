@@ -1,0 +1,18 @@
+import { RemoteHttpClient } from './remote-http-client.js'; // Adapted import
+export class RemoteProcessService {
+    constructor(client = new RemoteHttpClient()) {
+        this.client = client;
+    }
+    start(req) {
+        return this.client.post('/v1/exec', req);
+    }
+    get(id) {
+        return this.client.get(`/v1/exec/${encodeURIComponent(id)}`);
+    }
+    outputs(id) {
+        return this.client.get(`/v1/exec/${encodeURIComponent(id)}/outputs`);
+    }
+    kill(id, req) {
+        return this.client.post(`/v1/exec/${encodeURIComponent(id)}/kill`, req ?? {});
+    }
+}
