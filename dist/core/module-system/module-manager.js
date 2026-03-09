@@ -566,7 +566,9 @@ export class ModuleManager extends EventEmitter {
                         result = await executeFn(args);
                     }
                     else {
-                        const TOOL_EXECUTION_TIMEOUT = toolModule?.manifest.timeout || 30000;
+                        // Use timeout from tool args if provided, otherwise use module manifest timeout or default 5 minutes
+                        const userTimeout = args?.timeout || args?.timeout_seconds;
+                        const TOOL_EXECUTION_TIMEOUT = userTimeout || toolModule?.manifest.timeout || 300000;
                         result = await Promise.race([
                             executeFn(args),
                             new Promise((_, reject) => setTimeout(() => reject(new Error(`Tool '${toolId}' execution timed out after ${TOOL_EXECUTION_TIMEOUT}ms`)), TOOL_EXECUTION_TIMEOUT)),
