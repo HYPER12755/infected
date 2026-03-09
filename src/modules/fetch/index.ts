@@ -153,16 +153,8 @@ const validateNetworkAccess = (url: string, moduleConfig?: InfectedConfig['fetch
       body: string,
       label: string
     ) => {
-      return [
-        `${label} ${url}`,
-        `Status: ${status}`,
-        '',
-        'Headers:',
-        buildHeaderText(headers),
-        '',
-        'Body Snippet:',
-        buildBodySnippet(body),
-      ].join('\n');
+      // Return just the body content without extra headers
+      return body;
     };
 
     const formatFetchError = (error: unknown, allowInsecureTls: boolean): string => {

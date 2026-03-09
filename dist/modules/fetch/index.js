@@ -121,16 +121,8 @@ export class FetchModule {
             return `${trimmed.slice(0, limit).trim()} …`;
         };
         const buildContentText = (url, status, headers, body, label) => {
-            return [
-                `${label} ${url}`,
-                `Status: ${status}`,
-                '',
-                'Headers:',
-                buildHeaderText(headers),
-                '',
-                'Body Snippet:',
-                buildBodySnippet(body),
-            ].join('\n');
+            // Return just the body content without extra headers
+            return body;
         };
         const formatFetchError = (error, allowInsecureTls) => {
             const err = error;
