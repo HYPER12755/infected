@@ -409,6 +409,13 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
   }
 
   private async killConflictingGitProcesses(cwd: string, excludePids: number[] = []): Promise<void> {
+    // Skip if running in environment without /proc access (like containers)
+    try {
+      await fsPromises.readdir('/proc');
+    } catch {
+      return; // Skip process killing if /proc is not accessible
+    }
+    
     const entries = await fsPromises.readdir('/proc');
     const gitPids: number[] = [];
 
@@ -580,7 +587,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     timeoutMs: number,
     stdin?: string
   ): Promise<GhRunResult> {
-    await this.killConflictingGitProcesses(cwd);
+    // Skipped: await this.killConflictingGitProcesses(cwd);
     let childPid: number | undefined;
     const result = await new Promise<GhRunResult>((resolve, reject) => {
       const childProcess = spawn('git', commandArgs, {
@@ -638,7 +645,7 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
       childProcess.stdin.end();
     });
 
-    await this.killConflictingGitProcesses(cwd, childPid ? [childPid] : []);
+    // Skipped: await this.killConflictingGitProcesses(cwd, childPid ? [childPid] : []);
     return result;
   }
 

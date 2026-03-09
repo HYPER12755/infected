@@ -264,6 +264,13 @@ class GithubCommandsPlugin {
         return getRuntimeModuleRoot();
     }
     async killConflictingGitProcesses(cwd, excludePids = []) {
+        // Skip if running in environment without /proc access (like containers)
+        try {
+            await fsPromises.readdir('/proc');
+        }
+        catch {
+            return; // Skip process killing if /proc is not accessible
+        }
         const entries = await fsPromises.readdir('/proc');
         const gitPids = [];
         for (const entry of entries) {
@@ -415,7 +422,7 @@ class GithubCommandsPlugin {
         });
     }
     async runGit(commandArgs, cwd, timeoutMs, stdin) {
-        await this.killConflictingGitProcesses(cwd);
+        // Skipped: await this.killConflictingGitProcesses(cwd);
         let childPid;
         const result = await new Promise((resolve, reject) => {
             const childProcess = spawn('git', commandArgs, {
@@ -468,7 +475,7 @@ class GithubCommandsPlugin {
             }
             childProcess.stdin.end();
         });
-        await this.killConflictingGitProcesses(cwd, childPid ? [childPid] : []);
+        // Skipped: await this.killConflictingGitProcesses(cwd, childPid ? [childPid] : []);
         return result;
     }
     splitTokens(input) {
