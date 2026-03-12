@@ -1,7 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
-import { spawn, type IPty } from 'node-pty';
+import { spawn as ptySpawn, type IPty } from 'node-pty';
+import { spawn as cpSpawn, exec } from 'node:child_process';
 import { z } from 'zod';
 import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../core/module-system/module-types.js';
 import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
@@ -865,7 +866,7 @@ ${buffer || '(empty)'}`;
       const localPath = path.resolve(process.cwd(), args.local_path);
       const remoteTarget = this.resolveRemotePath(args.remote_path, session);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
-      const result = await this.uploadFile(session, localPath, remoteTarget, timeout);
+      const result = await this.scpUpload(session, localPath, remoteTarget, timeout);
       return {
         content: [
           {
@@ -904,7 +905,7 @@ ${buffer || '(empty)'}`;
       const remoteTarget = this.resolveRemotePath(args.remote_path, session);
       const localPath = path.resolve(process.cwd(), args.local_path);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
-      const result = await this.downloadFile(session, remoteTarget, localPath, timeout);
+      const result = await this.scpDownload(session, remoteTarget, localPath, timeout);
       return {
         content: [
           {
@@ -959,7 +960,7 @@ ${buffer || '(empty)'}`;
     const shellPath = 'ssh';
     const args = this.buildSshArgs(connection);
 
-    const ptyProcess = spawn(shellPath, args, {
+    const ptyProcess = ptySpawn(shellPath, args, {
       name: 'xterm-256color',
       cols: 160,
       rows: 40,
@@ -1028,24 +1029,45 @@ ${buffer || '(empty)'}`;
     const endMarker = `===END${timestamp}===`;
     const exitMarker = `===EXIT${timestamp}===`;
 
+    // Wait for PTY to stabilize before sending commands
+    await this.sleep(100);
+    
+    // Send a newline first to ensure we're at a clean prompt
+    session.ptyProcess.write('\n');
+    await this.sleep(150);
+    
+    // Write start marker
     session.ptyProcess.write(`echo '${startMarker}'\n`);
     await this.sleep(100);
+    
+    // Write the actual command
     session.ptyProcess.write(`${command}\n`);
     await this.sleep(100);
+    
+    // Write exit code marker
     session.ptyProcess.write(`echo '${exitMarker}'$?\n`);
     await this.sleep(100);
+    
+    // Write end marker
     session.ptyProcess.write(`echo '${endMarker}'\n`);
+    await this.sleep(100);
 
     const startTime = Date.now();
     let foundEnd = false;
+    let stableCount = 0;
 
     while (Date.now() - startTime < timeout) {
       if (session.outputBuffer.includes(endMarker)) {
-        await this.sleep(250);
-        foundEnd = true;
-        break;
+        await this.sleep(200);
+        const prevBuffer = session.outputBuffer;
+        await this.sleep(150);
+        if (session.outputBuffer === prevBuffer || stableCount > 3) {
+          foundEnd = true;
+          break;
+        }
+        stableCount++;
       }
-      await this.sleep(100);
+      await this.sleep(50);
     }
 
     session.isReady = true;
@@ -1085,30 +1107,50 @@ ${buffer || '(empty)'}`;
     endMarker: string,
     exitMarker: string
   ) {
-    const seenLines = new Set<string>();
+    const lines: string[] = [];
     let skippedCommandEcho = false;
     const commandSignature = command.trim();
+    const commandParts = commandSignature.split(/\s+/);
 
-    return raw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => {
-        if (!line) return false;
-        if (line.includes(startMarker) || line.includes(endMarker) || line.includes(exitMarker)) {
-          return false;
-        }
-        if (line.startsWith('echo ')) return false;
-        if (line === commandSignature) return false;
-        if (!skippedCommandEcho && line.endsWith(commandSignature)) {
-          skippedCommandEcho = true;
-          return false;
-        }
-        if (line.match(/^[❯$>#]\s+/)) return false;
-        if (seenLines.has(line)) return false;
-        seenLines.add(line);
-        return true;
-      })
-      .join('\n');
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmedLine = line.trim();
+      
+      // Skip empty lines
+      if (!trimmedLine) continue;
+      
+      // Skip marker lines
+      if (trimmedLine.includes(startMarker) || trimmedLine.includes(endMarker) || trimmedLine.includes(exitMarker)) {
+        continue;
+      }
+      
+      // Skip echo commands themselves
+      if (trimmedLine.startsWith('echo ')) continue;
+      
+      // Skip the command itself (exact match)
+      if (trimmedLine === commandSignature) {
+        skippedCommandEcho = true;
+        continue;
+      }
+      
+      // Skip command echoed with prompt prefix
+      if (trimmedLine.match(/^[❯$>#]\s+/) && trimmedLine.replace(/^[❯$>#]\s+/, '').trim() === commandSignature) {
+        skippedCommandEcho = true;
+        continue;
+      }
+      
+      // Skip if line ends with command (command echo from some shells)
+      if (!skippedCommandEcho && trimmedLine.endsWith(commandSignature)) {
+        skippedCommandEcho = true;
+        continue;
+      }
+      
+      // Skip prompt-only lines
+      if (trimmedLine.match(/^[❯$>#]\s*$/)) continue;
+      
+      lines.push(trimmedLine);
+    }
+
+    return lines.join('\n');
   }
 
   private appendHistory(session: TerminalSession, entry: string) {
@@ -1191,6 +1233,158 @@ ${buffer || '(empty)'}`;
     return `'${escaped}'`;
   }
 
+  private buildScpArgs(target: SSHConnectionTarget): string[] {
+    const args: string[] = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no'];
+    if (target.identityFile) {
+      args.push('-i', target.identityFile);
+    }
+    if (target.port) {
+      args.push('-P', String(target.port));
+    }
+    return args;
+  }
+
+  private buildScpRemotePath(target: SSHConnectionTarget, remotePath: string): string {
+    return `${target.user}@${target.host}:${remotePath}`;
+  }
+
+  private async execPromise(command: string, timeout: number): Promise<{ stdout: string; stderr: string; code: number }> {
+    return new Promise((resolve, reject) => {
+      exec(command, { timeout }, (error, stdout, stderr) => {
+        if (error) {
+          const errCode = (error as NodeJS.ErrnoException).code;
+          resolve({ stdout, stderr, code: typeof errCode === 'number' ? errCode : 1 });
+        } else {
+          resolve({ stdout, stderr, code: 0 });
+        }
+      });
+    });
+  }
+
+  private async scpUpload(
+    session: TerminalSession,
+    localPath: string,
+    remotePath: string,
+    timeout: number
+  ): Promise<{ message: string; remotePath: string; size: number }> {
+    if (!session.target) {
+      throw new Error('No SSH target configured for this session');
+    }
+
+    const stats = await fsPromises.stat(localPath);
+    if (!stats.isFile()) {
+      throw new Error('Upload source must be a regular file.');
+    }
+    if (stats.size > MAX_FILE_SIZE) {
+      throw new Error(`File size (${(stats.size / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`);
+    }
+
+    const target = session.target;
+    const scpArgs = [
+      ...this.buildScpArgs(target),
+      localPath,
+      this.buildScpRemotePath(target, remotePath)
+    ];
+
+    return new Promise((resolve, reject) => {
+      const proc = cpSpawn('scp', scpArgs, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => { stdout += data; });
+      proc.stderr.on('data', (data) => { stderr += data; });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve({
+            message: `File uploaded successfully: ${localPath} -> ${this.buildScpRemotePath(target, remotePath)}`,
+            remotePath,
+            size: stats.size,
+          });
+        } else {
+          const errorMsg = stderr || stdout || `SCP failed with code ${code}`;
+          if (errorMsg.includes('permission denied') || errorMsg.includes('Permission denied')) {
+            reject(new Error(`Permission denied writing to remote path: ${remotePath}. Check write permissions.`));
+          } else if (errorMsg.includes('No such file') || errorMsg.includes('no such file')) {
+            reject(new Error(`Remote directory does not exist: ${path.dirname(remotePath)}`));
+          } else {
+            reject(new Error(`SCP upload failed: ${errorMsg}`));
+          }
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`SCP process error: ${err.message}`));
+      });
+    });
+  }
+
+  private async scpDownload(
+    session: TerminalSession,
+    remotePath: string,
+    localPath: string,
+    timeout: number
+  ): Promise<{ message: string; localPath: string; size: number }> {
+    if (!session.target) {
+      throw new Error('No SSH target configured for this session');
+    }
+
+    const target = session.target;
+    const scpArgs = [
+      ...this.buildScpArgs(target),
+      this.buildScpRemotePath(target, remotePath),
+      localPath
+    ];
+
+    return new Promise((resolve, reject) => {
+      const proc = cpSpawn('scp', scpArgs, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => { stdout += data; });
+      proc.stderr.on('data', (data) => { stderr += data; });
+
+      proc.on('close', async (code) => {
+        if (code === 0) {
+          try {
+            const localStats = await fsPromises.stat(localPath);
+            if (localStats.size > MAX_FILE_SIZE) {
+              await fsPromises.unlink(localPath).catch(() => {});
+              reject(new Error(`Remote file (${(localStats.size / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`));
+              return;
+            }
+            resolve({
+              message: `File downloaded successfully: ${this.buildScpRemotePath(target, remotePath)} -> ${localPath}\nSize: ${(localStats.size / 1024).toFixed(2)}KB`,
+              localPath,
+              size: localStats.size,
+            });
+          } catch (err) {
+            reject(new Error(`Download succeeded but failed to verify local file: ${err}`));
+          }
+        } else {
+          const errorMsg = stderr || stdout || `SCP failed with code ${code}`;
+          if (errorMsg.includes('permission denied') || errorMsg.includes('Permission denied')) {
+            reject(new Error(`Permission denied reading remote file: ${remotePath}. Check read permissions.`));
+          } else if (errorMsg.includes('No such file') || errorMsg.includes('no such file')) {
+            reject(new Error(`Remote file not found: ${remotePath}`));
+          } else {
+            reject(new Error(`SCP download failed: ${errorMsg}`));
+          }
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`SCP process error: ${err.message}`));
+      });
+    });
+  }
+
   private async uploadFile(
     session: TerminalSession,
     localPath: string,
@@ -1258,10 +1452,14 @@ ${buffer || '(empty)'}`;
     const base64Content = (await fsPromises.readFile(localPath)).toString('base64');
     const tempBase64File = `/tmp/mcp_upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
     
-    // First create the base64 file on remote using echo with base64
-    const createCmd = `echo '${base64Content}' | base64 -d > ${this.escapeShellArg(finalRemotePath)}`;
-    const createResult = await this.executeCommand(session, createCmd, timeout);
-    const decodeResult = createResult;
+    // Use a temp file approach to avoid command line length issues
+    // First, write base64 content to a temp file using printf (more reliable than echo)
+    const writeTempCmd = `printf '%s' '${base64Content}' > ${this.escapeShellArg(tempBase64File)}`;
+    await this.executeCommand(session, writeTempCmd, timeout);
+    
+    // Then decode the temp file to the destination
+    const decodeCmd = `base64 -d ${this.escapeShellArg(tempBase64File)} > ${this.escapeShellArg(finalRemotePath)} && rm -f ${this.escapeShellArg(tempBase64File)}`;
+    const decodeResult = await this.executeCommand(session, decodeCmd, timeout);
     
     // Check if decode was successful
     if (decodeResult.exitCode !== 0) {
@@ -1350,12 +1548,15 @@ ${buffer || '(empty)'}`;
       );
     }
 
-    // Download file using base64 encoding
-    const encodeCmd = `base64 ${escapedPath}`;
-    const base64Result = await this.executeCommand(session, encodeCmd, timeout);
+    // Download file using base64 encoding via temp file (to avoid buffer limits)
+    const tempRemoteFile = `/tmp/mcp_download_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
     
-    if (base64Result.exitCode !== 0) {
-      const output = base64Result.output || '';
+    // Encode to temp file on remote
+    const encodeCmd = `base64 ${escapedPath} > ${this.escapeShellArg(tempRemoteFile)}`;
+    const encodeResult = await this.executeCommand(session, encodeCmd, timeout);
+    
+    if (encodeResult.exitCode !== 0) {
+      const output = encodeResult.output || '';
       if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
         throw new Error(`Permission denied reading remote file: ${remotePath}. Check read permissions.`);
       }
@@ -1365,7 +1566,14 @@ ${buffer || '(empty)'}`;
       throw new Error(`Failed to encode remote file: ${output || 'Unknown error'}`);
     }
     
-    const cleaned = base64Result.output.replace(/\s/g, '');
+    // Read the temp file content - use cat with careful extraction
+    const readTempCmd = `cat ${this.escapeShellArg(tempRemoteFile)}`;
+    const tempResult = await this.executeCommand(session, readTempCmd, timeout);
+    
+    // Clean up temp file
+    await this.executeCommand(session, `rm -f ${this.escapeShellArg(tempRemoteFile)}`, 5000);
+    
+    const cleaned = tempResult.output.replace(/[\s\n\r]+/g, '');
     let buffer: Buffer;
     try {
       buffer = Buffer.from(cleaned, 'base64');
