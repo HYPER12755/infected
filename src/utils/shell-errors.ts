@@ -1,5 +1,38 @@
 import { ErrorCategory, ErrorInfo } from '../types/shell-server/index.js'; // Adapted import
 
+/**
+ * Safely extracts error message from any error type
+ * @param error - The error object (could be Error, string, or any type)
+ * @returns A safe string representation of the error
+ */
+export function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as Record<string, unknown>).message);
+  }
+  return String(error || 'Unknown error');
+}
+
+/**
+ * Safely extracts error details from any error type
+ * @param error - The error object
+ * @returns Error details object
+ */
+export function getErrorDetails(error: unknown): Record<string, unknown> {
+  if (error instanceof MCPShellError) {
+    return error.details || {};
+  }
+  if (error instanceof Error && error.stack) {
+    return { stack: error.stack };
+  }
+  return {};
+}
+
 export class MCPShellError extends Error {
   public readonly code: string;
   public readonly category: ErrorCategory;

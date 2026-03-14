@@ -1,10 +1,15 @@
+// Configuration constants
+const DEFAULT_EXECUTOR_HOST = '127.0.0.1';
+const DEFAULT_EXECUTOR_PORT = '4030';
+const DEFAULT_EXECUTOR_TIMEOUT = 15000; // 15 seconds
 export class RemoteHttpClient {
     constructor(opts) {
-        const envUrl = process.env['EXECUTOR_URL'] || `http://${process.env['EXECUTOR_HOST'] || '127.0.0.1'}:${process.env['EXECUTOR_PORT'] || '4030'}`;
+        const envUrl = process.env['EXECUTOR_URL'] ||
+            `http://${process.env['EXECUTOR_HOST'] || DEFAULT_EXECUTOR_HOST}:${process.env['EXECUTOR_PORT'] || DEFAULT_EXECUTOR_PORT}`;
         this.baseUrl = (opts?.baseUrl || envUrl).replace(/\/$/, '');
         const tok = opts?.token ?? process.env['EXECUTOR_TOKEN'];
         this.token = tok === undefined ? undefined : String(tok);
-        this.timeoutMs = opts?.timeoutMs ?? 15000;
+        this.timeoutMs = opts?.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT;
     }
     async get(path) {
         const controller = new AbortController();

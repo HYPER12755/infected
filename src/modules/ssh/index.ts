@@ -4,8 +4,42 @@ import { promises as fsPromises } from 'node:fs';
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import { spawn as cpSpawn, exec } from 'node:child_process';
 import { z } from 'zod';
+import { EventEmitter } from 'node:events';
 import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../core/module-system/module-types.js';
 import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
+import logger from '../../core/logger.js';
+
+// ===== STREAMING TYPES FOR SSH =====
+/**
+ * Tracks an SSH execution that uses real-time streaming
+ */
+interface StreamingSSHExecution {
+  executionId: string;
+  sessionId: string;
+  command: string;
+  status: 'running' | 'completed' | 'failed' | 'timeout';
+  startTime: number;
+  exitCode?: number;
+  totalOutput: string;
+  outputChunks: string[];
+  lastUpdate: number;
+  emitter: EventEmitter;
+}
+
+/**
+ * SSH stream update event
+ */
+interface SSHStreamOutputUpdate {
+  type: 'output' | 'complete' | 'error' | 'timeout';
+  executionId: string;
+  sessionId: string;
+  data?: string;
+  isStderr?: boolean;
+  timestamp: number;
+  exitCode?: number;
+  duration?: number;
+  error?: string;
+}
 
 const DEFAULT_SESSION_ID = 'default';
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -102,6 +136,10 @@ const sshOperateSchema = z.object({
     .optional()
     .default(DEFAULT_TIMEOUT_MS)
     .describe('Timeout in milliseconds for command execution.'),
+  output_id: z
+    .string()
+    .optional()
+    .describe('Unique ID for streaming output subscription. If provided, real-time output updates will be emitted.'),
 });
 
 const sshBufferSchema = z.object({
@@ -175,6 +213,38 @@ export default class SshModule implements IUnifiedPlugin {
 
   private sessions = new Map<string, TerminalSession>();
   private deregisterFns: Array<() => void> = [];
+
+  // ===== STREAMING SUPPORT =====
+  private streamingExecutions = new Map<string, StreamingSSHExecution>();
+  private streamingEnabled = process.env.MCP_SSH_ENABLE_STREAMING !== 'false';
+  private streamUpdateCallbacks: Array<(update: SSHStreamOutputUpdate) => void> = [];
+
+  // ===== STREAMING METHODS =====
+  onSSHStreamUpdate(callback: (update: SSHStreamOutputUpdate) => void): () => void {
+    this.streamUpdateCallbacks.push(callback);
+    return () => {
+      const index = this.streamUpdateCallbacks.indexOf(callback);
+      if (index > -1) {
+        this.streamUpdateCallbacks.splice(index, 1);
+      }
+    };
+  }
+
+  private emitSSHStreamUpdate(update: SSHStreamOutputUpdate): void {
+    for (const callback of this.streamUpdateCallbacks) {
+      try {
+        callback(update);
+      } catch (error) {
+        logger.error('Error in SSH stream update callback:', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  getSSHStreamingStatus(executionId: string): StreamingSSHExecution | undefined {
+    return this.streamingExecutions.get(executionId);
+  }
 
   async onLoad(context: UnifiedModuleContext): Promise<void> {
     this.registerSshExecute(context);
@@ -595,6 +665,7 @@ export default class SshModule implements IUnifiedPlugin {
       let commandOutput = '';
       let exitCode: number | undefined;
       let commandCompletedNormally = true;
+      const executionStartTime = Date.now();
 
       // 3. Execute command or send input
       const inputToSend = args.command || args.input;
@@ -621,6 +692,34 @@ export default class SshModule implements IUnifiedPlugin {
         const contentSource = session.historyLog || session.outputBuffer;
         output = args.clean !== false ? this.cleanOutput(contentSource) : contentSource;
       }
+
+      // ===== STREAMING: Emit SSH execution updates =====
+      if (this.streamingEnabled && args.output_id) {
+        const executionDuration = Date.now() - executionStartTime;
+        
+        // Emit output chunks
+        if (commandOutput) {
+          this.emitSSHStreamUpdate({
+            type: 'output',
+            executionId: args.output_id,
+            sessionId: sessionId!,
+            data: commandOutput,
+            isStderr: false,
+            timestamp: Date.now(),
+          });
+        }
+        
+        // Emit completion event
+        this.emitSSHStreamUpdate({
+          type: 'complete',
+          executionId: args.output_id,
+          sessionId: sessionId!,
+          exitCode: exitCode || 0,
+          duration: executionDuration,
+          timestamp: Date.now(),
+        });
+      }
+      // ===== END STREAMING ====
 
       // 5. Detect interactive prompts - only if command didn't complete normally
       const promptInfo = (!commandCompletedNormally && session.outputBuffer) 
@@ -995,7 +1094,7 @@ ${buffer || '(empty)'}`;
 
     ptyProcess.onExit((e: { exitCode: number; signal?: number }) => {
       session.isConnected = false;
-      console.error(`[SSH] Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
+      logger.warn(`SSH Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
       this.sessions.delete(sessionId);
     });
 

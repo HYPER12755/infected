@@ -3,6 +3,7 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
+import logger from '../core/logger.js';
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultInstallRoot = path.resolve(moduleDir, '../..');
 const defaultWorkspaceRoot = process.cwd();
@@ -55,7 +56,7 @@ export class ConfigManager {
                 }
             }
             catch (error) {
-                console.warn(`Could not read or parse infected.config.json: ${error}`);
+                logger.warn(`Could not read or parse infected.config.json: ${error instanceof Error ? error.message : String(error)}`);
             }
         }
         // 3. Merge configurations (env vars have highest precedence after CLI, then file, then defaults)

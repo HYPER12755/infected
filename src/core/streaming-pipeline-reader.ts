@@ -8,6 +8,11 @@ import { FileManager } from './file-manager.js'; // Adapted import
 import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // Adapted import
 import logger from './logger.js'; // Use our central logger
 
+// Configuration constants
+const DEFAULT_READ_TIMEOUT = 30000; // 30 seconds for stream reading
+const DEFAULT_BUFFER_SIZE = 8192; // 8 KB
+const DEFAULT_POLLING_INTERVAL = 100; // 100 milliseconds
+
 interface StreamingPipelineOptions {
   /** 読み取りタイムアウト（ミリ秒）*/
   readTimeout?: number;
@@ -52,9 +57,9 @@ export class StreamingPipelineReader extends Readable {
     this.outputId = outputId;
     this.executionId = executionId;
     this.options = {
-      readTimeout: 30000, // 30秒
-      bufferSize: 8192,
-      pollingInterval: 100, // 100ms
+      readTimeout: DEFAULT_READ_TIMEOUT,
+      bufferSize: DEFAULT_BUFFER_SIZE,
+      pollingInterval: DEFAULT_POLLING_INTERVAL,
       ...options,
     };
   }

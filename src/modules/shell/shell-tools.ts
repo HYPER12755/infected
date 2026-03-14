@@ -1,5 +1,37 @@
 import type { ShellType, Dimensions, SafetyEvaluationResult, ExecutionInfo } from '../../types/shell-server/index.js'; // Adapted import
 import logger from '../../core/logger.js'; // Use our central logger
+import { EventEmitter } from 'node:events';
+
+// ===== STREAMING TYPES =====
+/**
+ * Tracks a shell execution that uses real-time streaming
+ */
+interface StreamingShellExecution {
+  executionId: string;
+  command: string;
+  workingDirectory: string;
+  status: 'running' | 'completed' | 'failed' | 'timeout';
+  startTime: number;
+  exitCode?: number;
+  totalOutput: string;
+  outputChunks: string[];
+  lastUpdate: number;
+  emitter: EventEmitter;
+}
+
+/**
+ * Stream update event
+ */
+interface StreamOutputUpdate {
+  type: 'output' | 'complete' | 'error' | 'timeout';
+  executionId: string;
+  data?: string;
+  isStderr?: boolean;
+  timestamp: number;
+  exitCode?: number;
+  duration?: number;
+  error?: string;
+}
 
 // Tool response type for safety evaluation
 interface ToolSafetyEvaluationResponse {
@@ -71,6 +103,11 @@ import { saveCriteria as _saveCriteria, getCriteriaStatus as _getCriteriaStatus 
 // ...existing code...
 
 export class ShellTools {
+  // ===== STREAMING SUPPORT =====
+  private streamingExecutions = new Map<string, StreamingShellExecution>();
+  private streamingEnabled = process.env.MCP_SHELL_ENABLE_STREAMING !== 'false';
+  private streamUpdateCallbacks: Array<(update: StreamOutputUpdate) => void> = [];
+
   constructor(
     private processManager: ProcessManager,
     private terminalManager: TerminalManager,
@@ -78,7 +115,38 @@ export class ShellTools {
     private monitoringManager: MonitoringManager,
     private securityManager: SecurityManager,
     private historyManager: CommandHistoryManager
-  ) {}
+  ) {
+    logger.debug('ShellTools initialized with streaming support', {
+      streamingEnabled: this.streamingEnabled,
+    });
+  }
+
+  // ===== STREAMING METHODS =====
+  onStreamUpdate(callback: (update: StreamOutputUpdate) => void): () => void {
+    this.streamUpdateCallbacks.push(callback);
+    return () => {
+      const index = this.streamUpdateCallbacks.indexOf(callback);
+      if (index > -1) {
+        this.streamUpdateCallbacks.splice(index, 1);
+      }
+    };
+  }
+
+  private emitStreamUpdate(update: StreamOutputUpdate): void {
+    for (const callback of this.streamUpdateCallbacks) {
+      try {
+        callback(update);
+      } catch (error) {
+        logger.error('Error in stream update callback:', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  getStreamingStatus(executionId: string): StreamingShellExecution | undefined {
+    return this.streamingExecutions.get(executionId);
+  }
 
   // Simple backend switch: local (default) or remote
   private isRemoteBackend(): boolean {
@@ -249,6 +317,38 @@ export class ShellTools {
       if (safetyEvaluation) {
         response['safety_evaluation'] = safetyEvaluation.generateToolResponse();
       }
+
+      // ===== STREAMING: Emit output updates =====
+      if (this.streamingEnabled && params.output_id) {
+        if (executionInfo.stdout) {
+          this.emitStreamUpdate({
+            type: 'output',
+            executionId: params.output_id,
+            data: executionInfo.stdout,
+            isStderr: false,
+            timestamp: Date.now(),
+          });
+        }
+        if (executionInfo.stderr) {
+          this.emitStreamUpdate({
+            type: 'output',
+            executionId: params.output_id,
+            data: executionInfo.stderr,
+            isStderr: true,
+            timestamp: Date.now(),
+          });
+        }
+        this.emitStreamUpdate({
+          type: 'complete',
+          executionId: params.output_id,
+          exitCode: executionInfo.exit_code,
+          duration: executionInfo.execution_time_ms,
+          timestamp: Date.now(),
+        });
+        response['streaming_enabled'] = true;
+        response['output_id'] = params.output_id;
+      }
+      // ===== END STREAMING =====
 
       return response;
     } catch (error) {

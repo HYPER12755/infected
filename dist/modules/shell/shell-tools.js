@@ -11,6 +11,38 @@ export class ShellTools {
         this.monitoringManager = monitoringManager;
         this.securityManager = securityManager;
         this.historyManager = historyManager;
+        // ===== STREAMING SUPPORT =====
+        this.streamingExecutions = new Map();
+        this.streamingEnabled = process.env.MCP_SHELL_ENABLE_STREAMING !== 'false';
+        this.streamUpdateCallbacks = [];
+        logger.debug('ShellTools initialized with streaming support', {
+            streamingEnabled: this.streamingEnabled,
+        });
+    }
+    // ===== STREAMING METHODS =====
+    onStreamUpdate(callback) {
+        this.streamUpdateCallbacks.push(callback);
+        return () => {
+            const index = this.streamUpdateCallbacks.indexOf(callback);
+            if (index > -1) {
+                this.streamUpdateCallbacks.splice(index, 1);
+            }
+        };
+    }
+    emitStreamUpdate(update) {
+        for (const callback of this.streamUpdateCallbacks) {
+            try {
+                callback(update);
+            }
+            catch (error) {
+                logger.error('Error in stream update callback:', {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+    }
+    getStreamingStatus(executionId) {
+        return this.streamingExecutions.get(executionId);
     }
     // Simple backend switch: local (default) or remote
     isRemoteBackend() {
@@ -145,6 +177,37 @@ export class ShellTools {
             if (safetyEvaluation) {
                 response['safety_evaluation'] = safetyEvaluation.generateToolResponse();
             }
+            // ===== STREAMING: Emit output updates =====
+            if (this.streamingEnabled && params.output_id) {
+                if (executionInfo.stdout) {
+                    this.emitStreamUpdate({
+                        type: 'output',
+                        executionId: params.output_id,
+                        data: executionInfo.stdout,
+                        isStderr: false,
+                        timestamp: Date.now(),
+                    });
+                }
+                if (executionInfo.stderr) {
+                    this.emitStreamUpdate({
+                        type: 'output',
+                        executionId: params.output_id,
+                        data: executionInfo.stderr,
+                        isStderr: true,
+                        timestamp: Date.now(),
+                    });
+                }
+                this.emitStreamUpdate({
+                    type: 'complete',
+                    executionId: params.output_id,
+                    exitCode: executionInfo.exit_code,
+                    duration: executionInfo.execution_time_ms,
+                    timestamp: Date.now(),
+                });
+                response['streaming_enabled'] = true;
+                response['output_id'] = params.output_id;
+            }
+            // ===== END STREAMING =====
             return response;
         }
         catch (error) {

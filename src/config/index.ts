@@ -4,6 +4,7 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'node:url';
+import logger from '../core/logger.js';
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultInstallRoot = path.resolve(moduleDir, '../..');
@@ -70,7 +71,7 @@ export class ConfigManager {
           (fileConfig as any).transport = normalizeTransportValue((fileConfig as any).transport);
         }
       } catch (error) {
-        console.warn(`Could not read or parse infected.config.json: ${error}`);
+        logger.warn(`Could not read or parse infected.config.json: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
