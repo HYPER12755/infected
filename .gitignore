@@ -12,3 +12,7 @@ dist/.tsbuildinfo-tools
 .DS_Store
 git+gh.md
 .infected/
+_nazmiforreal-infected-*
+
+.gemini/
+gha-creds-*.json
