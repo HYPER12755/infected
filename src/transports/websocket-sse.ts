@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import logger from './logger.js';
+import logger from '../core/logger.js';
 
 export interface StreamMessage {
   type: 'output' | 'error' | 'complete' | 'heartbeat' | 'subscribe' | 'unsubscribe';

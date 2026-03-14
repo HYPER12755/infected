@@ -3,7 +3,7 @@
  * Provides bidirectional streaming over WebSocket protocol
  */
 import { EventEmitter } from 'node:events';
-import logger from './logger.js';
+import logger from '../core/logger.js';
 /**
  * WebSocket Transport Handler
  */

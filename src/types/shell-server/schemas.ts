@@ -111,6 +111,10 @@ const ShellExecuteParamsBaseSchema = z
       .describe(
         'Force user confirmation regardless of LLM evaluation result. Use this to test ELICITATION functionality or when you want direct user confirmation even for safe commands.'
       ),
+    output_id: z
+      .string()
+      .optional()
+      .describe('Output ID for streaming response'),
   })
   .strict();
 
