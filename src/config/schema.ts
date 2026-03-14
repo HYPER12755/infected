@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+// Configuration constants
+const DEFAULT_PORT = 3000;
+const MIN_PORT = 1;
+const MAX_PORT = 65535;
+const DEFAULT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 // Custom schema for API Key validation
 const ApiKeySchema = z.string().min(8, "API Key must be at least 8 characters long.");
 
@@ -12,7 +18,7 @@ export const ProcessManagerConfigSchema = z.object({
 export const InfectedConfigSchema = z.object({
   transport: z.union([z.literal('stdio'), z.literal('http'), z.literal('sse'), z.literal('websocket')]).default('stdio'),
   modules: z.array(z.string()).default(['shell', 'filesystem', 'memory', 'sequentialthinking', 'fetch', 'system']),
-  port: z.number().int().positive().default(3000),
+  port: z.number().int().min(MIN_PORT).max(MAX_PORT).default(DEFAULT_PORT),
   hotReload: z.boolean().default(false),
   toolsDir: z.string().default('./tools'),
   pluginsDir: z.string().default('./plugins'),
@@ -33,7 +39,7 @@ export const InfectedConfigSchema = z.object({
   })).default([]),
   cache: z.object({
     enabled: z.boolean().default(true).describe("Enable or disable tool caching."),
-    defaultTTL: z.number().int().min(1000).default(5 * 60 * 1000).describe("Default cache entry time-to-live in milliseconds (min 1 second)."), // 5 minutes
+    defaultTTL: z.number().int().min(1000).default(DEFAULT_CACHE_TTL).describe("Default cache entry time-to-live in milliseconds (min 1 second)."),
     maxSize: z.number().int().min(1).default(1000).describe("Maximum number of cache entries."),
   }).default({}).describe("Configuration for the tool caching system."),
   auth: z.object({

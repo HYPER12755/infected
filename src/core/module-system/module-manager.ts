@@ -22,6 +22,11 @@ import { hrtime } from 'node:process';
 import { z } from 'zod';
 import { EventEmitter } from 'node:events'; // Import EventEmitter
 
+// Configuration constants
+const DEFAULT_MODULE_LOAD_TIMEOUT = 5000; // 5 seconds
+const DEFAULT_MODULE_UNLOAD_TIMEOUT = 3000; // 3 seconds
+const DEFAULT_TOOL_EXECUTION_TIMEOUT = 300000; // 5 minutes (300 seconds)
+
 interface LegacyModuleLike {
   name?: string;
   register: (server: McpServer, config: InfectedConfig, managers: ManagerInstances) => Promise<void> | void;
@@ -454,7 +459,7 @@ export class ModuleManager extends EventEmitter {
       const moduleContext: UnifiedModuleContext = this.createModuleContext();
 
       logger.info(`ModuleManager: Initializing module '${moduleInstance.manifest.name}' (type: ${moduleInstance.manifest.type}, v${moduleInstance.manifest.version})...`);
-      const MODULE_LOAD_TIMEOUT = moduleInstance.manifest.timeout || 5000;
+      const MODULE_LOAD_TIMEOUT = moduleInstance.manifest.timeout || DEFAULT_MODULE_LOAD_TIMEOUT;
       await Promise.race([
         moduleInstance.onLoad(moduleContext),
         new Promise((_, reject) =>
@@ -491,7 +496,7 @@ export class ModuleManager extends EventEmitter {
     try {
       logger.info(`ModuleManager: Unloading module '${moduleInstance.manifest.name}'...`);
       if (moduleInstance.onUnload) {
-        const MODULE_UNLOAD_TIMEOUT = moduleInstance.manifest.timeout || 3000;
+        const MODULE_UNLOAD_TIMEOUT = moduleInstance.manifest.timeout || DEFAULT_MODULE_UNLOAD_TIMEOUT;
         await Promise.race([
           moduleInstance.onUnload(),
           new Promise((_, reject) =>
@@ -639,7 +644,7 @@ export class ModuleManager extends EventEmitter {
           } else {
             // Use timeout from tool args if provided, otherwise use module manifest timeout or default 5 minutes
             const userTimeout = args?.timeout || args?.timeout_seconds;
-            const TOOL_EXECUTION_TIMEOUT = userTimeout || toolModule?.manifest.timeout || 300000;
+            const TOOL_EXECUTION_TIMEOUT = userTimeout || toolModule?.manifest.timeout || DEFAULT_TOOL_EXECUTION_TIMEOUT;
             result = await Promise.race([
               executeFn(args),
               new Promise((_, reject) =>

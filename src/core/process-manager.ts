@@ -33,6 +33,11 @@ import { StreamingPipelineReader } from './streaming-pipeline-reader.js'; // Ada
 import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // Adapted import
 import logger from './logger.js'; // Use our central logger
 
+// Configuration constants
+const DEFAULT_PROCESS_TIMEOUT = 5000; // 5 seconds for process operations
+const PROCESS_CLEANUP_TIMEOUT = 5000; // 5 seconds for cleanup operations
+const GRACEFUL_SHUTDOWN_TIMEOUT = 10000; // 10 seconds for graceful shutdown
+
 // Shell detection helper - finds available shell
 function getShellPath(): string {
   const shells = ['/bin/bash', '/usr/bin/bash', '/bin/sh', '/usr/bin/sh', '/bin/zsh', '/usr/bin/zsh'];
@@ -551,7 +556,7 @@ export class ProcessManager {
           if (!child.killed) {
             child.kill('SIGKILL');
           }
-        }, 5000);
+        }, DEFAULT_PROCESS_TIMEOUT);
       }, options.timeoutSeconds * 1000);
 
       child.on('close', () => {
@@ -595,7 +600,7 @@ export class ProcessManager {
           if (!childProcess.killed) {
             childProcess.kill('SIGKILL');
           }
-        }, 5000);
+        }, DEFAULT_PROCESS_TIMEOUT);
 
         const executionInfo = this.executions.get(executionId);
         const executionTime = Date.now() - startTime;
@@ -792,7 +797,7 @@ export class ProcessManager {
           if (!childProcess.killed) {
             childProcess.kill('SIGKILL');
           }
-        }, 5000);
+        }, DEFAULT_PROCESS_TIMEOUT);
 
         const executionInfo = this.executions.get(executionId);
         if (executionInfo) {
@@ -1054,7 +1059,7 @@ export class ProcessManager {
         if (!childProcess.killed) {
           childProcess.kill('SIGKILL');
         }
-      }, 5000);
+      }, DEFAULT_PROCESS_TIMEOUT);
 
       const executionInfo = this.executions.get(executionId);
       if (executionInfo) {
@@ -1206,7 +1211,7 @@ export class ProcessManager {
         if (!childProcess.killed) {
           childProcess.kill('SIGKILL');
         }
-      }, 5000);
+      }, DEFAULT_PROCESS_TIMEOUT);
 
       const executionInfo = this.executions.get(executionId);
       if (executionInfo) {
@@ -1732,7 +1737,7 @@ export class ProcessManager {
           if (!childProcess.killed) {
             childProcess.kill('SIGKILL');
           }
-        }, 5000);
+        }, DEFAULT_PROCESS_TIMEOUT);
       } catch (error) {
         logger.error(`Failed to cleanup process:`, { error: error instanceof Error ? error.message : String(error)});
       }

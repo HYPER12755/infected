@@ -4,6 +4,10 @@
  */
 import { Readable } from 'node:stream'; // Use node:stream
 import logger from './logger.js'; // Use our central logger
+// Configuration constants
+const DEFAULT_READ_TIMEOUT = 30000; // 30 seconds for stream reading
+const DEFAULT_BUFFER_SIZE = 8192; // 8 KB
+const DEFAULT_POLLING_INTERVAL = 100; // 100 milliseconds
 /**
  * input_output_idが実行中プロセスの場合に使用するStreamingリーダー
  * 1. まずFileの既存内容を読み取り
@@ -23,9 +27,9 @@ export class StreamingPipelineReader extends Readable {
         this.outputId = outputId;
         this.executionId = executionId;
         this.options = {
-            readTimeout: 30000, // 30秒
-            bufferSize: 8192,
-            pollingInterval: 100, // 100ms
+            readTimeout: DEFAULT_READ_TIMEOUT,
+            bufferSize: DEFAULT_BUFFER_SIZE,
+            pollingInterval: DEFAULT_POLLING_INTERVAL,
             ...options,
         };
     }

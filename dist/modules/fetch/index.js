@@ -6,9 +6,6 @@ import * as cheerio from 'cheerio';
 import robotsParser from 'robots-parser';
 import logger from '../../core/logger.js';
 import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
-// Define the URL for the external Python Fetch Microservice
-// This can be configured via environment variables or infected.config.json
-const PYTHON_FETCH_MICROSERVICE_URL = process.env.PYTHON_FETCH_MICROSERVICE_URL || 'http://localhost:5000';
 // Zod schemas for fetch tool arguments
 const fetchArgsSchema = z.object({
     url: z.string().url().describe("The URL to fetch"),
@@ -142,17 +139,15 @@ export class FetchModule {
             }
             return message;
         };
-        this.deregisterFunctions.push(server.registerTool("fetch", {
-            title: "Fetch URL",
-            description: "Fetches content from a URL using HTTP. Supports GET, POST, PUT, DELETE methods, headers, and body. Can return text, JSON, or markdown. Performs security validation (robots.txt, domain whitelist, local network block).",
-            inputSchema: fetchArgsSchema,
-            outputSchema: {
-                status: z.number(),
-                headers: z.record(z.string(), z.unknown()),
-                data: z.unknown(),
-                bodySnippet: z.string().optional(),
-                url: z.string(),
-            },
+        // Register fetch tool
+        const deregister = server.tool('fetch', {
+            url: fetchArgsSchema.shape.url,
+            method: fetchArgsSchema.shape.method,
+            headers: fetchArgsSchema.shape.headers,
+            body: fetchArgsSchema.shape.body,
+            timeout: fetchArgsSchema.shape.timeout,
+            responseType: fetchArgsSchema.shape.responseType,
+            allowInsecureTls: fetchArgsSchema.shape.allowInsecureTls,
         }, async (args) => {
             try {
                 // Security checks
@@ -193,36 +188,37 @@ export class FetchModule {
                 const message = formatFetchError(error, allowInsecureTls);
                 logger.error(`Error fetching URL ${args.url}: ${message}`);
                 let errorCode = ERROR_CODES.FETCH_ERROR;
-                if (message.includes('ENOTFOUND') || message.includes('404')) {
+                const lowerMessage = message.toLowerCase();
+                if (lowerMessage.includes('enotfound') || lowerMessage.includes('404') || lowerMessage.includes('not found')) {
                     errorCode = ERROR_CODES.NOT_FOUND;
                 }
-                else if (message.includes('timeout')) {
+                else if (lowerMessage.includes('timeout') || lowerMessage.includes('hang up')) {
                     errorCode = ERROR_CODES.COMMAND_TIMEOUT;
                 }
-                else if (message.includes('ECONNREFUSED')) {
+                else if (lowerMessage.includes('econnrefused') || lowerMessage.includes('refused')) {
                     errorCode = ERROR_CODES.CONNECTION_FAILED;
                 }
-                else if (message.includes('certificate') || message.includes('TLS')) {
+                else if (lowerMessage.includes('certificate') || lowerMessage.includes('tls') || lowerMessage.includes('ssl')) {
                     errorCode = ERROR_CODES.NETWORK_ERROR;
+                }
+                else if (lowerMessage.includes('blocked') || lowerMessage.includes('whitelist')) {
+                    errorCode = ERROR_CODES.PERMISSION_DENIED;
                 }
                 return createErrorResponse(errorCode, `Fetch failed for ${args.url}: ${message}`, {
                     details: { url: args.url, method: args.method },
                     suggestion: getErrorSuggestion(errorCode),
                 });
             }
-        }));
+        });
         logger.info('  FetchModule: fetch tool registered.');
-        this.deregisterFunctions.push(server.registerTool("fetch_html", {
-            title: "Fetch HTML Content",
-            description: "Fetches HTML content from a URL, converts it to markdown, or extracts specific elements using a CSS selector. Performs security validation (robots.txt, domain whitelist, local network block).",
-            inputSchema: fetchHtmlArgsSchema,
-            outputSchema: {
-                status: z.number(),
-                headers: z.record(z.string(), z.unknown()),
-                content: z.string(),
-                bodySnippet: z.string().optional(),
-                url: z.string(),
-            },
+        // Register fetch_html tool
+        const deregisterHtml = server.tool('fetch_html', {
+            url: fetchHtmlArgsSchema.shape.url,
+            selector: fetchHtmlArgsSchema.shape.selector,
+            headers: fetchHtmlArgsSchema.shape.headers,
+            timeout: fetchHtmlArgsSchema.shape.timeout,
+            returnType: fetchHtmlArgsSchema.shape.returnType,
+            allowInsecureTls: fetchHtmlArgsSchema.shape.allowInsecureTls,
         }, async (args) => {
             try {
                 // Security checks
@@ -280,8 +276,8 @@ export class FetchModule {
                     suggestion: getErrorSuggestion(errorCode),
                 });
             }
-        }));
-        logger.info('  FetchModule: fetch_html tool registered.');
+        });
+        logger.info('  FetchModule: fetch_html tool registered');
     }
     async shutdown() {
         logger.info('  FetchModule: Shutting down, deregistering tools...');

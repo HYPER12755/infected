@@ -1,0 +1,168 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║           REAL-TIME OUTPUT STREAMING - QUICK REFERENCE                     ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+WHAT IS IT?
+───────────
+Output data from a running process delivered to the user as it happens, rather 
+than waiting for the process to complete.
+
+SIMPLE EXAMPLE
+──────────────
+npm install (1000 packages)
+
+WITHOUT:  User waits 30 seconds, then sees all output at once
+WITH:     User sees "added 10 packages" at 1s, "added 100 packages" at 5s, etc.
+
+CORE COMPONENTS (in Infected MCP Server)
+─────────────────────────────────────────
+1. StreamPublisher
+   ├─ Receives output events from ProcessManager
+   ├─ Broadcasts to all subscribers
+   └─ Non-blocking pub/sub pattern
+
+2. FileStorageSubscriber
+   ├─ Listens to output events
+   ├─ Saves to /tmp/outputs/{execution_id}/
+   ├─ Stores stdout.txt and stderr.txt separately
+   └─ For later retrieval
+
+3. RealtimeStreamSubscriber
+   ├─ Listens to output events
+   ├─ Pushes data to connected clients
+   ├─ Supports WebSocket, SSE, HTTP
+   └─ For live viewing
+
+4. StreamingPipelineReader
+   ├─ Reads from files efficiently
+   ├─ Used for piping output between processes
+   └─ Handles large file streaming
+
+ENABLING STREAMING
+──────────────────
+Environment Variable:
+  export MCP_SHELL_ENABLE_STREAMING=true
+
+Or in code:
+  await shellTools.executeShell({
+    command: 'npm install',
+    output_id: 'exec-123'  ← Enables streaming
+  });
+
+RECEIVING UPDATES (Client Side)
+────────────────────────────────
+WebSocket:
+  ws = new WebSocket('ws://server/stream/exec-123')
+  ws.onmessage = (e) => console.log(JSON.parse(e.data))
+
+Server-Sent Events (SSE):
+  sse = new EventSource('/stream/exec-123')
+  sse.onmessage = (e) => console.log(JSON.parse(e.data))
+
+HTTP Polling:
+  fetch('/get-execution?id=exec-123').then(r => r.json())
+
+TRANSPORTS SUPPORTED
+────────────────────
+✓ STDIO     (command line, local)
+✓ HTTP      (REST API)
+✓ SSE       (Server-Sent Events, real-time)
+✓ WebSocket (bidirectional real-time)
+
+BENEFITS
+────────
+✓ Immediate feedback (first output in 100ms, not 30s)
+✓ Progress visibility (user can see what's happening)
+✓ Better debugging (errors visible as they occur)
+✓ Scalable (can handle files larger than RAM)
+✓ Memory efficient (buffer only small chunks)
+✓ Network friendly (stream gradually, not spike)
+✓ Professional UX (feels modern and responsive)
+
+USE CASES
+─────────
+✓ Shell commands (npm install, docker build, pytest)
+✓ SSH operations (remote deployments)
+✓ Build processes (compilation, testing)
+✓ Data processing (large file transformations)
+✓ System monitoring (real-time metrics)
+
+KEY DIFFERENCE
+──────────────
+WITHOUT Streaming:
+  Command execution → [Waiting] → [All output at once]
+  User experience: "Is it stuck?" "What's happening?"
+
+WITH Streaming:
+  Command execution → [Output chunk 1] → [Output chunk 2] → ...
+  User experience: "Nice, it's at 50%!" "ETA 10 seconds"
+
+MEMORY USAGE
+────────────
+WITHOUT: Buffer entire output (5GB output = 5GB peak memory!)
+WITH:    Buffer 8KB chunks only (max ~20MB peak memory!)
+
+NETWORK
+───────
+WITHOUT: Single 500KB response at 30s = 500KB/s for 1s
+WITH:    16.7KB/chunk every 100ms = steady 166KB/s for 30s
+
+IMPLEMENTATION CHECKLIST
+────────────────────────
+□ Add output_id parameter to execution
+□ Enable streaming (env var or config)
+□ On client: open WebSocket/SSE/polling connection
+□ Receive output chunks as they arrive
+□ Display in UI or log to file
+□ Handle completion/error events
+
+CONFIGURATION CONSTANTS (Improved)
+──────────────────────────────────
+DEFAULT_PROCESS_TIMEOUT = 5000ms
+DEFAULT_TERMINAL_TIMEOUT = 30000ms
+DEFAULT_TOOL_EXECUTION_TIMEOUT = 300000ms (5 minutes)
+DEFAULT_READ_TIMEOUT = 30000ms
+DEFAULT_BUFFER_SIZE = 8192 bytes
+DEFAULT_POLLING_INTERVAL = 100ms
+
+TROUBLESHOOTING
+───────────────
+No output?
+  → Check MCP_SHELL_ENABLE_STREAMING=true
+  → Verify output_id is set
+  → Check firewall/network
+
+Slow streaming?
+  → Reduce notificationInterval (default 100ms)
+  → Check network latency
+  → Verify client can keep up
+
+Memory issues?
+  → Increase DEFAULT_BUFFER_SIZE if needed
+  → Reduce cache size
+  → Monitor with real-time streaming stats
+
+FILES TO READ
+──────────────
+1. SUMMARY.md                      ← Start here (overview)
+2. REALTIME_STREAMING_EXPLANATION  ← Architecture details
+3. REALTIME_STREAMING_EXAMPLES     ← Practical examples
+4. STREAMING_COMPARISON            ← Performance metrics
+
+QUICK ANSWER TO YOUR QUESTION
+──────────────────────────────
+"Does real-time output streaming mean log streams?"
+
+YES! It specifically means:
+✓ Output data from a running process
+✓ Delivered in real-time as it happens
+✓ Often called "streaming output" or "live logs"
+✓ NOT delayed until process completion
+
+It's like watching:
+✗ Recording of a concert (wait, then watch)
+✓ Live concert (watch as it happens)
+
+═══════════════════════════════════════════════════════════════════════════════
+Created: 2024-03-13 | For: Infected MCP Server v9.4.0
+═══════════════════════════════════════════════════════════════════════════════

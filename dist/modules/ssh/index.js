@@ -5,6 +5,7 @@ import { spawn as ptySpawn } from 'node-pty';
 import { spawn as cpSpawn, exec } from 'node:child_process';
 import { z } from 'zod';
 import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
+import logger from '../../core/logger.js';
 const DEFAULT_SESSION_ID = 'default';
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 120000;
@@ -93,6 +94,10 @@ const sshOperateSchema = z.object({
         .optional()
         .default(DEFAULT_TIMEOUT_MS)
         .describe('Timeout in milliseconds for command execution.'),
+    output_id: z
+        .string()
+        .optional()
+        .describe('Unique ID for streaming output subscription. If provided, real-time output updates will be emitted.'),
 });
 const sshBufferSchema = z.object({
     session_id: z
@@ -150,6 +155,35 @@ export default class SshModule {
         };
         this.sessions = new Map();
         this.deregisterFns = [];
+        // ===== STREAMING SUPPORT =====
+        this.streamingExecutions = new Map();
+        this.streamingEnabled = process.env.MCP_SSH_ENABLE_STREAMING !== 'false';
+        this.streamUpdateCallbacks = [];
+    }
+    // ===== STREAMING METHODS =====
+    onSSHStreamUpdate(callback) {
+        this.streamUpdateCallbacks.push(callback);
+        return () => {
+            const index = this.streamUpdateCallbacks.indexOf(callback);
+            if (index > -1) {
+                this.streamUpdateCallbacks.splice(index, 1);
+            }
+        };
+    }
+    emitSSHStreamUpdate(update) {
+        for (const callback of this.streamUpdateCallbacks) {
+            try {
+                callback(update);
+            }
+            catch (error) {
+                logger.error('Error in SSH stream update callback:', {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+    }
+    getSSHStreamingStatus(executionId) {
+        return this.streamingExecutions.get(executionId);
     }
     async onLoad(context) {
         this.registerSshExecute(context);
@@ -474,6 +508,7 @@ export default class SshModule {
             let commandOutput = '';
             let exitCode;
             let commandCompletedNormally = true;
+            const executionStartTime = Date.now();
             // 3. Execute command or send input
             const inputToSend = args.command || args.input;
             if (inputToSend) {
@@ -496,6 +531,31 @@ export default class SshModule {
                 const contentSource = session.historyLog || session.outputBuffer;
                 output = args.clean !== false ? this.cleanOutput(contentSource) : contentSource;
             }
+            // ===== STREAMING: Emit SSH execution updates =====
+            if (this.streamingEnabled && args.output_id) {
+                const executionDuration = Date.now() - executionStartTime;
+                // Emit output chunks
+                if (commandOutput) {
+                    this.emitSSHStreamUpdate({
+                        type: 'output',
+                        executionId: args.output_id,
+                        sessionId: sessionId,
+                        data: commandOutput,
+                        isStderr: false,
+                        timestamp: Date.now(),
+                    });
+                }
+                // Emit completion event
+                this.emitSSHStreamUpdate({
+                    type: 'complete',
+                    executionId: args.output_id,
+                    sessionId: sessionId,
+                    exitCode: exitCode || 0,
+                    duration: executionDuration,
+                    timestamp: Date.now(),
+                });
+            }
+            // ===== END STREAMING ====
             // 5. Detect interactive prompts - only if command didn't complete normally
             const promptInfo = (!commandCompletedNormally && session.outputBuffer)
                 ? this.detectInteractivePrompts(session.outputBuffer)
@@ -828,7 +888,7 @@ ${buffer || '(empty)'}`;
         });
         ptyProcess.onExit((e) => {
             session.isConnected = false;
-            console.error(`[SSH] Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
+            logger.warn(`SSH Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
             this.sessions.delete(sessionId);
         });
         this.sessions.set(sessionId, session);

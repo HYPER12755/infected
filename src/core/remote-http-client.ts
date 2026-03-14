@@ -1,3 +1,8 @@
+// Configuration constants
+const DEFAULT_EXECUTOR_HOST = '127.0.0.1';
+const DEFAULT_EXECUTOR_PORT = '4030';
+const DEFAULT_EXECUTOR_TIMEOUT = 15000; // 15 seconds
+
 export interface RemoteClientOptions {
   baseUrl?: string; // e.g., http://127.0.0.1:4030
   token?: string;   // optional bearer token (Phase 1.5)
@@ -10,11 +15,12 @@ export class RemoteHttpClient {
   private readonly timeoutMs: number;
 
   constructor(opts?: RemoteClientOptions) {
-    const envUrl = process.env['EXECUTOR_URL'] || `http://${process.env['EXECUTOR_HOST'] || '127.0.0.1'}:${process.env['EXECUTOR_PORT'] || '4030'}`;
+    const envUrl = process.env['EXECUTOR_URL'] || 
+      `http://${process.env['EXECUTOR_HOST'] || DEFAULT_EXECUTOR_HOST}:${process.env['EXECUTOR_PORT'] || DEFAULT_EXECUTOR_PORT}`;
     this.baseUrl = (opts?.baseUrl || envUrl).replace(/\/$/, '');
-  const tok = opts?.token ?? process.env['EXECUTOR_TOKEN'];
-  this.token = tok === undefined ? undefined : String(tok);
-    this.timeoutMs = opts?.timeoutMs ?? 15000;
+    const tok = opts?.token ?? process.env['EXECUTOR_TOKEN'];
+    this.token = tok === undefined ? undefined : String(tok);
+    this.timeoutMs = opts?.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT;
   }
 
   async get<T = unknown>(path: string): Promise<T> {

@@ -3,10 +3,20 @@ import * as fs from 'node:fs/promises'; // Use node:fs/promises
 import * as fsSync from 'node:fs'; // Use node:fs
 import * as path from 'node:path'; // Use node:path
 import * as os from 'node:os'; // Use node:os
+import logger from '../core/logger.js'; // Use our central logger
 
-// ID生成
+// Configuration constants
+const MAX_STRING_LENGTH = 1000;
+const COMMAND_NAME_PATTERN = /^[a-zA-Z0-9._\-~]+$/;
+
+// ID generation
 export function generateId(): string {
-  return uuidv4();
+  try {
+    return uuidv4();
+  } catch (error) {
+    logger.warn('Failed to generate UUID, using timestamp-based ID', { error });
+    return `id-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
 }
 
 // タイムスタンプ生成
@@ -185,7 +195,11 @@ export function getSafeEnvironment(
 }
 
 // 文字列のサニタイゼーション
-export function sanitizeString(input: string, maxLength: number = 1000): string {
+export function sanitizeString(input: string, maxLength: number = MAX_STRING_LENGTH): string {
+  if (typeof input !== 'string') {
+    logger.debug('sanitizeString called with non-string input', { type: typeof input });
+    return '';
+  }
   // Original mcp-shell-server logic - removes control characters but implicitly keeps newlines
   return input
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // 制御文字を削除

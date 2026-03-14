@@ -5,6 +5,9 @@ import { generateId, getCurrentTimestamp, getSafeEnvironment } from '../utils/sh
 import { ResourceNotFoundError, ResourceLimitError, ExecutionError } from '../utils/shell-errors.js'; // Adapted import
 import { ProcessUtils } from '../utils/process-utils.js'; // Adapted import
 import logger from './logger.js'; // Use our central logger
+// Configuration constants
+const DEFAULT_TERMINAL_TIMEOUT = 30000; // 30 seconds for terminal operations
+const FOREGROUND_PROCESS_CACHE_TTL = 5000; // 5 seconds for foreground process cache
 export class TerminalManager {
     constructor(maxTerminals = 20, maxOutputLines = 10000, maxHistoryLines = 1000) {
         this.terminals = new Map();
@@ -143,7 +146,7 @@ export class TerminalManager {
         // 一定時間後にセッションをクリーンアップ
         setTimeout(() => {
             this.terminals.delete(terminalId);
-        }, 30000); // 30秒後
+        }, DEFAULT_TERMINAL_TIMEOUT); // Terminal timeout
         // 終了イベントを発火（SSEへ伝搬）
         this.events.emit(`terminal:exit:${terminalId}`);
     }
@@ -454,7 +457,7 @@ export class TerminalManager {
         try {
             // キャッシュチェック（5秒間有効）
             const now = Date.now();
-            if (session.foregroundProcessCache && now - session.foregroundProcessCache.timestamp < 5000) {
+            if (session.foregroundProcessCache && now - session.foregroundProcessCache.timestamp < FOREGROUND_PROCESS_CACHE_TTL) {
                 session.info.foreground_process = session.foregroundProcessCache.info;
                 return;
             }

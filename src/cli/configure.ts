@@ -7,6 +7,12 @@ import * as path from 'node:path';
 import { ZodObject, ZodString, ZodArray, ZodBoolean, ZodEnum, ZodNumber, z } from 'zod';
 import logger from '../core/logger.js';
 
+// Configuration constants
+const DEFAULT_PORT = 3000;
+const MIN_PORT = 1;
+const MAX_PORT = 65535;
+const DEFAULT_CACHE_TTL_MS = 300000; // 5 minutes
+
 export async function configureCLI() {
   logger.info(chalk.blue('----------------------------------------------------'));
   logger.info(chalk.blue('  Infected MCP Server Configuration (Interactive CLI) '));
@@ -37,11 +43,11 @@ export async function configureCLI() {
       type: 'input',
       name: 'port',
       message: 'Enter the port for HTTP/SSE transports:',
-      default: newConfig.port?.toString() || '3000',
+      default: newConfig.port?.toString() || DEFAULT_PORT.toString(),
       validate: (value: string) => {
         const port = parseInt(value);
-        if (isNaN(port) || port <= 0 || port > 65535) {
-          return chalk.red('Please enter a valid port number (1-65535).');
+        if (isNaN(port) || port < MIN_PORT || port > MAX_PORT) {
+          return chalk.red(`Please enter a valid port number (${MIN_PORT}-${MAX_PORT}).`);
         }
         return true;
       },
@@ -220,7 +226,7 @@ export async function configureCLI() {
       type: 'input',
       name: 'cacheDefaultTTL',
       message: 'Default cache entry time-to-live in milliseconds (min 1000ms):',
-      default: newConfig.cache?.defaultTTL?.toString() || '300000',
+      default: newConfig.cache?.defaultTTL?.toString() || DEFAULT_CACHE_TTL_MS.toString(),
       when: (answers: any) => answers.cacheEnabled,
       validate: (value: string) => {
         const ttl = parseInt(value);
@@ -228,7 +234,7 @@ export async function configureCLI() {
         return true;
       },
       filter: (value: string) => parseInt(value),
-      suffix: chalk.gray(' (e.g., 300000 for 5 minutes)')
+      suffix: chalk.gray(` (default: ${DEFAULT_CACHE_TTL_MS}ms = 5 minutes)`)
     },
     {
       type: 'input',
