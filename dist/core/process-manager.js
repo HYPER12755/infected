@@ -1,50 +1,16 @@
 import { spawn } from 'node:child_process'; // Use node:child_process
 import * as fs from 'node:fs/promises';
-import * as fsSync from 'node:fs'; // Use node:fs/promises
 import * as path from 'node:path'; // Use node:path
 import { generateId, getCurrentTimestamp, getSafeEnvironment, sanitizeString, ensureDirectory, } from '../utils/shell-helpers.js'; // Adapted import
-import { ExecutionError, TimeoutError, ResourceNotFoundError, ResourceLimitError, } from '../utils/shell-errors.js'; // Adapted import
+import { ExecutionError, ResourceNotFoundError, ResourceLimitError, } from '../utils/shell-errors.js'; // Adapted import
 import { StreamPublisher } from './stream-publisher.js'; // Adapted import
 import { FileStorageSubscriber } from './file-storage-subscriber.js'; // Adapted import
 import { StreamingPipelineReader } from './streaming-pipeline-reader.js'; // Adapted import
 import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // Adapted import
 import logger from './logger.js'; // Use our central logger
+import { ExecutionStrategyFactory, } from './execution-strategies/index.js'; // Wave 1: ExecutionStrategy pattern
 // Configuration constants
 const DEFAULT_PROCESS_TIMEOUT = 5000; // 5 seconds for process operations
-const PROCESS_CLEANUP_TIMEOUT = 5000; // 5 seconds for cleanup operations
-const GRACEFUL_SHUTDOWN_TIMEOUT = 10000; // 10 seconds for graceful shutdown
-// Shell detection helper - finds available shell
-function getShellPath() {
-    const shells = ['/bin/bash', '/usr/bin/bash', '/bin/sh', '/usr/bin/sh', '/bin/zsh', '/usr/bin/zsh'];
-    for (const shell of shells) {
-        try {
-            fsSync.accessSync(shell);
-            return shell;
-        }
-        catch {
-            continue;
-        }
-    }
-    // Fallback to SHELL env var
-    const fallback = process.env.SHELL;
-    if (fallback) {
-        try {
-            fsSync.accessSync(fallback);
-            return fallback;
-        }
-        catch { }
-    }
-    logger.warn('Could not find standard shell, defaulting to /bin/sh');
-    return '/bin/sh';
-}
-// Cached shell path
-let cachedShellPath = null;
-function getCachedShellPath() {
-    if (!cachedShellPath) {
-        cachedShellPath = getShellPath();
-    }
-    return cachedShellPath;
-}
 export class ProcessManager {
     constructor(maxConcurrentProcesses = 50, outputDir = '/tmp/mcp-shell-outputs', fileManager) {
         this.executions = new Map();
@@ -63,6 +29,11 @@ export class ProcessManager {
             enableRealtimeStreaming: false, // 初期状態は無効
             bufferSize: 8192,
             notificationInterval: 100,
+        });
+        // Wave 1: ExecutionStrategy Factory 初期化
+        this.strategyFactory = new ExecutionStrategyFactory({
+            defaultTimeoutMs: 300000, // 5 minutes
+            defaultKillGracePeriodMs: 5000, // 5 seconds
         });
         // 環境変数でStreaming機能を制御（段階的展開、デフォルト有効）
         this.enableStreaming = process.env['MCP_SHELL_ENABLE_STREAMING'] !== 'false';
@@ -141,6 +112,19 @@ export class ProcessManager {
     }
     async initializeOutputDirectory() {
         await ensureDirectory(this.outputDir);
+    }
+    /**
+     * Wave 1: Get the ExecutionStrategy for a given mode.
+     * This provides access to the strategy directly if needed for advanced use cases.
+     */
+    getExecutionStrategy(mode) {
+        return this.strategyFactory.createStrategy(mode, {
+            timeoutMs: 300000, // 5 minutes
+            killGracePeriodMs: 5000,
+            captureStderr: true,
+            maxOutputSize: 10 * 1024 * 1024,
+            workingDirectory: this.defaultWorkingDirectory,
+        });
     }
     async executeCommand(options) {
         // 同時実行数のチェック
@@ -246,18 +230,11 @@ export class ProcessManager {
             if (inputStream) {
                 return await this.executeCommandWithInputStream(executionId, updatedOptions, inputStream);
             }
-            switch (options.executionMode) {
-                case 'foreground':
-                    return await this.executeForegroundCommand(executionId, updatedOptions);
-                case 'adaptive':
-                    return await this.executeAdaptiveCommand(executionId, updatedOptions);
-                case 'background':
-                    return await this.executeBackgroundCommand(executionId, updatedOptions);
-                case 'detached':
-                    return await this.executeDetachedCommand(executionId, updatedOptions);
-                default:
-                    throw new ExecutionError('Unsupported execution mode', { mode: options.executionMode });
-            }
+            // Wave 1: ExecutionStrategy への委譲
+            const strategy = this.getExecutionStrategy(options.executionMode);
+            const strategyResult = await strategy.execute(options.command, executionId);
+            // 戦略の結果をExecutionInfoに変換（後方互換性）
+            return await this.convertStrategyResultToExecutionInfo(executionId, executionInfo, strategyResult, options);
         }
         catch (error) {
             // エラー時の実行情報更新
@@ -269,6 +246,43 @@ export class ProcessManager {
             }
             throw error;
         }
+    }
+    /**
+     * Wave 1: Convert strategy execution result to ExecutionInfo for backward compatibility.
+     * This ensures the public API remains unchanged while using the strategy pattern internally.
+     */
+    async convertStrategyResultToExecutionInfo(executionId, executionInfo, strategyResult, options) {
+        const updated = { ...executionInfo };
+        updated.status = strategyResult.exitCode === 0 ? 'completed' : 'failed';
+        updated.exit_code = strategyResult.exitCode;
+        updated.stdout = sanitizeString(strategyResult.stdout);
+        updated.stderr = sanitizeString(strategyResult.stderr);
+        updated.execution_time_ms = strategyResult.duration;
+        updated.completed_at = getCurrentTimestamp();
+        updated.output_truncated = strategyResult.outputTruncated;
+        // 出力をFileManagerに保存
+        if (this.fileManager && (strategyResult.stdout || strategyResult.stderr)) {
+            try {
+                const combinedOutput = strategyResult.stdout +
+                    (options.captureStderr && strategyResult.stderr ? '\n--- STDERR ---\n' + strategyResult.stderr : '');
+                const outputId = await this.fileManager.createOutputFile(combinedOutput, executionId);
+                updated.output_id = outputId;
+            }
+            catch (error) {
+                logger.error(`Failed to save output for ${executionId}:`, {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+        // 出力状態情報の設定
+        if (strategyResult.outputTruncated) {
+            this.setOutputStatus(updated, true, 'size_limit', updated.output_id);
+        }
+        else {
+            this.setOutputStatus(updated, false, 'size_limit', updated.output_id);
+        }
+        this.executions.set(executionId, updated);
+        return updated;
     }
     /**
      * Issue #13: StreamingPipelineReaderを使用したコマンド実行
@@ -392,718 +406,6 @@ export class ProcessManager {
                 clearTimeout(timeout);
             });
         });
-    }
-    async executeForegroundCommand(executionId, options) {
-        return new Promise((resolve, reject) => {
-            const startTime = Date.now();
-            let stdout = '';
-            let stderr = '';
-            let outputTruncated = false;
-            // 環境変数の準備
-            const env = getSafeEnvironment(process.env, options.environmentVariables);
-            // プロセスの起動
-            const shellPath = getCachedShellPath();
-            const childProcess = spawn(shellPath, ['-c', options.command], {
-                cwd: this.resolveWorkingDirectory(options.workingDirectory),
-                env,
-                stdio: ['pipe', 'pipe', 'pipe'],
-            });
-            if (childProcess.pid) {
-                this.processes.set(childProcess.pid, childProcess);
-            }
-            // タイムアウトの設定
-            const timeout = setTimeout(async () => {
-                childProcess.kill('SIGTERM');
-                setTimeout(() => {
-                    if (!childProcess.killed) {
-                        childProcess.kill('SIGKILL');
-                    }
-                }, DEFAULT_PROCESS_TIMEOUT);
-                const executionInfo = this.executions.get(executionId);
-                const executionTime = Date.now() - startTime;
-                if (executionInfo) {
-                    executionInfo.status = 'timeout';
-                    executionInfo.stdout = sanitizeString(stdout);
-                    executionInfo.stderr = sanitizeString(stderr);
-                    executionInfo.completed_at = getCurrentTimestamp();
-                    executionInfo.execution_time_ms = executionTime;
-                    if (childProcess.pid !== undefined) {
-                        executionInfo.process_id = childProcess.pid;
-                    }
-                    // 出力をFileManagerに保存（サイズに関係なく）
-                    let outputFileId;
-                    try {
-                        outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                        executionInfo.output_id = outputFileId;
-                    }
-                    catch (error) {
-                        // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                        logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                        executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                    }
-                    // 出力状態の詳細情報を設定
-                    this.setOutputStatus(executionInfo, outputTruncated, 'timeout', outputFileId);
-                    this.executions.set(executionId, executionInfo);
-                    // return_partial_on_timeout が true の場合は部分結果を返す
-                    if (options.returnPartialOnTimeout) {
-                        resolve(executionInfo);
-                        return;
-                    }
-                }
-                reject(new TimeoutError(options.timeoutSeconds));
-            }, options.timeoutSeconds * 1000);
-            // 標準入力の送信
-            if (options.inputData) {
-                childProcess.stdin?.write(options.inputData);
-                childProcess.stdin?.end();
-            }
-            else {
-                childProcess.stdin?.end();
-            }
-            // 標準出力の処理
-            childProcess.stdout?.on('data', (data) => {
-                const output = data.toString();
-                if (stdout.length + output.length <= options.maxOutputSize) {
-                    stdout += output;
-                }
-                else {
-                    stdout += output.substring(0, options.maxOutputSize - stdout.length);
-                    outputTruncated = true;
-                }
-            });
-            // 標準エラー出力の処理
-            if (options.captureStderr) {
-                childProcess.stderr?.on('data', (data) => {
-                    const output = data.toString();
-                    if (stderr.length + output.length <= options.maxOutputSize) {
-                        stderr += output;
-                    }
-                    else {
-                        stderr += output.substring(0, options.maxOutputSize - stderr.length);
-                        outputTruncated = true;
-                    }
-                });
-            }
-            // プロセス終了時の処理
-            childProcess.on('close', async (code) => {
-                clearTimeout(timeout);
-                if (childProcess.pid) {
-                    this.processes.delete(childProcess.pid);
-                }
-                const executionTime = Date.now() - startTime;
-                const executionInfo = this.executions.get(executionId);
-                if (executionInfo) {
-                    executionInfo.status = 'completed';
-                    executionInfo.exit_code = code || 0;
-                    executionInfo.stdout = sanitizeString(stdout);
-                    executionInfo.stderr = sanitizeString(stderr);
-                    executionInfo.execution_time_ms = executionTime;
-                    if (childProcess.pid !== undefined) {
-                        executionInfo.process_id = childProcess.pid;
-                    }
-                    executionInfo.completed_at = getCurrentTimestamp();
-                    // 出力をFileManagerに保存（サイズに関係なく）
-                    let outputFileId;
-                    try {
-                        outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                        executionInfo.output_id = outputFileId;
-                    }
-                    catch (error) {
-                        // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                        logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                        executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                    }
-                    // 出力状態の詳細情報を設定
-                    if (outputTruncated) {
-                        this.setOutputStatus(executionInfo, true, 'size_limit', outputFileId);
-                    }
-                    else {
-                        // 通常完了時 - actuallyTruncated=false, 適当なreasonで完了時ガイダンスを表示
-                        this.setOutputStatus(executionInfo, false, 'size_limit', outputFileId);
-                    }
-                    this.executions.set(executionId, executionInfo);
-                    resolve(executionInfo);
-                }
-            });
-            // エラー処理
-            childProcess.on('error', (error) => {
-                clearTimeout(timeout);
-                if (childProcess.pid) {
-                    this.processes.delete(childProcess.pid);
-                }
-                const executionInfo = this.executions.get(executionId);
-                if (executionInfo) {
-                    executionInfo.status = 'failed';
-                    executionInfo.completed_at = getCurrentTimestamp();
-                    executionInfo.execution_time_ms = Date.now() - startTime;
-                    this.executions.set(executionId, executionInfo);
-                }
-                reject(new ExecutionError(`Process execution failed: ${error.message}`, {
-                    originalError: error.message,
-                }));
-            });
-        });
-    }
-    async executeAdaptiveCommand(executionId, options) {
-        // adaptiveモード: 1つのプロセスを起動し、以下の条件でバックグラウンドに移行
-        // 1. フォアグラウンドタイムアウトに達した場合
-        // 2. 出力サイズ制限に達した場合
-        const returnPartialOnTimeout = options.returnPartialOnTimeout ?? true;
-        const foregroundTimeout = options.foregroundTimeoutSeconds ?? 480;
-        return new Promise((resolve, reject) => {
-            const startTime = Date.now();
-            let stdout = '';
-            let stderr = '';
-            let outputTruncated = false;
-            let backgroundTransitionReason = null;
-            // 環境変数の準備
-            const env = getSafeEnvironment(process.env, options.environmentVariables);
-            // プロセスの起動（バックグラウンド対応）
-            const shellPath = getCachedShellPath();
-            const childProcess = spawn(shellPath, ['-c', options.command], {
-                cwd: this.resolveWorkingDirectory(options.workingDirectory),
-                env,
-                stdio: ['pipe', 'pipe', 'pipe'],
-            });
-            if (childProcess.pid) {
-                this.processes.set(childProcess.pid, childProcess);
-            }
-            // フォアグラウンドタイムアウトの設定
-            const foregroundTimeoutHandle = setTimeout(() => {
-                if (!backgroundTransitionReason) {
-                    backgroundTransitionReason = 'timeout';
-                    transitionToBackground();
-                }
-            }, foregroundTimeout * 1000);
-            // 最終タイムアウトの設定
-            const finalTimeoutHandle = setTimeout(async () => {
-                childProcess.kill('SIGTERM');
-                setTimeout(() => {
-                    if (!childProcess.killed) {
-                        childProcess.kill('SIGKILL');
-                    }
-                }, DEFAULT_PROCESS_TIMEOUT);
-                const executionInfo = this.executions.get(executionId);
-                if (executionInfo) {
-                    executionInfo.status = 'timeout';
-                    executionInfo.stdout = sanitizeString(stdout);
-                    executionInfo.stderr = sanitizeString(stderr);
-                    executionInfo.output_truncated = outputTruncated;
-                    executionInfo.completed_at = getCurrentTimestamp();
-                    executionInfo.execution_time_ms = Date.now() - startTime;
-                    // 出力をFileManagerに保存
-                    try {
-                        const outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                        executionInfo.output_id = outputFileId;
-                    }
-                    catch (error) {
-                        // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                        logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                        executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                    }
-                    this.executions.set(executionId, executionInfo);
-                    if (returnPartialOnTimeout) {
-                        resolve(executionInfo);
-                        return;
-                    }
-                }
-                reject(new TimeoutError(options.timeoutSeconds));
-            }, options.timeoutSeconds * 1000);
-            // バックグラウンドに移行する関数
-            const transitionToBackground = async () => {
-                clearTimeout(foregroundTimeoutHandle);
-                const executionInfo = this.executions.get(executionId);
-                if (executionInfo) {
-                    executionInfo.status = 'running';
-                    executionInfo.stdout = sanitizeString(stdout);
-                    executionInfo.stderr = sanitizeString(stderr);
-                    // 移行理由を記録
-                    if (backgroundTransitionReason === 'timeout') {
-                        executionInfo.transition_reason = 'foreground_timeout';
-                    }
-                    else if (backgroundTransitionReason === 'output_size_limit') {
-                        executionInfo.transition_reason = 'output_size_limit';
-                    }
-                    if (childProcess.pid !== undefined) {
-                        executionInfo.process_id = childProcess.pid;
-                    }
-                    // 出力をFileManagerに保存
-                    let outputFileId;
-                    try {
-                        outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                        executionInfo.output_id = outputFileId;
-                    }
-                    catch (error) {
-                        // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                        logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                        executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                    }
-                    // 出力状態の詳細情報を設定（バックグラウンド移行）
-                    this.setOutputStatus(executionInfo, outputTruncated, 'background_transition', outputFileId);
-                    this.executions.set(executionId, executionInfo);
-                    // バックグラウンド処理の継続設定（adaptive mode専用）
-                    this.handleAdaptiveBackgroundTransition(executionId, childProcess, {
-                        ...options,
-                        timeoutSeconds: Math.max(1, options.timeoutSeconds - Math.floor((Date.now() - startTime) / 1000)),
-                    });
-                    resolve(executionInfo);
-                }
-            };
-            // 標準入力の送信
-            if (options.inputData) {
-                childProcess.stdin?.write(options.inputData);
-                childProcess.stdin?.end();
-            }
-            else {
-                childProcess.stdin?.end();
-            }
-            // 標準出力の処理
-            childProcess.stdout?.on('data', (data) => {
-                const output = data.toString();
-                if (stdout.length + output.length <= options.maxOutputSize) {
-                    stdout += output;
-                }
-                else {
-                    stdout += output.substring(0, options.maxOutputSize - stdout.length);
-                    outputTruncated = true;
-                    // 出力サイズ制限に達した場合、バックグラウンドに移行
-                    if (!backgroundTransitionReason) {
-                        backgroundTransitionReason = 'output_size_limit';
-                        transitionToBackground();
-                    }
-                }
-            });
-            // 標準エラー出力の処理
-            if (options.captureStderr) {
-                childProcess.stderr?.on('data', (data) => {
-                    const output = data.toString();
-                    if (stderr.length + output.length <= options.maxOutputSize) {
-                        stderr += output;
-                    }
-                    else {
-                        stderr += output.substring(0, options.maxOutputSize - stderr.length);
-                        outputTruncated = true;
-                        // 出力サイズ制限に達した場合、バックグラウンドに移行
-                        if (!backgroundTransitionReason) {
-                            backgroundTransitionReason = 'output_size_limit';
-                            transitionToBackground();
-                        }
-                    }
-                });
-            }
-            // プロセス終了時の処理
-            childProcess.on('close', async (code) => {
-                clearTimeout(foregroundTimeoutHandle);
-                clearTimeout(finalTimeoutHandle);
-                if (childProcess.pid) {
-                    this.processes.delete(childProcess.pid);
-                }
-                // バックグラウンドに移行していない場合のみ処理
-                if (!backgroundTransitionReason) {
-                    const executionTime = Date.now() - startTime;
-                    const executionInfo = this.executions.get(executionId);
-                    if (executionInfo) {
-                        executionInfo.status = 'completed';
-                        executionInfo.exit_code = code || 0;
-                        executionInfo.stdout = sanitizeString(stdout);
-                        executionInfo.stderr = sanitizeString(stderr);
-                        executionInfo.output_truncated = outputTruncated;
-                        executionInfo.execution_time_ms = executionTime;
-                        if (childProcess.pid !== undefined) {
-                            executionInfo.process_id = childProcess.pid;
-                        }
-                        executionInfo.completed_at = getCurrentTimestamp();
-                        // 出力をFileManagerに保存
-                        try {
-                            const outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                            executionInfo.output_id = outputFileId;
-                        }
-                        catch (error) {
-                            // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                            logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                            executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                        }
-                        this.executions.set(executionId, executionInfo);
-                        resolve(executionInfo);
-                    }
-                }
-            });
-            // エラー処理
-            childProcess.on('error', (error) => {
-                clearTimeout(foregroundTimeoutHandle);
-                clearTimeout(finalTimeoutHandle);
-                if (childProcess.pid) {
-                    this.processes.delete(childProcess.pid);
-                }
-                if (!backgroundTransitionReason) {
-                    const executionInfo = this.executions.get(executionId);
-                    if (executionInfo) {
-                        executionInfo.status = 'failed';
-                        executionInfo.completed_at = getCurrentTimestamp();
-                        executionInfo.execution_time_ms = Date.now() - startTime;
-                        this.executions.set(executionId, executionInfo);
-                    }
-                    reject(new ExecutionError(`Process execution failed: ${error.message}`, {
-                        originalError: error.message,
-                    }));
-                }
-            });
-        });
-    }
-    async executeBackgroundCommand(executionId, options) {
-        const env = getSafeEnvironment(process.env, options.environmentVariables);
-        const childProcess = spawn('/bin/bash', ['-c', options.command], {
-            cwd: this.resolveWorkingDirectory(options.workingDirectory),
-            env,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            detached: options.executionMode === 'background',
-        });
-        if (childProcess.pid) {
-            this.processes.set(childProcess.pid, childProcess);
-        }
-        const executionInfo = this.executions.get(executionId);
-        if (executionInfo && childProcess.pid !== undefined) {
-            executionInfo.process_id = childProcess.pid;
-            this.executions.set(executionId, executionInfo);
-        }
-        // バックグラウンドプロセスの場合、出力を非同期で処理
-        if (options.executionMode === 'background') {
-            this.handleBackgroundProcess(executionId, childProcess, options);
-        }
-        const resultExecutionInfo = this.executions.get(executionId);
-        if (!resultExecutionInfo) {
-            throw new Error(`Execution info not found for ID: ${executionId}`);
-        }
-        return resultExecutionInfo;
-    }
-    handleBackgroundProcess(executionId, childProcess, options) {
-        const startTime = Date.now();
-        let stdout = '';
-        let stderr = '';
-        // タイムアウトの設定（backgroundプロセス用）
-        const timeout = setTimeout(async () => {
-            childProcess.kill('SIGTERM');
-            setTimeout(() => {
-                if (!childProcess.killed) {
-                    childProcess.kill('SIGKILL');
-                }
-            }, DEFAULT_PROCESS_TIMEOUT);
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'timeout';
-                executionInfo.stdout = sanitizeString(stdout);
-                executionInfo.stderr = sanitizeString(stderr);
-                executionInfo.output_truncated = true;
-                executionInfo.completed_at = getCurrentTimestamp();
-                executionInfo.execution_time_ms = Date.now() - startTime;
-                // 出力をFileManagerに保存
-                try {
-                    const outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                    executionInfo.output_id = outputFileId;
-                }
-                catch (error) {
-                    // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                    logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                    executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                }
-                this.executions.set(executionId, executionInfo);
-                // バックグラウンドプロセスタイムアウトのコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onTimeout) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onTimeout;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Background process timeout callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        }, options.timeoutSeconds * 1000);
-        // 出力の収集
-        childProcess.stdout?.on('data', (data) => {
-            stdout += data.toString();
-        });
-        if (options.captureStderr) {
-            childProcess.stderr?.on('data', (data) => {
-                stderr += data.toString();
-            });
-        }
-        // プロセス終了時の処理
-        childProcess.on('close', async (code) => {
-            clearTimeout(timeout);
-            if (childProcess.pid) {
-                this.processes.delete(childProcess.pid);
-            }
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'completed';
-                executionInfo.exit_code = code || 0;
-                executionInfo.execution_time_ms = Date.now() - startTime;
-                executionInfo.completed_at = getCurrentTimestamp();
-                // 出力をファイルに保存
-                try {
-                    const outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                    executionInfo.output_id = outputFileId;
-                }
-                catch (error) {
-                    // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                    logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                    executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                }
-                this.executions.set(executionId, executionInfo);
-                // バックグラウンドプロセス正常終了のコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onComplete) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onComplete;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Background process completion callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        });
-        childProcess.on('error', (error) => {
-            clearTimeout(timeout);
-            if (childProcess.pid) {
-                this.processes.delete(childProcess.pid);
-            }
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'failed';
-                executionInfo.execution_time_ms = Date.now() - startTime;
-                executionInfo.completed_at = getCurrentTimestamp();
-                this.executions.set(executionId, executionInfo);
-                // バックグラウンドプロセスエラーのコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onError) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onError;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo, error);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Background process error callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        });
-    }
-    // adaptive modeでバックグラウンドに移行したプロセスの処理
-    handleAdaptiveBackgroundTransition(executionId, childProcess, options) {
-        // タイムアウトの設定（最終タイムアウト）
-        const timeout = setTimeout(async () => {
-            childProcess.kill('SIGTERM');
-            setTimeout(() => {
-                if (!childProcess.killed) {
-                    childProcess.kill('SIGKILL');
-                }
-            }, DEFAULT_PROCESS_TIMEOUT);
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'timeout';
-                executionInfo.completed_at = getCurrentTimestamp();
-                // 既存の出力は保持（adaptive modeで既にキャプチャ済み）
-                this.executions.set(executionId, executionInfo);
-            }
-        }, options.timeoutSeconds * 1000);
-        // プロセス終了時の処理
-        childProcess.on('close', async (code) => {
-            clearTimeout(timeout);
-            if (childProcess.pid) {
-                this.processes.delete(childProcess.pid);
-            }
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'completed';
-                executionInfo.exit_code = code || 0;
-                executionInfo.completed_at = getCurrentTimestamp();
-                // 実行時間は全体（フォアグラウンド + バックグラウンド）で計算
-                if (executionInfo.started_at) {
-                    const startTime = new Date(executionInfo.started_at).getTime();
-                    executionInfo.execution_time_ms = Date.now() - startTime;
-                }
-                this.executions.set(executionId, executionInfo);
-                // adaptive modeバックグラウンドプロセス正常終了のコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onComplete) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onComplete;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Adaptive background process completion callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        });
-        childProcess.on('error', (error) => {
-            clearTimeout(timeout);
-            if (childProcess.pid) {
-                this.processes.delete(childProcess.pid);
-            }
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'failed';
-                executionInfo.completed_at = getCurrentTimestamp();
-                if (executionInfo.started_at) {
-                    const startTime = new Date(executionInfo.started_at).getTime();
-                    executionInfo.execution_time_ms = Date.now() - startTime;
-                }
-                this.executions.set(executionId, executionInfo);
-                // adaptive modeバックグラウンドプロセスエラーのコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onError) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onError;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo, error);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Adaptive background process error callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        });
-    }
-    async executeDetachedCommand(executionId, options) {
-        // detachedモード: 完全にバックグラウンドで実行し、親プロセスとの接続を切断
-        const env = getSafeEnvironment(process.env, options.environmentVariables);
-        const childProcess = spawn('/bin/bash', ['-c', options.command], {
-            cwd: this.resolveWorkingDirectory(options.workingDirectory),
-            env,
-            stdio: ['ignore', 'pipe', 'pipe'], // stdin は無視
-            detached: true, // 完全にデタッチ
-        });
-        // デタッチされたプロセスのPIDは記録するが、プロセス管理からは除外
-        const executionInfo = this.executions.get(executionId);
-        if (executionInfo && childProcess.pid !== undefined) {
-            executionInfo.process_id = childProcess.pid;
-            executionInfo.status = 'running';
-            this.executions.set(executionId, executionInfo);
-        }
-        // デタッチされたプロセスは親プロセスの終了後も継続実行されるため、
-        // 出力の収集は限定的
-        const startTime = Date.now();
-        let stdout = '';
-        let stderr = '';
-        if (childProcess.stdout) {
-            childProcess.stdout.on('data', (data) => {
-                stdout += data.toString();
-            });
-        }
-        if (childProcess.stderr) {
-            childProcess.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-        }
-        // プロセスの終了を監視（デタッチされているため必ずしも捕捉されない）
-        childProcess.on('close', async (code) => {
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'completed';
-                executionInfo.exit_code = code || 0;
-                executionInfo.execution_time_ms = Date.now() - startTime;
-                executionInfo.completed_at = getCurrentTimestamp();
-                try {
-                    const outputFileId = await this.saveOutputToFile(executionId, stdout, stderr);
-                    executionInfo.output_id = outputFileId;
-                }
-                catch (error) {
-                    // ファイル保存失敗は重要なエラーとしてログに記録し、実行情報に含める
-                    logger.error(`[CRITICAL] Failed to save output file for execution ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
-                    executionInfo.message = `Output file save failed: ${error instanceof Error ? error.message : String(error)}`;
-                }
-                this.executions.set(executionId, executionInfo);
-                // detachedプロセス正常終了のコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onComplete) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onComplete;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Detached process completion callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        });
-        childProcess.on('error', (error) => {
-            const executionInfo = this.executions.get(executionId);
-            if (executionInfo) {
-                executionInfo.status = 'failed';
-                executionInfo.execution_time_ms = Date.now() - startTime;
-                executionInfo.completed_at = getCurrentTimestamp();
-                this.executions.set(executionId, executionInfo);
-                // detachedプロセスエラーのコールバック呼び出し
-                if (this.backgroundProcessCallbacks.onError) {
-                    setImmediate(async () => {
-                        try {
-                            const callback = this.backgroundProcessCallbacks.onError;
-                            if (callback) {
-                                const result = callback(executionId, executionInfo, error);
-                                if (result instanceof Promise) {
-                                    await result;
-                                }
-                            }
-                        }
-                        catch (callbackError) {
-                            // コールバックエラーは内部ログに記録のみ
-                            logger.error('Detached process error callback error:', { error: callbackError instanceof Error ? callbackError.message : String(callbackError) });
-                        }
-                    });
-                }
-            }
-        });
-        // プロセスをデタッチ
-        childProcess.unref();
-        const resultExecutionInfo = this.executions.get(executionId);
-        if (!resultExecutionInfo) {
-            throw new Error(`Execution info not found for ID: ${executionId}`);
-        }
-        return resultExecutionInfo;
     }
     async saveOutputToFile(executionId, stdout, stderr) {
         if (!this.fileManager) {

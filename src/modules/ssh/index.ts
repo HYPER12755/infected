@@ -1,13 +1,16 @@
-import os from 'node:os';
 import path from 'node:path';
-import { promises as fsPromises } from 'node:fs';
-import { spawn as ptySpawn, type IPty } from 'node-pty';
-import { spawn as cpSpawn, exec } from 'node:child_process';
 import { z } from 'zod';
 import { EventEmitter } from 'node:events';
 import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../core/module-system/module-types.js';
 import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
 import logger from '../../core/logger.js';
+
+// Import the 5 focused modules
+import { SSHSessionManager, type SSHConnectionTarget } from './ssh-session-manager.js';
+import { SSHCommandExecutor, type CommandResult } from './ssh-command-executor.js';
+import { SSHPromptDetector } from './ssh-prompt-detector.js';
+import { SSHFileTransferHandler } from './ssh-file-transfer-handler.js';
+import { SSHConnectionPoolWrapper } from './ssh-connection-pool-wrapper.js';
 
 // ===== STREAMING TYPES FOR SSH =====
 /**
@@ -44,10 +47,9 @@ interface SSHStreamOutputUpdate {
 const DEFAULT_SESSION_ID = 'default';
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 120000;
-const MAX_BUFFER_CHARS = 200_000;
-const MAX_HISTORY_CHARS = 400_000;
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const FILE_TRANSFER_TIMEOUT = 300000;
+
+// ===== SCHEMA DEFINITIONS =====
 
 const sshExecuteSchema = z.object({
   command: z.string().min(1).describe('Command to run inside the session.'),
@@ -84,7 +86,7 @@ const sshTargetSchema = z
   })
   .describe('Connection target used to spawn an SSH client session to a remote host.');
 
-type SSHConnectionTarget = z.infer<typeof sshTargetSchema>;
+type SSHConnectionTargetType = z.infer<typeof sshTargetSchema>;
 
 const sshNewSessionSchema = z.object({
   session_id: z.string().min(1).describe('Unique identifier for the new session.'),
@@ -187,18 +189,14 @@ const sshDownloadSchema = z.object({
     .describe('Download timeout in milliseconds (default 5 minutes).'),
 });
 
-interface TerminalSession {
-  id: string;
-  ptyProcess: IPty;
-  outputBuffer: string;
-  isReady: boolean;
-  isConnected: boolean;
-  lastCommand: string;
-  createdAt: Date;
-  target?: SSHConnectionTarget;
-  historyLog: string;
-}
-
+/**
+ * Main SSH Module - orchestrates 5 focused sub-modules
+ * - ssh-session-manager: Session lifecycle
+ * - ssh-command-executor: Command execution
+ * - ssh-prompt-detector: Prompt detection
+ * - ssh-file-transfer-handler: File operations
+ * - ssh-connection-pool-wrapper: Connection pooling
+ */
 export default class SshModule implements IUnifiedPlugin {
   public manifest: UnifiedModuleManifest = {
     id: 'plugin.ssh',
@@ -211,7 +209,13 @@ export default class SshModule implements IUnifiedPlugin {
     timeout: 30000,
   };
 
-  private sessions = new Map<string, TerminalSession>();
+  // ===== COMPONENTS =====
+  private sessionManager!: SSHSessionManager;
+  private commandExecutor!: SSHCommandExecutor;
+  private promptDetector!: SSHPromptDetector;
+  private fileTransferHandler!: SSHFileTransferHandler;
+  private poolWrapper!: SSHConnectionPoolWrapper;
+
   private deregisterFns: Array<() => void> = [];
 
   // ===== STREAMING SUPPORT =====
@@ -247,6 +251,14 @@ export default class SshModule implements IUnifiedPlugin {
   }
 
   async onLoad(context: UnifiedModuleContext): Promise<void> {
+    // Initialize all 5 sub-modules
+    this.sessionManager = new SSHSessionManager();
+    this.commandExecutor = new SSHCommandExecutor();
+    this.promptDetector = new SSHPromptDetector();
+    this.fileTransferHandler = new SSHFileTransferHandler(this.commandExecutor);
+    this.poolWrapper = new SSHConnectionPoolWrapper();
+
+    // Register all tools
     this.registerSshExecute(context);
     this.registerSshNewSession(context);
     this.registerSshOperate(context);
@@ -255,7 +267,10 @@ export default class SshModule implements IUnifiedPlugin {
     this.registerSshBuffer(context);
     this.registerSshUploadFile(context);
     this.registerSshDownloadFile(context);
-    context.logger.info('SSH Session Manager module loaded.', { component: this.manifest.id });
+
+    context.logger.info('SSH Session Manager module loaded (refactored with 5 sub-modules).', {
+      component: this.manifest.id,
+    });
   }
 
   async onUnload(): Promise<void> {
@@ -263,15 +278,19 @@ export default class SshModule implements IUnifiedPlugin {
       deregister();
     }
     this.deregisterFns = [];
-    this.sessions.forEach((session) => {
-      try {
-        session.ptyProcess.kill();
-      } catch {
-        // ignore failures when cleaning up
-      }
-    });
-    this.sessions.clear();
+
+    // Shutdown all sub-modules
+    try {
+      await this.sessionManager.shutdown();
+      await this.poolWrapper.shutdown();
+    } catch (error) {
+      logger.error('Error during SSH module shutdown', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
+
+  // ===== TOOL REGISTRATION =====
 
   private registerSshExecute(context: UnifiedModuleContext): void {
     const deregister = context.moduleManager.registerToolExecution(
@@ -328,65 +347,6 @@ export default class SshModule implements IUnifiedPlugin {
       this.manifest.id
     );
     this.deregisterFns.push(deregister);
-  }
-
-  private handleError(
-    error: unknown,
-    context: UnifiedModuleContext,
-    options: {
-      toolName: string;
-      code?: string;
-      details?: Record<string, unknown>;
-      sessionId?: string;
-      command?: string;
-    }
-  ) {
-    const message = error instanceof Error ? error.message : String(error);
-    let errorCode = options.code || ERROR_CODES.INTERNAL_ERROR;
-
-    // More specific error classification - check more specific errors first
-    // Check for session-specific errors first (they should take precedence)
-    if (message.includes('Session') && message.includes('not found')) {
-      errorCode = ERROR_CODES.SESSION_NOT_FOUND;
-    } else if (message.includes('busy executing')) {
-      errorCode = ERROR_CODES.SESSION_BUSY;
-    } else if (message.includes('already exists')) {
-      errorCode = ERROR_CODES.SESSION_EXISTS;
-    } else if (message.includes('timeout') || message.includes('timeout after')) {
-      errorCode = ERROR_CODES.COMMAND_TIMEOUT;
-    } else if (message.includes('Connection') || message.includes('ECONNREFUSED') || message.includes('connection failed')) {
-      errorCode = ERROR_CODES.CONNECTION_FAILED;
-    } else if (message.includes('authentication') || message.includes('Auth')) {
-      // SSH/authentication errors - but NOT 'permission denied' which is for file access
-      errorCode = ERROR_CODES.AUTHENTICATION_FAILED;
-    } else if (message.includes('ENOENT') || message.includes('not exist') || message.includes('No such file')) {
-      // File/directory not found errors
-      errorCode = ERROR_CODES.NOT_FOUND;
-    } else if (message.includes('EACCES') || message.includes('permission denied') || message.includes('Permission denied')) {
-      // File permission denied - comes after auth check to avoid false positives
-      errorCode = ERROR_CODES.PERMISSION_DENIED;
-    } else if (message.includes('Command exited with code')) {
-      // This is a remote command failure - use a more specific code
-      errorCode = ERROR_CODES.TOOL_EXECUTION_ERROR;
-    }
-
-    context.logger.error(`${options.toolName} failed`, {
-      component: this.manifest.id,
-      error,
-      ...options.details,
-    });
-
-    return createErrorResponse(
-      errorCode as any,
-      message,
-      {
-        details: {
-          tool: options.toolName,
-          ...options.details,
-        },
-        suggestion: getErrorSuggestion(errorCode as any, message),
-      }
-    );
   }
 
   private registerSshCloseSession(context: UnifiedModuleContext): void {
@@ -449,24 +409,27 @@ export default class SshModule implements IUnifiedPlugin {
     this.deregisterFns.push(deregister);
   }
 
+  // ===== TOOL HANDLERS =====
+
   private async handleSshExecute(
     args: z.infer<typeof sshExecuteSchema>,
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.getSession(args.session_id);
-      if (!session.isReady) {
-        throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
+      const session = this.sessionManager.getSession(args.session_id);
+      if (!session) {
+        throw new Error(`Session ${args.session_id} not found. Create it with ssh_new_session before using other tools.`);
       }
+
       const validTimeout = Math.min(Math.max(args.timeout, 1000), MAX_TIMEOUT_MS);
-      const result = await this.executeCommand(session, args.command, validTimeout);
-      
+      const result = await this.commandExecutor.executeCommand(session, args.command, validTimeout);
+
       if (result.exitCode !== 0 && !args.allowFailure) {
         throw new Error(
           `Command exited with code ${result.exitCode}\nOutput: ${result.output || '(no output)'}`
         );
       }
-      
+
       const response: any = {
         content: [
           {
@@ -488,11 +451,10 @@ export default class SshModule implements IUnifiedPlugin {
           durationMs: result.durationMs,
         },
       };
-      
-      // Only check for interactive prompts if command didn't complete normally
-      // (i.e., the end marker was not found, indicating potential interactive state)
+
+      // Check for interactive prompts
       if (!result.completedNormally) {
-        const promptInfo = this.detectInteractivePrompts(session.outputBuffer);
+        const promptInfo = this.promptDetector.detectInteractivePrompts(session.outputBuffer);
         if (promptInfo.detected) {
           response.structuredContent.awaitingInput = true;
           response.structuredContent.promptType = promptInfo.type;
@@ -500,14 +462,13 @@ export default class SshModule implements IUnifiedPlugin {
           response.content[0].text += `\n\n⚠️ Awaiting input: ${promptInfo.type} prompt detected. Use ssh_operate with input parameter to respond.`;
         }
       }
-      
+
       return response;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // Extract exit code from error message if present
       const exitCodeMatch = message.match(/Command exited with code (\d+)/);
       const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1], 10) : undefined;
-      
+
       return this.handleError(error, context, {
         toolName: 'ssh_execute',
         sessionId: args.session_id,
@@ -522,27 +483,21 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      if (this.sessions.has(args.session_id)) {
+      const existingSession = this.sessionManager.getSession(args.session_id);
+      if (existingSession) {
         throw new Error(`Session ${args.session_id} already exists. Close it before recreating.`);
       }
-      const connectionTarget = args.target;
-      this.createSession(args.session_id, connectionTarget);
-      
-      // Wait and verify session is actually connected
-      const session = this.sessions.get(args.session_id);
-      if (!session) {
-        throw new Error('Failed to create session - not found after creation');
-      }
-      
+
+      const session = await this.sessionManager.createSession(args.session_id, args.target);
+
       // Wait for SSH connection to establish
       await this.sleep(1500);
-      
+
       // Check if process exited (connection failed)
-      if (!session || !session.isConnected) {
-        // Check buffer for error messages
-        const bufferError = session?.outputBuffer || '';
-        let errorMsg = `SSH connection failed - could not connect to ${connectionTarget.host}:${connectionTarget.port}.`;
-        
+      if (!session.isConnected) {
+        const bufferError = session.outputBuffer || '';
+        let errorMsg = `SSH connection failed - could not connect to ${args.target.host}:${args.target.port}.`;
+
         if (bufferError.includes('permission denied') || bufferError.includes('Permission denied')) {
           errorMsg += ' Authentication failed. Check username, password or SSH key.';
         } else if (bufferError.includes('connection refused') || bufferError.includes('Connection refused')) {
@@ -554,12 +509,12 @@ export default class SshModule implements IUnifiedPlugin {
         } else if (bufferError) {
           errorMsg += ` Server said: ${bufferError.substring(0, 200)}`;
         }
-        
-        this.sessions.delete(args.session_id);
+
+        await this.sessionManager.closeSession(args.session_id);
         throw new Error(errorMsg);
       }
-      
-      const label = ` (remote: ${connectionTarget.user ? `${connectionTarget.user}@` : ''}${connectionTarget.host}:${connectionTarget.port})`;
+
+      const label = ` (remote: ${args.target.user ? `${args.target.user}@` : ''}${args.target.host}:${args.target.port})`;
       return {
         content: [
           {
@@ -569,12 +524,11 @@ export default class SshModule implements IUnifiedPlugin {
         ],
         structuredContent: {
           session_id: args.session_id,
-          target: connectionTarget,
-          status: 'ready'
-        }
+          target: args.target,
+          status: 'ready',
+        },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       context.logger.error('ssh_new_session failed', {
         component: this.manifest.id,
         error,
@@ -594,24 +548,17 @@ export default class SshModule implements IUnifiedPlugin {
     try {
       let sessionId = args.session_id;
       let sessionCreated = false;
-      let session: TerminalSession | undefined;
+      let session = this.sessionManager.getSession(sessionId);
 
-      // 1. Resolve session: check if session_id exists
-      if (sessionId) {
-        session = this.sessions.get(sessionId) ?? undefined;
-      }
-
-      // 2. Handle session based on its state
+      // 1. Resolve session
       if (session) {
-        // Session exists - check if it's alive
         if (!session.isConnected) {
-          // Dead session - clean up
-          try { session.ptyProcess.kill(); } catch { /* ignore */ }
-          this.sessions.delete(sessionId!);
-          session = undefined;
-          
-          // If target provided, will create new below
-          // If no target, will fall through to default session check
+          try {
+            await this.sessionManager.closeSession(sessionId!);
+          } catch {
+            /* ignore */
+          }
+          session = null;
         }
       }
 
@@ -620,42 +567,34 @@ export default class SshModule implements IUnifiedPlugin {
         return t && typeof t === 'object' && typeof t.host === 'string' && t.host.length > 0;
       };
 
-      // 3. Create new session if needed
+      // 2. Create new session if needed
       if (!session) {
         if (hasValidTarget(args.target)) {
-          // Create new session with provided target
           const newSessionId = sessionId || `session_${Date.now()}`;
-          this.createSession(newSessionId, args.target);
-          
+          session = await this.sessionManager.createSession(newSessionId, args.target);
+
           await this.sleep(1000);
-          
-          session = this.sessions.get(newSessionId);
-          if (!session) {
-            throw new Error(`Failed to create SSH session to ${args.target.host}. Check SSH availability and credentials.`);
-          }
-          
+
           if (!session.isConnected) {
-            this.sessions.delete(newSessionId);
+            await this.sessionManager.closeSession(newSessionId);
             throw new Error(`SSH connection failed to ${args.target.host}. Process exited.`);
           }
-          
+
           sessionId = newSessionId;
           sessionCreated = true;
         } else if (sessionId) {
-          // No target but session_id provided - try default
-          const defaultSession = this.sessions.get(DEFAULT_SESSION_ID);
+          const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
           if (defaultSession && defaultSession.isConnected) {
-            sessionId = DEFAULT_SESSION_ID;
             session = defaultSession;
+            sessionId = DEFAULT_SESSION_ID;
           } else {
             throw new Error(`Session "${sessionId}" not found. Provide target to create new session.`);
           }
         } else {
-          // No session_id and no target - try default
-          const defaultSession = this.sessions.get(DEFAULT_SESSION_ID);
+          const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
           if (defaultSession && defaultSession.isConnected) {
-            sessionId = DEFAULT_SESSION_ID;
             session = defaultSession;
+            sessionId = DEFAULT_SESSION_ID;
           } else {
             throw new Error('No active session. Provide session_id or target.');
           }
@@ -670,12 +609,8 @@ export default class SshModule implements IUnifiedPlugin {
       // 3. Execute command or send input
       const inputToSend = args.command || args.input;
       if (inputToSend) {
-        if (!session.isReady) {
-          throw new Error(`Session ${sessionId} is busy executing: ${session.lastCommand}`);
-        }
-
         const timeout = args.timeout || DEFAULT_TIMEOUT_MS;
-        const result = await this.executeCommand(session, inputToSend, timeout);
+        const result = await this.commandExecutor.executeCommand(session, inputToSend, timeout);
         commandOutput = result.output || '';
         exitCode = result.exitCode;
         commandCompletedNormally = result.completedNormally ?? true;
@@ -696,8 +631,7 @@ export default class SshModule implements IUnifiedPlugin {
       // ===== STREAMING: Emit SSH execution updates =====
       if (this.streamingEnabled && args.output_id) {
         const executionDuration = Date.now() - executionStartTime;
-        
-        // Emit output chunks
+
         if (commandOutput) {
           this.emitSSHStreamUpdate({
             type: 'output',
@@ -708,8 +642,7 @@ export default class SshModule implements IUnifiedPlugin {
             timestamp: Date.now(),
           });
         }
-        
-        // Emit completion event
+
         this.emitSSHStreamUpdate({
           type: 'complete',
           executionId: args.output_id,
@@ -721,10 +654,11 @@ export default class SshModule implements IUnifiedPlugin {
       }
       // ===== END STREAMING ====
 
-      // 5. Detect interactive prompts - only if command didn't complete normally
-      const promptInfo = (!commandCompletedNormally && session.outputBuffer) 
-        ? this.detectInteractivePrompts(session.outputBuffer) 
-        : { detected: false };
+      // 5. Detect interactive prompts
+      const promptInfo =
+        !commandCompletedNormally && session.outputBuffer
+          ? this.promptDetector.detectInteractivePrompts(session.outputBuffer)
+          : { detected: false };
 
       // 6. Build response
       const response: Record<string, unknown> = {
@@ -734,11 +668,13 @@ export default class SshModule implements IUnifiedPlugin {
 
       if (sessionCreated) {
         response.session_created = true;
-        response.target = hasValidTarget(args.target) ? {
-          host: args.target.host,
-          port: args.target.port,
-          user: args.target.user,
-        } : undefined;
+        response.target = hasValidTarget(args.target)
+          ? {
+              host: args.target.host,
+              port: args.target.port,
+              user: args.target.user,
+            }
+          : undefined;
       }
 
       if (inputToSend) {
@@ -750,7 +686,6 @@ export default class SshModule implements IUnifiedPlugin {
         response.output = output;
       }
 
-      // Add prompt detection info
       if (promptInfo.detected) {
         response.awaiting_input = true;
         response.prompt_type = promptInfo.type;
@@ -777,44 +712,10 @@ export default class SshModule implements IUnifiedPlugin {
     }
   }
 
-  private formatSshOperateText(response: Record<string, unknown>): string {
-    const lines: string[] = [];
-
-    if (response.session_created) {
-      const target = response.target as { host?: string; port?: number; user?: string } | undefined;
-      if (target) {
-        lines.push(`Created session: ${response.session_id}`);
-        lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
-      }
-    } else {
-      lines.push(`Session: ${response.session_id}`);
-    }
-
-    if (response.command) {
-      lines.push(`Command: ${response.command}`);
-      if (response.exit_code !== undefined) {
-        lines.push(`Exit code: ${response.exit_code}`);
-      }
-    }
-
-    if (response.output) {
-      lines.push('');
-      lines.push(String(response.output));
-    }
-
-    // Add interactive prompt warning
-    if (response.awaiting_input) {
-      lines.push('');
-      lines.push(`⚠️ Awaiting input: ${response.prompt_type} prompt detected.`);
-      lines.push(`Prompt: ${response.prompt_text}`);
-      lines.push(`Use ssh_operate with input parameter to respond.`);
-    }
-
-    return lines.join('\n');
-  }
-
   private handleListSessions() {
-    if (this.sessions.size === 0) {
+    const sessions = this.sessionManager.listSessions();
+
+    if (sessions.length === 0) {
       return {
         content: [
           {
@@ -822,16 +723,16 @@ export default class SshModule implements IUnifiedPlugin {
             text: 'No active SSH sessions.',
           },
         ],
-        structuredContent: { sessions: [], count: 0 }
+        structuredContent: { sessions: [], count: 0 },
       };
     }
 
-    const sessionList = Array.from(this.sessions.values()).map((session) => {
-      const uptimeSeconds = Math.floor((Date.now() - session.createdAt.getTime()) / 1000);
+    const sessionList = sessions.map((session) => {
+      const uptimeSeconds = Math.floor((Date.now() - session.created) / 1000);
       const target = session.target;
       const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
       const isRunning = session.isConnected;
-      
+
       return {
         id: session.id,
         status: session.isReady ? 'ready' : 'busy',
@@ -839,28 +740,30 @@ export default class SshModule implements IUnifiedPlugin {
         lastCommand: session.lastCommand || null,
         uptimeSeconds,
         isRunning,
-        createdAt: session.createdAt.toISOString()
+        createdAt: new Date(session.created).toISOString(),
       };
     });
 
-    const formatted = sessionList.map((s) => {
-      return (
-        `• ${s.id}\n` +
-        `  Status: ${s.isRunning ? 'connected' : 'disconnected'} (${s.status})\n` +
-        `  Target: ${s.target}\n` +
-        `  Last command: ${s.lastCommand || '(none)'}\n` +
-        `  Uptime: ${s.uptimeSeconds}s`
-      );
-    }).join('\n\n');
+    const formatted = sessionList
+      .map((s) => {
+        return (
+          `• ${s.id}\n` +
+          `  Status: ${s.isRunning ? 'connected' : 'disconnected'} (${s.status})\n` +
+          `  Target: ${s.target}\n` +
+          `  Last command: ${s.lastCommand || '(none)'}\n` +
+          `  Uptime: ${s.uptimeSeconds}s`
+        );
+      })
+      .join('\n\n');
 
     return {
       content: [
         {
           type: 'text',
-          text: `Active SSH sessions (${this.sessions.size}):\n\n${formatted}`,
+          text: `Active SSH sessions (${sessions.length}):\n\n${formatted}`,
         },
       ],
-      structuredContent: { sessions: sessionList, count: this.sessions.size }
+      structuredContent: { sessions: sessionList, count: sessions.length },
     };
   }
 
@@ -869,12 +772,13 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.sessions.get(args.session_id);
+      const session = this.sessionManager.getSession(args.session_id);
       if (!session) {
         throw new Error(`Session ${args.session_id} not found.`);
       }
-      session.ptyProcess.kill();
-      this.sessions.delete(args.session_id);
+
+      await this.sessionManager.closeSession(args.session_id);
+
       return {
         content: [
           {
@@ -896,7 +800,7 @@ export default class SshModule implements IUnifiedPlugin {
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.sessions.get(args.session_id);
+      const session = this.sessionManager.getSession(args.session_id);
       if (!session) {
         const message = `Session ${args.session_id} not found. Call ssh_new_session before inspecting buffers.`;
         context.logger.warn('ssh_get_buffer: session missing', {
@@ -919,7 +823,7 @@ export default class SshModule implements IUnifiedPlugin {
       const target = session.target;
       const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
       const isRunning = session.isConnected;
-      
+
       const info = `Session: ${args.session_id}
 Target: ${targetStr}
 Status: ${isRunning ? 'connected' : 'disconnected'} (${session.isReady ? 'ready' : 'busy'})
@@ -942,8 +846,8 @@ ${buffer || '(empty)'}`;
           status: isRunning ? 'connected' : 'disconnected',
           bufferSize: buffer.length,
           lastCommand: session.lastCommand,
-          buffer: buffer
-        }
+          buffer: buffer,
+        },
       };
     } catch (error) {
       return this.handleError(error, context, {
@@ -958,14 +862,17 @@ ${buffer || '(empty)'}`;
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.getSession(args.session_id);
-      if (!session.isReady) {
-        throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
+      const session = this.sessionManager.getSession(args.session_id);
+      if (!session) {
+        throw new Error(`Session ${args.session_id} not found. Create it with ssh_new_session before uploading files.`);
       }
+
       const localPath = path.resolve(process.cwd(), args.local_path);
-      const remoteTarget = this.resolveRemotePath(args.remote_path, session);
+      const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
-      const result = await this.scpUpload(session, localPath, remoteTarget, timeout);
+
+      const result = await this.fileTransferHandler.uploadFile(session, localPath, remoteTarget, timeout);
+
       return {
         content: [
           {
@@ -997,14 +904,19 @@ ${buffer || '(empty)'}`;
     context: UnifiedModuleContext
   ) {
     try {
-      const session = this.getSession(args.session_id);
-      if (!session.isReady) {
-        throw new Error(`Session ${args.session_id} is busy executing: ${session.lastCommand}`);
+      const session = this.sessionManager.getSession(args.session_id);
+      if (!session) {
+        throw new Error(
+          `Session ${args.session_id} not found. Create it with ssh_new_session before downloading files.`
+        );
       }
-      const remoteTarget = this.resolveRemotePath(args.remote_path, session);
+
+      const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
       const localPath = path.resolve(process.cwd(), args.local_path);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
-      const result = await this.scpDownload(session, remoteTarget, localPath, timeout);
+
+      const result = await this.fileTransferHandler.downloadFile(session, remoteTarget, localPath, timeout);
+
       return {
         content: [
           {
@@ -1031,232 +943,95 @@ ${buffer || '(empty)'}`;
     }
   }
 
-  private resolveRemotePath(remotePath: string, session?: TerminalSession): string {
-    if (session?.target) {
-      return remotePath;
+  // ===== PRIVATE HELPERS =====
+
+  private handleError(
+    error: unknown,
+    context: UnifiedModuleContext,
+    options: {
+      toolName: string;
+      code?: string;
+      details?: Record<string, unknown>;
+      sessionId?: string;
+      command?: string;
     }
-    if (remotePath.startsWith('~')) {
-      const home = process.env.HOME || os.homedir();
-      return path.resolve(home, remotePath.slice(1));
-    }
-    return path.resolve(remotePath);
-  }
-
-  private getSession(sessionId?: string): TerminalSession {
-    const normalized = (sessionId || DEFAULT_SESSION_ID).trim() || DEFAULT_SESSION_ID;
-    const session = this.sessions.get(normalized);
-    if (!session) {
-      throw new Error(`Session ${normalized} not found. Create it with ssh_new_session before using other tools.`);
-    }
-    return session;
-  }
-
-  private createSession(sessionId: string, connection: SSHConnectionTarget): TerminalSession {
-    if (!connection) {
-      throw new Error('SSH session creation requires a remote target.');
-    }
-    
-    const shellPath = 'ssh';
-    const args = this.buildSshArgs(connection);
-
-    const ptyProcess = ptySpawn(shellPath, args, {
-      name: 'xterm-256color',
-      cols: 160,
-      rows: 40,
-      cwd: process.env.HOME || process.cwd(),
-      env: {
-        ...process.env,
-        TERM: 'xterm-256color',
-        PS1: '[READY]$ ',
-        SSH_ASKPASS: '',
-        GIT_TERMINAL_PROMPT: '0',
-      },
-    });
-
-    const session: TerminalSession = {
-      id: sessionId,
-      ptyProcess,
-      outputBuffer: '',
-      isReady: true,
-      isConnected: true,
-      lastCommand: '',
-      createdAt: new Date(),
-      target: connection,
-      historyLog: '',
-    };
-
-    ptyProcess.onData((data) => {
-      session.outputBuffer += data;
-      if (session.outputBuffer.length > MAX_BUFFER_CHARS) {
-        session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_CHARS);
-      }
-    });
-
-    ptyProcess.onExit((e: { exitCode: number; signal?: number }) => {
-      session.isConnected = false;
-      logger.warn(`SSH Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
-      this.sessions.delete(sessionId);
-    });
-
-    this.sessions.set(sessionId, session);
-    return session;
-  }
-
-  private buildSshArgs(target: SSHConnectionTarget): string[] {
-    const args: string[] = ['-tt', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no'];
-    if (target.identityFile) {
-      args.push('-i', target.identityFile);
-    }
-    if (target.port) {
-      args.push('-p', String(target.port));
-    }
-    args.push(`${target.user ? `${target.user}@` : ''}${target.host}`);
-    if (target.extraArgs?.length) {
-      args.push(...target.extraArgs);
-    }
-    return args;
-  }
-
-  private async executeCommand(session: TerminalSession, command: string, timeout: number) {
-    session.lastCommand = command;
-    session.isReady = false;
-    session.outputBuffer = '';
-
-    // Use session ID + timestamp for unique markers to avoid collision
-    const timestamp = `${session.id}-${Date.now()}`;
-    const startMarker = `===START${timestamp}===`;
-    const endMarker = `===END${timestamp}===`;
-    const exitMarker = `===EXIT${timestamp}===`;
-
-    // Wait for PTY to stabilize before sending commands
-    await this.sleep(100);
-    
-    // Send a newline first to ensure we're at a clean prompt
-    session.ptyProcess.write('\n');
-    await this.sleep(150);
-    
-    // Write start marker
-    session.ptyProcess.write(`echo '${startMarker}'\n`);
-    await this.sleep(100);
-    
-    // Write the actual command
-    session.ptyProcess.write(`${command}\n`);
-    await this.sleep(100);
-    
-    // Write exit code marker
-    session.ptyProcess.write(`echo '${exitMarker}'$?\n`);
-    await this.sleep(100);
-    
-    // Write end marker
-    session.ptyProcess.write(`echo '${endMarker}'\n`);
-    await this.sleep(100);
-
-    const startTime = Date.now();
-    let foundEnd = false;
-    let stableCount = 0;
-
-    while (Date.now() - startTime < timeout) {
-      if (session.outputBuffer.includes(endMarker)) {
-        await this.sleep(200);
-        const prevBuffer = session.outputBuffer;
-        await this.sleep(150);
-        if (session.outputBuffer === prevBuffer || stableCount > 3) {
-          foundEnd = true;
-          break;
-        }
-        stableCount++;
-      }
-      await this.sleep(50);
-    }
-
-    session.isReady = true;
-
-    if (!foundEnd) {
-      throw new Error(`Command timeout after ${timeout}ms. Output may still be streaming.`);
-    }
-
-    const buffer = session.outputBuffer;
-    const startIdx = buffer.lastIndexOf(startMarker);
-    const endIdx = buffer.lastIndexOf(endMarker);
-    let segment = buffer;
-    if (startIdx >= 0 && endIdx > startIdx) {
-      segment = buffer.substring(startIdx + startMarker.length, endIdx);
-    }
-
-    const filtered = this.filterCommandOutput(segment, command, startMarker, endMarker, exitMarker);
-    const cleaned = this.cleanOutput(filtered);
-    const exitMatch = buffer.match(new RegExp(`${this.escapeRegex(exitMarker)}(\\d+)`));
-    const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
-
-    const historyLines = [`$ ${command}`, cleaned || '(no output)', `(exit ${exitCode})`].join('\n');
-    this.appendHistory(session, historyLines);
-
-    return {
-      output: cleaned,
-      exitCode,
-      durationMs: Date.now() - startTime,
-      completedNormally: true,
-    };
-  }
-
-  private filterCommandOutput(
-    raw: string,
-    command: string,
-    startMarker: string,
-    endMarker: string,
-    exitMarker: string
   ) {
-    const lines: string[] = [];
-    let skippedCommandEcho = false;
-    const commandSignature = command.trim();
-    const commandParts = commandSignature.split(/\s+/);
+    const message = error instanceof Error ? error.message : String(error);
+    let errorCode = options.code || ERROR_CODES.INTERNAL_ERROR;
 
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmedLine = line.trim();
-      
-      // Skip empty lines
-      if (!trimmedLine) continue;
-      
-      // Skip marker lines
-      if (trimmedLine.includes(startMarker) || trimmedLine.includes(endMarker) || trimmedLine.includes(exitMarker)) {
-        continue;
+    // Error classification
+    if (message.includes('Session') && message.includes('not found')) {
+      errorCode = ERROR_CODES.SESSION_NOT_FOUND;
+    } else if (message.includes('busy executing')) {
+      errorCode = ERROR_CODES.SESSION_BUSY;
+    } else if (message.includes('already exists')) {
+      errorCode = ERROR_CODES.SESSION_EXISTS;
+    } else if (message.includes('timeout') || message.includes('timeout after')) {
+      errorCode = ERROR_CODES.COMMAND_TIMEOUT;
+    } else if (
+      message.includes('Connection') ||
+      message.includes('ECONNREFUSED') ||
+      message.includes('connection failed')
+    ) {
+      errorCode = ERROR_CODES.CONNECTION_FAILED;
+    } else if (message.includes('authentication') || message.includes('Auth')) {
+      errorCode = ERROR_CODES.AUTHENTICATION_FAILED;
+    } else if (message.includes('ENOENT') || message.includes('not exist') || message.includes('No such file')) {
+      errorCode = ERROR_CODES.NOT_FOUND;
+    } else if (message.includes('EACCES') || message.includes('permission denied') || message.includes('Permission denied')) {
+      errorCode = ERROR_CODES.PERMISSION_DENIED;
+    } else if (message.includes('Command exited with code')) {
+      errorCode = ERROR_CODES.TOOL_EXECUTION_ERROR;
+    }
+
+    context.logger.error(`${options.toolName} failed`, {
+      component: this.manifest.id,
+      error,
+      ...options.details,
+    });
+
+    return createErrorResponse(errorCode as any, message, {
+      details: {
+        tool: options.toolName,
+        ...options.details,
+      },
+      suggestion: getErrorSuggestion(errorCode as any, message),
+    });
+  }
+
+  private formatSshOperateText(response: Record<string, unknown>): string {
+    const lines: string[] = [];
+
+    if (response.session_created) {
+      const target = response.target as { host?: string; port?: number; user?: string } | undefined;
+      if (target) {
+        lines.push(`Created session: ${response.session_id}`);
+        lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
       }
-      
-      // Skip echo commands themselves
-      if (trimmedLine.startsWith('echo ')) continue;
-      
-      // Skip the command itself (exact match)
-      if (trimmedLine === commandSignature) {
-        skippedCommandEcho = true;
-        continue;
+    } else {
+      lines.push(`Session: ${response.session_id}`);
+    }
+
+    if (response.command) {
+      lines.push(`Command: ${response.command}`);
+      if (response.exit_code !== undefined) {
+        lines.push(`Exit code: ${response.exit_code}`);
       }
-      
-      // Skip command echoed with prompt prefix
-      if (trimmedLine.match(/^[❯$>#]\s+/) && trimmedLine.replace(/^[❯$>#]\s+/, '').trim() === commandSignature) {
-        skippedCommandEcho = true;
-        continue;
-      }
-      
-      // Skip if line ends with command (command echo from some shells)
-      if (!skippedCommandEcho && trimmedLine.endsWith(commandSignature)) {
-        skippedCommandEcho = true;
-        continue;
-      }
-      
-      // Skip prompt-only lines
-      if (trimmedLine.match(/^[❯$>#]\s*$/)) continue;
-      
-      lines.push(trimmedLine);
+    }
+
+    if (response.output) {
+      lines.push('');
+      lines.push(String(response.output));
+    }
+
+    if (response.awaiting_input) {
+      lines.push('');
+      lines.push(`⚠️ Awaiting input: ${response.prompt_type} prompt detected.`);
+      lines.push(`Prompt: ${response.prompt_text}`);
+      lines.push(`Use ssh_operate with input parameter to respond.`);
     }
 
     return lines.join('\n');
-  }
-
-  private appendHistory(session: TerminalSession, entry: string) {
-    session.historyLog = session.historyLog ? `${session.historyLog}\n\n${entry}` : entry;
-    if (session.historyLog.length > MAX_HISTORY_CHARS) {
-      session.historyLog = session.historyLog.slice(-MAX_HISTORY_CHARS);
-    }
   }
 
   private cleanOutput(output: string): string {
@@ -1280,416 +1055,7 @@ ${buffer || '(empty)'}`;
       .trim();
   }
 
-  private detectInteractivePrompts(output: string): { detected: boolean; type?: string; prompt?: string } {
-    const patterns = [
-      // Password/passphrase prompts
-      { regex: /(?:password|passphrase)[:\s]/i, type: 'password', suggestion: 'Use ssh_operate with input="your_password" to respond' },
-      // Yes/no confirmation
-      { regex: /(?:yes|no|continue|confirm|accept|approve|delete|overwrite)\s*[\(\[]?[yYnN]?[\)\]]?/i, type: 'yes_no', suggestion: 'Use ssh_operate with input="y" or input="n" to respond' },
-      // Interactive menu - select option
-      { regex: /(?:select|choose|option|menu|enter choice)[:\s]/i, type: 'menu', suggestion: 'Use ssh_operate with input="1" or the desired option number' },
-      // Press any key
-      { regex: /press\s+(any\s+)?key/i, type: 'any_key', suggestion: 'Use ssh_operate with input="" to press Enter' },
-      // Numbered menu
-      { regex: /\[\s*[0-9]+\s*\]\s*$/m, type: 'numbered_menu', suggestion: 'Use ssh_operate with input="1" or desired number' },
-      // Username prompt
-      { regex: /(?:login|username|user)[:\s]/i, type: 'username', suggestion: 'Use ssh_operate with input="username" to respond' },
-      // SSH host key verification
-      { regex: /(?:host\s+key|authenticity|are you sure|known hosts)/i, type: 'host_key', suggestion: 'Use ssh_operate with input="yes" to accept the host key' },
-      // Two-factor authentication
-      { regex: /(?:2fa|verification code|authenticator|sms code|token)[:\s]/i, type: '2fa', suggestion: 'Use ssh_operate with input="code" to provide the verification code' },
-      // sudo password
-      { regex: /\[sudo\]\s*password/i, type: 'sudo_password', suggestion: 'Use ssh_operate with input="sudo_password" to respond' },
-      // Terminal interrupt
-      { regex: /\^C\s*interrupt/i, type: 'interrupted', suggestion: 'Command was interrupted. Session may be waiting for input.' },
-      // EOF/end of file
-      // EOF/end of file
-      { regex: /(?:end of file|ctrl\+d|ctrl\+c)/i, type: 'eof', suggestion: 'Use ssh_operate with input="" to send EOF' },
-    ];
-
-    for (const pattern of patterns) {
-      const match = output.match(pattern.regex);
-      if (match) {
-        return { detected: true, type: pattern.type, prompt: match[0] };
-      }
-    }
-    return { detected: false };
-  }
-
-  private escapeRegex(value: string) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  private sleep(ms: number) {
+  private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private escapeShellArg(value: string): string {
-    if (value.length === 0) {
-      return "''";
-    }
-    const escaped = value.split("'").join("'\\''");
-    return `'${escaped}'`;
-  }
-
-  private buildScpArgs(target: SSHConnectionTarget): string[] {
-    const args: string[] = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no'];
-    if (target.identityFile) {
-      args.push('-i', target.identityFile);
-    }
-    if (target.port) {
-      args.push('-P', String(target.port));
-    }
-    return args;
-  }
-
-  private buildScpRemotePath(target: SSHConnectionTarget, remotePath: string): string {
-    return `${target.user}@${target.host}:${remotePath}`;
-  }
-
-  private async execPromise(command: string, timeout: number): Promise<{ stdout: string; stderr: string; code: number }> {
-    return new Promise((resolve, reject) => {
-      exec(command, { timeout }, (error, stdout, stderr) => {
-        if (error) {
-          const errCode = (error as NodeJS.ErrnoException).code;
-          resolve({ stdout, stderr, code: typeof errCode === 'number' ? errCode : 1 });
-        } else {
-          resolve({ stdout, stderr, code: 0 });
-        }
-      });
-    });
-  }
-
-  private async scpUpload(
-    session: TerminalSession,
-    localPath: string,
-    remotePath: string,
-    timeout: number
-  ): Promise<{ message: string; remotePath: string; size: number }> {
-    if (!session.target) {
-      throw new Error('No SSH target configured for this session');
-    }
-
-    const stats = await fsPromises.stat(localPath);
-    if (!stats.isFile()) {
-      throw new Error('Upload source must be a regular file.');
-    }
-    if (stats.size > MAX_FILE_SIZE) {
-      throw new Error(`File size (${(stats.size / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`);
-    }
-
-    const target = session.target;
-    const scpArgs = [
-      ...this.buildScpArgs(target),
-      localPath,
-      this.buildScpRemotePath(target, remotePath)
-    ];
-
-    return new Promise((resolve, reject) => {
-      const proc = cpSpawn('scp', scpArgs, {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => { stdout += data; });
-      proc.stderr.on('data', (data) => { stderr += data; });
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve({
-            message: `File uploaded successfully: ${localPath} -> ${this.buildScpRemotePath(target, remotePath)}`,
-            remotePath,
-            size: stats.size,
-          });
-        } else {
-          const errorMsg = stderr || stdout || `SCP failed with code ${code}`;
-          if (errorMsg.includes('permission denied') || errorMsg.includes('Permission denied')) {
-            reject(new Error(`Permission denied writing to remote path: ${remotePath}. Check write permissions.`));
-          } else if (errorMsg.includes('No such file') || errorMsg.includes('no such file')) {
-            reject(new Error(`Remote directory does not exist: ${path.dirname(remotePath)}`));
-          } else {
-            reject(new Error(`SCP upload failed: ${errorMsg}`));
-          }
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`SCP process error: ${err.message}`));
-      });
-    });
-  }
-
-  private async scpDownload(
-    session: TerminalSession,
-    remotePath: string,
-    localPath: string,
-    timeout: number
-  ): Promise<{ message: string; localPath: string; size: number }> {
-    if (!session.target) {
-      throw new Error('No SSH target configured for this session');
-    }
-
-    const target = session.target;
-    const scpArgs = [
-      ...this.buildScpArgs(target),
-      this.buildScpRemotePath(target, remotePath),
-      localPath
-    ];
-
-    return new Promise((resolve, reject) => {
-      const proc = cpSpawn('scp', scpArgs, {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => { stdout += data; });
-      proc.stderr.on('data', (data) => { stderr += data; });
-
-      proc.on('close', async (code) => {
-        if (code === 0) {
-          try {
-            const localStats = await fsPromises.stat(localPath);
-            if (localStats.size > MAX_FILE_SIZE) {
-              await fsPromises.unlink(localPath).catch(() => {});
-              reject(new Error(`Remote file (${(localStats.size / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`));
-              return;
-            }
-            resolve({
-              message: `File downloaded successfully: ${this.buildScpRemotePath(target, remotePath)} -> ${localPath}\nSize: ${(localStats.size / 1024).toFixed(2)}KB`,
-              localPath,
-              size: localStats.size,
-            });
-          } catch (err) {
-            reject(new Error(`Download succeeded but failed to verify local file: ${err}`));
-          }
-        } else {
-          const errorMsg = stderr || stdout || `SCP failed with code ${code}`;
-          if (errorMsg.includes('permission denied') || errorMsg.includes('Permission denied')) {
-            reject(new Error(`Permission denied reading remote file: ${remotePath}. Check read permissions.`));
-          } else if (errorMsg.includes('No such file') || errorMsg.includes('no such file')) {
-            reject(new Error(`Remote file not found: ${remotePath}`));
-          } else {
-            reject(new Error(`SCP download failed: ${errorMsg}`));
-          }
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`SCP process error: ${err.message}`));
-      });
-    });
-  }
-
-  private async uploadFile(
-    session: TerminalSession,
-    localPath: string,
-    remotePath: string,
-    timeout: number
-  ): Promise<{ message: string; remotePath: string; size: number }> {
-    let stats;
-    try {
-      stats = await fsPromises.stat(localPath);
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code === 'ENOENT') {
-        throw new Error(`Local file not found: ${localPath}`);
-      } else if (err.code === 'EACCES') {
-        throw new Error(`Permission denied accessing local file: ${localPath}`);
-      } else if (err.code === 'ENOTDIR') {
-        throw new Error(`Invalid path: ${localPath} is not in a valid directory`);
-      }
-      throw new Error(`Failed to access local file: ${err.message}`);
-    }
-    if (!stats.isFile()) {
-      throw new Error('Upload source must be a regular file.');
-    }
-    if (stats.size > MAX_FILE_SIZE) {
-      throw new Error(
-        `File size (${(stats.size / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`
-      );
-    }
-
-    let finalRemotePath = remotePath;
-    try {
-      const dirCheck = await this.executeCommand(
-        session,
-        `test -d ${this.escapeShellArg(finalRemotePath)} && echo "DIR" || echo "FILE"`,
-        5000
-      );
-      if (dirCheck.output.trim() === 'DIR') {
-        const candidate = finalRemotePath.endsWith('/')
-          ? `${finalRemotePath}${path.basename(localPath)}`
-          : `${finalRemotePath}/${path.basename(localPath)}`;
-        finalRemotePath = candidate;
-      }
-    } catch {
-      // ignore
-    }
-
-    try {
-      const fileStatus = await this.executeCommand(
-        session,
-        `test -f ${this.escapeShellArg(finalRemotePath)} && echo "EXISTS" || echo "OK"`,
-        5000
-      );
-      if (fileStatus.output.trim() === 'EXISTS') {
-        const ext = path.extname(finalRemotePath);
-        const name = path.basename(finalRemotePath, ext);
-        const dir = path.dirname(finalRemotePath);
-        const suffix = Math.random().toString(36).substring(2, 8);
-        finalRemotePath = `${dir}/${name}_${suffix}${ext}`;
-      }
-    } catch {
-      // ignore
-    }
-
-    // Use simpler approach - encode locally and decode on remote
-    const base64Content = (await fsPromises.readFile(localPath)).toString('base64');
-    const tempBase64File = `/tmp/mcp_upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
-    
-    // Use a temp file approach to avoid command line length issues
-    // First, write base64 content to a temp file using printf (more reliable than echo)
-    const writeTempCmd = `printf '%s' '${base64Content}' > ${this.escapeShellArg(tempBase64File)}`;
-    await this.executeCommand(session, writeTempCmd, timeout);
-    
-    // Then decode the temp file to the destination
-    const decodeCmd = `base64 -d ${this.escapeShellArg(tempBase64File)} > ${this.escapeShellArg(finalRemotePath)} && rm -f ${this.escapeShellArg(tempBase64File)}`;
-    const decodeResult = await this.executeCommand(session, decodeCmd, timeout);
-    
-    // Check if decode was successful
-    if (decodeResult.exitCode !== 0) {
-      const output = decodeResult.output || '';
-      // Check for specific error types
-      if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
-        throw new Error(`Permission denied writing to remote path: ${finalRemotePath}. Check write permissions for the target directory.`);
-      } else if (output.includes('no such file') || output.includes('No such file')) {
-        throw new Error(`Remote directory does not exist: ${path.dirname(finalRemotePath)}`);
-      }
-      throw new Error(`Failed to decode and write file to remote: ${output || 'Unknown error'}`);
-    }
-
-    // Verify the file was actually created on the remote system
-    const verify = await this.executeCommand(
-      session,
-      `ls -lh ${this.escapeShellArg(finalRemotePath)}`,
-      10000
-    );
-    
-    if (verify.exitCode !== 0) {
-      const output = verify.output || '';
-      if (output.includes('permission denied') || output.includes('Permission denied')) {
-        throw new Error(`Permission denied accessing remote file after upload: ${finalRemotePath}`);
-      }
-      throw new Error(`File upload verification failed. Remote file may not have been created: ${output || 'File not found'}`);
-    }
-    
-    if (!verify.output.includes(path.basename(finalRemotePath))) {
-      throw new Error(`File upload verification failed. Remote file may not have been created: ${verify.output || 'File not found'}`);
-    }
-
-    return {
-      message: `File uploaded successfully: ${localPath} -> ${finalRemotePath}\n${verify.output}`,
-      remotePath: finalRemotePath,
-      size: stats.size,
-    };
-  }
-
-  private async downloadFile(
-    session: TerminalSession,
-    remotePath: string,
-    localPath: string,
-    timeout: number
-  ): Promise<{ message: string; localPath: string; size: number }> {
-    // First, check if file exists and get its size - use proper quoting
-    const escapedPath = this.escapeShellArg(remotePath);
-    const sizeCheckCmd = `if [ -f ${escapedPath} ]; then stat -c%s ${escapedPath} 2>&1 || stat -f%z ${escapedPath} 2>&1; else echo "FILE_NOT_FOUND"; fi`;
-    const sizeResult = await this.executeCommand(session, sizeCheckCmd, 10000);
-    
-    // Check if command failed (exit code non-zero indicates an error)
-    if (sizeResult.exitCode !== 0) {
-      const output = sizeResult.output || '';
-      // Check if it's a permission issue vs not found
-      if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
-        throw new Error(`Permission denied accessing remote file: ${remotePath}. Check read permissions for the file.`);
-      }
-      if (output.includes('No such file') || output.includes('no such file') || output.includes('cannot stat')) {
-        throw new Error(`Remote file not found: ${remotePath}`);
-      }
-      throw new Error(`Failed to access remote file: ${output || 'Unknown error'}`);
-    }
-    
-    // Check if file doesn't exist (command succeeded but output is FILE_NOT_FOUND)
-    // Extract just the last line that might be the file size or FILE_NOT_FOUND
-    const outputLines = sizeResult.output.trim().split('\n').filter((l: string) => l.trim());
-    const lastLine = outputLines[outputLines.length - 1]?.trim() || '';
-    
-    if (lastLine === 'FILE_NOT_FOUND' || lastLine === '') {
-      throw new Error(`Remote file not found: ${remotePath}`);
-    }
-    
-    // Extract just numeric values from the output (file size)
-    const numericMatch = lastLine.match(/(\d+)/);
-    if (!numericMatch) {
-      throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${sizeResult.output}`);
-    }
-    
-    const fileSize = parseInt(numericMatch[1], 10);
-    if (Number.isNaN(fileSize) || fileSize <= 0) {
-      throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${sizeResult.output}`);
-    }
-    if (fileSize > MAX_FILE_SIZE) {
-      throw new Error(
-        `Remote file (${(fileSize / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`
-      );
-    }
-
-    // Download file using base64 encoding via temp file (to avoid buffer limits)
-    const tempRemoteFile = `/tmp/mcp_download_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
-    
-    // Encode to temp file on remote
-    const encodeCmd = `base64 ${escapedPath} > ${this.escapeShellArg(tempRemoteFile)}`;
-    const encodeResult = await this.executeCommand(session, encodeCmd, timeout);
-    
-    if (encodeResult.exitCode !== 0) {
-      const output = encodeResult.output || '';
-      if (output.includes('permission denied') || output.includes('Permission denied') || output.includes('EACCES')) {
-        throw new Error(`Permission denied reading remote file: ${remotePath}. Check read permissions.`);
-      }
-      if (output.includes('No such file') || output.includes('no such file')) {
-        throw new Error(`Remote file not found: ${remotePath}`);
-      }
-      throw new Error(`Failed to encode remote file: ${output || 'Unknown error'}`);
-    }
-    
-    // Read the temp file content - use cat with careful extraction
-    const readTempCmd = `cat ${this.escapeShellArg(tempRemoteFile)}`;
-    const tempResult = await this.executeCommand(session, readTempCmd, timeout);
-    
-    // Clean up temp file
-    await this.executeCommand(session, `rm -f ${this.escapeShellArg(tempRemoteFile)}`, 5000);
-    
-    const cleaned = tempResult.output.replace(/[\s\n\r]+/g, '');
-    let buffer: Buffer;
-    try {
-      buffer = Buffer.from(cleaned, 'base64');
-    } catch (e) {
-      throw new Error(`Failed to decode base64 content: ${e}`);
-    }
-
-    await fsPromises.mkdir(path.dirname(localPath), { recursive: true });
-    await fsPromises.writeFile(localPath, buffer);
-    const localStats = await fsPromises.stat(localPath);
-
-    return {
-      message: `File downloaded successfully: ${remotePath} -> ${localPath}\nSize: ${(localStats.size / 1024).toFixed(
-        2
-      )}KB`,
-      localPath,
-      size: localStats.size,
-    };
   }
 }

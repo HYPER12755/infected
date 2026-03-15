@@ -11,9 +11,20 @@ import { PermissionManager } from './permission-manager.js';
 import { ModuleManager } from './module-system/module-manager.js';
 import { ToolLoader } from './tool-loader.js';
 import { PluginLoader } from './plugin-loader.js';
+// Phase 1 Integration imports
+import { ExecutionStrategyFactory } from './execution-strategies/index.js';
+import { SSHConnectionPool } from './ssh-connection-pool.js';
+import resourceMonitorInstance from './resource-monitor.js';
+import { ResourceLimiter } from './resource-limiter.js';
+import logger from './logger.js';
 export class ServiceContainer {
     constructor(server, config) {
         this.services = new Map();
+        // Phase 1 Integration: Lazy-loaded managers
+        this.executionStrategyFactory = null;
+        this.sshConnectionPool = null;
+        this.resourceMonitor = null;
+        this.resourceLimiter = null;
         this.server = server;
         this.config = config;
         this.registerAll();
@@ -68,6 +79,8 @@ export class ServiceContainer {
         fullManagers.pluginLoader = pluginLoader; // Update fullManagers reference
         // Set tool managers for monitoring after all are instantiated
         monitoringManager.setToolManagers(toolLoader, toolCacheManager);
+        // Phase 1 Integration: Initialize Resource Monitor if enabled in config
+        this.initializeResourceMonitor();
     }
     get(name) {
         const service = this.services.get(name);
@@ -93,5 +106,114 @@ export class ServiceContainer {
             toolLoader: this.get('toolLoader'),
             pluginLoader: this.get('pluginLoader'),
         };
+    }
+    // Phase 1 Integration: New getters for lazy-loaded managers
+    /**
+     * Get the ExecutionStrategyFactory singleton
+     * Lazy-loaded on first access with configuration from infected.config.json
+     */
+    getExecutionStrategyFactory() {
+        if (this.executionStrategyFactory === null) {
+            const factoryConfig = {
+                defaultTimeoutMs: this.config.execution?.defaultTimeoutMs ?? 300000,
+                defaultKillGracePeriodMs: this.config.execution?.defaultKillGracePeriodMs ?? 5000,
+            };
+            this.executionStrategyFactory = new ExecutionStrategyFactory(factoryConfig);
+            logger.debug('ExecutionStrategyFactory initialized', { component: 'ServiceContainer' });
+        }
+        return this.executionStrategyFactory;
+    }
+    /**
+     * Get the SSHConnectionPool singleton
+     * Lazy-loaded on first access with configuration from infected.config.json
+     */
+    getSSHConnectionPool() {
+        if (this.sshConnectionPool === null) {
+            const poolConfig = {
+                maxConnections: this.config.sshConnectionPool?.maxConnections ?? 50,
+                maxIdleTime: this.config.sshConnectionPool?.maxIdleTime ?? 5 * 60 * 1000,
+                maxConnectionAge: this.config.sshConnectionPool?.maxConnectionAge ?? 60 * 60 * 1000,
+                maxReusesPerConnection: this.config.sshConnectionPool?.maxReusesPerConnection ?? 100,
+                staleCheckInterval: this.config.sshConnectionPool?.staleCheckInterval ?? 30 * 1000,
+                enableCredentialCaching: this.config.sshConnectionPool?.enableCredentialCaching ?? true,
+            };
+            this.sshConnectionPool = new SSHConnectionPool(poolConfig);
+            logger.debug('SSHConnectionPool initialized', { component: 'ServiceContainer' });
+        }
+        return this.sshConnectionPool;
+    }
+    /**
+     * Get the ResourceMonitor singleton
+     * Lazy-loaded on first access with configuration from infected.config.json
+     */
+    getResourceMonitor() {
+        if (this.resourceMonitor === null) {
+            this.resourceMonitor = resourceMonitorInstance;
+            const monitorConfig = {
+                memoryThresholdPercent: this.config.resources?.thresholdPercent ?? 85,
+                cpuThresholdPercent: this.config.resources?.cpuThresholdPercent ?? 80,
+                fileHandleThresholdPercent: this.config.resources?.fileHandleThresholdPercent ?? 90,
+                monitoringIntervalMs: this.config.resources?.monitoringIntervalMs ?? 5000,
+            };
+            this.resourceMonitor.configure(monitorConfig);
+            logger.debug('ResourceMonitor initialized', { component: 'ServiceContainer' });
+        }
+        return this.resourceMonitor;
+    }
+    /**
+     * Get the ResourceLimiter singleton
+     * Lazy-loaded on first access with configuration from infected.config.json
+     */
+    getResourceLimiter() {
+        if (this.resourceLimiter === null) {
+            this.resourceLimiter = new ResourceLimiter();
+            const limits = {
+                memoryLimitMB: this.config.resources?.maxMemoryMB,
+                cpuLimitPercent: this.config.resources?.maxCPUPercent,
+                fileHandleLimitCount: this.config.resources?.maxFileHandles,
+                connectionLimitCount: this.config.resources?.maxConnections,
+            };
+            if (limits.memoryLimitMB !== undefined) {
+                this.resourceLimiter.setMemoryLimit(limits.memoryLimitMB);
+            }
+            if (limits.cpuLimitPercent !== undefined) {
+                this.resourceLimiter.setCPULimit(limits.cpuLimitPercent);
+            }
+            if (limits.fileHandleLimitCount !== undefined) {
+                this.resourceLimiter.setFileHandleLimit(limits.fileHandleLimitCount);
+            }
+            if (limits.connectionLimitCount !== undefined) {
+                this.resourceLimiter.setConnectionLimit(limits.connectionLimitCount);
+            }
+            const enforcementEnabled = this.config.resources?.enableLimiting ?? true;
+            this.resourceLimiter.setEnforcementEnabled(enforcementEnabled);
+            logger.debug('ResourceLimiter initialized', { component: 'ServiceContainer' });
+        }
+        return this.resourceLimiter;
+    }
+    /**
+     * Phase 1 Integration: Initialize ResourceMonitor if enabled in config
+     * Called during bootstrap to start monitoring if configured
+     */
+    initializeResourceMonitor() {
+        if (!this.config.resources?.enableMonitoring) {
+            logger.debug('Resource monitoring disabled in config', { component: 'ServiceContainer' });
+            return;
+        }
+        try {
+            const monitor = this.getResourceMonitor();
+            const interval = this.config.resources?.monitoringIntervalMs ?? 5000;
+            monitor.startMonitoring(interval);
+            logger.info('ResourceMonitor started during bootstrap', {
+                component: 'ServiceContainer',
+                interval
+            });
+        }
+        catch (error) {
+            logger.error('Failed to initialize ResourceMonitor', {
+                component: 'ServiceContainer',
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
     }
 }
