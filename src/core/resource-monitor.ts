@@ -3,6 +3,11 @@ import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import logger from './logger.js';
+import { CircuitBreaker } from './recovery/circuit-breaker.js';
+import { RecoveryHandler } from './recovery/recovery-handler.js';
+import type { RecoveryContext } from './recovery/recovery-handler.js';
+import { ResourceError } from './error-system/error-categories.js';
+import { ResourceErrorCode, ErrorSeverity } from './error-system/error-taxonomy.js';
 
 /**
  * Interface for system-wide resource metrics
@@ -78,8 +83,32 @@ export class ResourceMonitor extends EventEmitter {
   private fileHandleThresholdPercent = 90;
   private monitoringIntervalMs = 5000;
 
+  // Phase 2.3: Recovery strategies
+  private monitoringCircuitBreaker!: CircuitBreaker;
+  private processCircuitBreakers = new Map<number, CircuitBreaker>();
+  private recoveryHandlers = new Map<string, (error: Error, context: RecoveryContext) => Promise<void>>();
+
+  private getProcessCircuitBreaker(pid: number): CircuitBreaker {
+    if (!this.processCircuitBreakers.has(pid)) {
+      this.processCircuitBreakers.set(pid, new CircuitBreaker({
+        failureThreshold: 3,
+        successThreshold: 2,
+        timeout: 20000,
+        windowSize: 60000
+      }));
+    }
+    return this.processCircuitBreakers.get(pid)!;
+  }
+
   private constructor() {
     super();
+    // Phase 2.3: Initialize monitoring circuit breaker
+    this.monitoringCircuitBreaker = new CircuitBreaker({
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeout: 30000,
+      windowSize: 60000
+    });
     this.setMaxListeners(20); // Allow multiple listeners for resource events
   }
 
@@ -441,6 +470,31 @@ export class ResourceMonitor extends EventEmitter {
     this.processMetrics.clear();
     logger.debug('Cleared all process tracking', { component: 'ResourceMonitor' });
   }
+
+  /**
+   * Register a recovery handler for monitoring alerts
+   */
+  registerRecoveryHandler(
+    alertType: string,
+    handler: (error: Error, context: RecoveryContext) => Promise<void>
+  ): void {
+    this.recoveryHandlers.set(alertType, handler);
+  }
+
+  /**
+   * Invoke recovery handler for alert
+   */
+  private async invokeRecoveryHandler(alertType: string, error: Error, context: RecoveryContext): Promise<void> {
+    const handler = this.recoveryHandlers.get(alertType);
+    if (handler) {
+      try {
+        await handler(error, context);
+      } catch (e) {
+        logger.warn(`Recovery handler failed for ${alertType}`, { error: String(e) });
+      }
+    }
+  }
+
 }
 
 export default ResourceMonitor.getInstance();

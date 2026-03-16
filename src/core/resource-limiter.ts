@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import logger from './logger.js';
+import { CircuitBreaker } from './recovery/circuit-breaker.js';
+import { RecoveryHandler } from './recovery/recovery-handler.js';
+import type { RecoveryContext } from './recovery/recovery-handler.js';
+import { ResourceError } from './error-system/error-categories.js';
+import { ResourceErrorCode, ErrorSeverity } from './error-system/error-taxonomy.js';
 
 /**
  * Custom error thrown when resource limits are exceeded
@@ -76,6 +81,10 @@ export class ResourceLimiter extends EventEmitter {
   private enforcementHistory: EnforcementAction[] = [];
   private maxHistorySize = 100;
 
+  // Phase 2.3: Recovery strategies
+  private enforcementCircuitBreaker!: CircuitBreaker;
+  private recoveryHandlers = new Map<string, (error: Error, context: RecoveryContext) => Promise<void>>();
+
   // Configuration for enforcement behavior
   private enableEnforcement = true;
   private gracefulShutdownTimeoutMs = 5000;
@@ -83,6 +92,13 @@ export class ResourceLimiter extends EventEmitter {
   constructor() {
     super();
     this.setMaxListeners(20);
+    // Phase 2.3: Initialize enforcement circuit breaker
+    this.enforcementCircuitBreaker = new CircuitBreaker({
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeout: 30000,
+      windowSize: 60000
+    });
     logger.info('ResourceLimiter initialized', { component: 'ResourceLimiter' });
   }
 
@@ -479,6 +495,31 @@ export class ResourceLimiter extends EventEmitter {
   clearHistory(): void {
     this.enforcementHistory = [];
   }
+
+  /**
+   * Register a recovery handler for specific enforcement actions
+   */
+  registerRecoveryHandler(
+    action: string,
+    handler: (error: Error, context: RecoveryContext) => Promise<void>
+  ): void {
+    this.recoveryHandlers.set(action, handler);
+  }
+
+  /**
+   * Invoke recovery handler for enforcement action
+   */
+  private async invokeRecoveryHandler(action: string, error: Error, context: RecoveryContext): Promise<void> {
+    const handler = this.recoveryHandlers.get(action);
+    if (handler) {
+      try {
+        await handler(error, context);
+      } catch (e) {
+        logger.warn(`Recovery handler failed for ${action}`, { error: String(e) });
+      }
+    }
+  }
+
 }
 
 export default new ResourceLimiter();
