@@ -1,6 +1,7 @@
 import { spawn as ptySpawn } from 'node-pty';
 import { EventEmitter } from 'node:events';
 import logger from '../../core/logger.js';
+import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
 const DEFAULT_SESSION_ID = 'default';
 const MAX_BUFFER_CHARS = 200_000;
 const MAX_HISTORY_CHARS = 400_000;
@@ -13,6 +14,12 @@ const MAX_HISTORY_CHARS = 400_000;
 export class SSHSessionManager extends EventEmitter {
     constructor() {
         super(...arguments);
+        this.sessionCreationRetry = new RetryStrategy({
+            maxAttempts: 3,
+            initialDelayMs: 100,
+            maxDelayMs: 2000,
+            useJitter: true
+        });
         this.sessions = new Map();
         this.connectionIdCounter = 0;
     }

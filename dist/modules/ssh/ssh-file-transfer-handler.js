@@ -2,6 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import logger from '../../core/logger.js';
+import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
+import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const FILE_TRANSFER_TIMEOUT = 300000; // 5 minutes
 /**
@@ -12,6 +14,18 @@ const FILE_TRANSFER_TIMEOUT = 300000; // 5 minutes
  */
 export class SSHFileTransferHandler {
     constructor(commandExecutor) {
+        this.fileTransferRetry = new RetryStrategy({
+            maxAttempts: 3,
+            initialDelayMs: 100,
+            maxDelayMs: 2000,
+            useJitter: true
+        });
+        this.fileTransferCircuitBreaker = new CircuitBreaker({
+            failureThreshold: 5,
+            successThreshold: 2,
+            timeout: 30000,
+            windowSize: 60000
+        });
         this.commandExecutor = commandExecutor;
     }
     /**

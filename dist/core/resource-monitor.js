@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import logger from './logger.js';
+import { CircuitBreaker } from './recovery/circuit-breaker.js';
 /**
  * ResourceMonitor provides real-time monitoring of system and process resource usage
  * with configurable thresholds and event-based alerting.
@@ -23,6 +24,17 @@ import logger from './logger.js';
  * ```
  */
 export class ResourceMonitor extends EventEmitter {
+    getProcessCircuitBreaker(pid) {
+        if (!this.processCircuitBreakers.has(pid)) {
+            this.processCircuitBreakers.set(pid, new CircuitBreaker({
+                failureThreshold: 3,
+                successThreshold: 2,
+                timeout: 20000,
+                windowSize: 60000
+            }));
+        }
+        return this.processCircuitBreakers.get(pid);
+    }
     constructor() {
         super();
         this.monitoringInterval = null;
@@ -36,6 +48,15 @@ export class ResourceMonitor extends EventEmitter {
         this.cpuThresholdPercent = 80;
         this.fileHandleThresholdPercent = 90;
         this.monitoringIntervalMs = 5000;
+        this.processCircuitBreakers = new Map();
+        this.recoveryHandlers = new Map();
+        // Phase 2.3: Initialize monitoring circuit breaker
+        this.monitoringCircuitBreaker = new CircuitBreaker({
+            failureThreshold: 5,
+            successThreshold: 2,
+            timeout: 30000,
+            windowSize: 60000
+        });
         this.setMaxListeners(20); // Allow multiple listeners for resource events
     }
     /**
@@ -344,6 +365,26 @@ export class ResourceMonitor extends EventEmitter {
     clearTracking() {
         this.processMetrics.clear();
         logger.debug('Cleared all process tracking', { component: 'ResourceMonitor' });
+    }
+    /**
+     * Register a recovery handler for monitoring alerts
+     */
+    registerRecoveryHandler(alertType, handler) {
+        this.recoveryHandlers.set(alertType, handler);
+    }
+    /**
+     * Invoke recovery handler for alert
+     */
+    async invokeRecoveryHandler(alertType, error, context) {
+        const handler = this.recoveryHandlers.get(alertType);
+        if (handler) {
+            try {
+                await handler(error, context);
+            }
+            catch (e) {
+                logger.warn(`Recovery handler failed for ${alertType}`, { error: String(e) });
+            }
+        }
     }
 }
 export default ResourceMonitor.getInstance();

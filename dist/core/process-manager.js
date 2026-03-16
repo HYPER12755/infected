@@ -9,6 +9,11 @@ import { StreamingPipelineReader } from './streaming-pipeline-reader.js'; // Ada
 import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // Adapted import
 import logger from './logger.js'; // Use our central logger
 import { ExecutionStrategyFactory, } from './execution-strategies/index.js'; // Wave 1: ExecutionStrategy pattern
+import { RetryStrategy } from './recovery/retry-strategy.js';
+import { CircuitBreaker } from './recovery/circuit-breaker.js';
+import { RecoveryHandler } from './recovery/recovery-handler.js';
+import { ResourceError, TimeoutError as BaseTimeoutError } from './error-system/error-categories.js';
+import { ProcessErrorCode, ResourceErrorCode, TimeoutErrorCode, ErrorSeverity } from './error-system/error-taxonomy.js';
 // Configuration constants
 const DEFAULT_PROCESS_TIMEOUT = 5000; // 5 seconds for process operations
 export class ProcessManager {
@@ -17,6 +22,7 @@ export class ProcessManager {
         this.processes = new Map();
         this.backgroundProcessCallbacks = {}; // バックグラウンドプロセス終了コールバック
         this.enableStreaming = false; // Feature Flag
+        this.recoveryHandlers = new Map();
         this.maxConcurrentProcesses = maxConcurrentProcesses;
         this.outputDir = outputDir;
         this.fileManager = fileManager;
@@ -34,6 +40,56 @@ export class ProcessManager {
         this.strategyFactory = new ExecutionStrategyFactory({
             defaultTimeoutMs: 300000, // 5 minutes
             defaultKillGracePeriodMs: 5000, // 5 seconds
+        });
+        // Phase 2.3: Initialize recovery strategies
+        this.limiterCircuitBreaker = new CircuitBreaker({
+            failureThreshold: 5,
+            successThreshold: 2,
+            timeout: 60000,
+            windowSize: 60000
+        });
+        this.streamingCircuitBreaker = new CircuitBreaker({
+            failureThreshold: 3,
+            successThreshold: 2,
+            timeout: 30000,
+            windowSize: 60000
+        });
+        this.fileIORetry = new RetryStrategy({
+            maxAttempts: 3,
+            initialDelayMs: 50,
+            maxDelayMs: 1000,
+            useJitter: true
+        });
+        this.terminalCreationRetry = new RetryStrategy({
+            maxAttempts: 2,
+            initialDelayMs: 200,
+            maxDelayMs: 2000,
+            useJitter: true
+        });
+        this.commandExecutionRecoveryHandler = new RecoveryHandler({
+            enableRetry: true,
+            enableCircuitBreaker: true,
+            retry: {
+                maxRetries: 3,
+                initialDelayMs: 100,
+                maxDelayMs: 5000,
+                backoffMultiplier: 2,
+                jitterFactor: 0.1
+            },
+            circuitBreaker: {
+                failureThreshold: 10,
+                successThreshold: 3,
+                timeoutMs: 30000,
+                halfOpenMaxAttempts: 1
+            },
+            recoveryHandlers: this.recoveryHandlers
+        });
+        // Register default recovery handlers
+        this.registerRecoveryHandler(ProcessErrorCode.TIMEOUT, async (error, context) => {
+            logger.warn(`Process timeout on attempt ${context.attempt}`, { executionPath: context.executionPath });
+        });
+        this.registerRecoveryHandler(ResourceErrorCode.NOT_AVAILABLE, async (error, context) => {
+            logger.warn(`Resource not available, will retry on attempt ${context.attempt}`, { executionPath: context.executionPath });
         });
         // 環境変数でStreaming機能を制御（段階的展開、デフォルト有効）
         this.enableStreaming = process.env['MCP_SHELL_ENABLE_STREAMING'] !== 'false';
@@ -107,6 +163,50 @@ export class ProcessManager {
     /**
      * Issue #13: output_idから実行IDを取得
      */
+    /**
+     * Categorize process errors for recovery strategy selection
+     */
+    categorizeProcessError(error) {
+        if (error instanceof BaseTimeoutError) {
+            return {
+                retryable: true,
+                code: TimeoutErrorCode.OPERATION_TIMEOUT,
+                severity: ErrorSeverity.HIGH
+            };
+        }
+        if (error instanceof ResourceLimitError) {
+            return {
+                retryable: true,
+                code: ResourceErrorCode.NOT_AVAILABLE,
+                severity: ErrorSeverity.MEDIUM
+            };
+        }
+        return {
+            retryable: false,
+            code: ProcessErrorCode.SPAWN_FAILED,
+            severity: ErrorSeverity.HIGH
+        };
+    }
+    /**
+     * Register a recovery handler for a specific error code
+     */
+    registerRecoveryHandler(errorCode, handler) {
+        this.recoveryHandlers.set(errorCode, handler);
+    }
+    /**
+     * Invoke recovery handlers for an error
+     */
+    async invokeRecoveryHandlers(errorCode, error, context) {
+        const handler = this.recoveryHandlers.get(errorCode);
+        if (handler) {
+            try {
+                await handler(error, context);
+            }
+            catch (e) {
+                logger.warn(`Recovery handler failed for error code ${errorCode}`, { error: String(e) });
+            }
+        }
+    }
     findExecutionIdByOutputId(outputId) {
         return this.fileManager?.getExecutionIdByOutputId(outputId);
     }
@@ -129,8 +229,24 @@ export class ProcessManager {
     async executeCommand(options) {
         // 同時実行数のチェック
         const runningProcesses = Array.from(this.executions.values()).filter((exec) => exec.status === 'running').length;
-        if (runningProcesses >= this.maxConcurrentProcesses) {
-            throw new ResourceLimitError('concurrent processes', this.maxConcurrentProcesses);
+        try {
+            await this.limiterCircuitBreaker.execute(async () => {
+                if (runningProcesses >= this.maxConcurrentProcesses) {
+                    throw new ResourceLimitError('concurrent processes', this.maxConcurrentProcesses);
+                }
+                return true;
+            });
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('CIRCUIT_BREAKER_OPEN')) {
+                throw new ResourceError('Process execution temporarily disabled due to resource limits', {
+                    code: ResourceErrorCode.NOT_AVAILABLE,
+                    severity: ErrorSeverity.HIGH,
+                    retryable: true,
+                    context: { runningProcesses, maxConcurrent: this.maxConcurrentProcesses }
+                });
+            }
+            throw error;
         }
         // 入力データの準備 - input_output_idが指定された場合の処理
         let resolvedInputData = options.inputData;
@@ -200,7 +316,7 @@ export class ProcessManager {
                 if (options.environmentVariables) {
                     terminalOptions.environmentVariables = options.environmentVariables;
                 }
-                const terminalInfo = await this.terminalManager.createTerminal(terminalOptions);
+                const terminalInfo = await this.terminalCreationRetry.execute(async () => this.terminalManager.createTerminal(terminalOptions));
                 executionInfo.terminal_id = terminalInfo.terminal_id;
                 // ターミナルにコマンドを送信
                 this.terminalManager.sendInput(terminalInfo.terminal_id, options.command, true);
@@ -232,7 +348,10 @@ export class ProcessManager {
             }
             // Wave 1: ExecutionStrategy への委譲
             const strategy = this.getExecutionStrategy(options.executionMode);
-            const strategyResult = await strategy.execute(options.command, executionId);
+            const strategyResult = await this.commandExecutionRecoveryHandler.executeWithRecovery(() => strategy.execute(options.command, executionId), {
+                circuitBreakerName: `exec-${options.executionMode}`,
+                tag: executionId
+            });
             // 戦略の結果をExecutionInfoに変換（後方互換性）
             return await this.convertStrategyResultToExecutionInfo(executionId, executionInfo, strategyResult, options);
         }

@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import logger from './logger.js';
+import { CircuitBreaker } from './recovery/circuit-breaker.js';
 /**
  * Custom error thrown when resource limits are exceeded
  */
@@ -49,10 +50,18 @@ export class ResourceLimiter extends EventEmitter {
         // Track enforcement history
         this.enforcementHistory = [];
         this.maxHistorySize = 100;
+        this.recoveryHandlers = new Map();
         // Configuration for enforcement behavior
         this.enableEnforcement = true;
         this.gracefulShutdownTimeoutMs = 5000;
         this.setMaxListeners(20);
+        // Phase 2.3: Initialize enforcement circuit breaker
+        this.enforcementCircuitBreaker = new CircuitBreaker({
+            failureThreshold: 5,
+            successThreshold: 2,
+            timeout: 30000,
+            windowSize: 60000
+        });
         logger.info('ResourceLimiter initialized', { component: 'ResourceLimiter' });
     }
     /**
@@ -395,6 +404,26 @@ export class ResourceLimiter extends EventEmitter {
      */
     clearHistory() {
         this.enforcementHistory = [];
+    }
+    /**
+     * Register a recovery handler for specific enforcement actions
+     */
+    registerRecoveryHandler(action, handler) {
+        this.recoveryHandlers.set(action, handler);
+    }
+    /**
+     * Invoke recovery handler for enforcement action
+     */
+    async invokeRecoveryHandler(action, error, context) {
+        const handler = this.recoveryHandlers.get(action);
+        if (handler) {
+            try {
+                await handler(error, context);
+            }
+            catch (e) {
+                logger.warn(`Recovery handler failed for ${action}`, { error: String(e) });
+            }
+        }
     }
 }
 export default new ResourceLimiter();
