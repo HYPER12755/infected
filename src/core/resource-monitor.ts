@@ -8,6 +8,7 @@ import { RecoveryHandler } from './recovery/recovery-handler.js';
 import type { RecoveryContext } from './recovery/recovery-handler.js';
 import { ResourceError } from './error-system/error-categories.js';
 import { ResourceErrorCode, ErrorSeverity } from './error-system/error-taxonomy.js';
+import { LoggingContext, CorrelationContext, type ICorrelationContext } from './logging/index.js';
 
 /**
  * Interface for system-wide resource metrics
@@ -88,6 +89,10 @@ export class ResourceMonitor extends EventEmitter {
   private processCircuitBreakers = new Map<number, CircuitBreaker>();
   private recoveryHandlers = new Map<string, (error: Error, context: RecoveryContext) => Promise<void>>();
 
+  // Correlation ID system
+  private loggingContext: LoggingContext;
+  private monitoringCycleContext: ICorrelationContext | null = null;
+
   private getProcessCircuitBreaker(pid: number): CircuitBreaker {
     if (!this.processCircuitBreakers.has(pid)) {
       this.processCircuitBreakers.set(pid, new CircuitBreaker({
@@ -102,6 +107,8 @@ export class ResourceMonitor extends EventEmitter {
 
   private constructor() {
     super();
+    // Initialize logging context
+    this.loggingContext = new LoggingContext();
     // Phase 2.3: Initialize monitoring circuit breaker
     this.monitoringCircuitBreaker = new CircuitBreaker({
       failureThreshold: 5,
@@ -144,10 +151,21 @@ export class ResourceMonitor extends EventEmitter {
       this.monitoringIntervalMs = config.monitoringIntervalMs;
     }
 
-    logger.debug(
-      `ResourceMonitor configured with thresholds - Memory: ${this.memoryThresholdPercent}%, CPU: ${this.cpuThresholdPercent}%, FileHandles: ${this.fileHandleThresholdPercent}%`,
-      { component: 'ResourceMonitor' }
-    );
+    // Create correlation context for configuration change
+    const configContext = CorrelationContext.generate();
+    CorrelationContext.run(configContext, () => {
+      this.loggingContext.debug(
+        `ResourceMonitor configured with thresholds - Memory: ${this.memoryThresholdPercent}%, CPU: ${this.cpuThresholdPercent}%, FileHandles: ${this.fileHandleThresholdPercent}%`,
+        { 
+          component: 'ResourceMonitor',
+          configChange: true,
+          memoryThreshold: this.memoryThresholdPercent,
+          cpuThreshold: this.cpuThresholdPercent,
+          fileHandleThreshold: this.fileHandleThresholdPercent,
+          monitoringInterval: this.monitoringIntervalMs,
+        }
+      );
+    });
   }
 
   /**
@@ -155,7 +173,7 @@ export class ResourceMonitor extends EventEmitter {
    */
   startMonitoring(intervalMs?: number): void {
     if (this.isMonitoring) {
-      logger.warn('ResourceMonitor is already running', { component: 'ResourceMonitor' });
+      this.loggingContext.warn('ResourceMonitor is already running', { component: 'ResourceMonitor' });
       return;
     }
 
@@ -166,15 +184,27 @@ export class ResourceMonitor extends EventEmitter {
     this.previousSystemCpuUsage = process.cpuUsage();
     this.previousSystemCpuUpdateTime = Date.now();
 
-    logger.info(`ResourceMonitor started with ${interval}ms interval`, { component: 'ResourceMonitor' });
+    // Create correlation context for monitoring session
+    this.monitoringCycleContext = CorrelationContext.generate();
+    CorrelationContext.run(this.monitoringCycleContext, () => {
+      this.loggingContext.info(`ResourceMonitor started with ${interval}ms interval`, { 
+        component: 'ResourceMonitor',
+        monitoringInterval: interval,
+      });
+    });
 
     // Start monitoring loop
     this.monitoringInterval = setInterval(() => {
       try {
         this._updateMetrics();
       } catch (error) {
-        logger.error(`Error during resource monitoring: ${error instanceof Error ? error.message : String(error)}`, {
-          component: 'ResourceMonitor',
+        const errorContext = CorrelationContext.generate();
+        CorrelationContext.run(errorContext, () => {
+          this.loggingContext.error(`Error during resource monitoring: ${error instanceof Error ? error.message : String(error)}`, {
+            component: 'ResourceMonitor',
+            errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+            stack: error instanceof Error ? error.stack : undefined,
+          });
         });
       }
     }, interval);
@@ -192,7 +222,14 @@ export class ResourceMonitor extends EventEmitter {
     this.processMetrics.clear();
     this.previousSystemCpuUsage = null;
     this.lastSystemMetrics = null;
-    logger.info('ResourceMonitor stopped', { component: 'ResourceMonitor' });
+    
+    // Log stop with correlation context
+    const stopContext = CorrelationContext.generate();
+    CorrelationContext.run(stopContext, () => {
+      this.loggingContext.info('ResourceMonitor stopped', { component: 'ResourceMonitor' });
+    });
+    
+    this.monitoringCycleContext = null;
   }
 
   /**
@@ -209,7 +246,15 @@ export class ResourceMonitor extends EventEmitter {
         timestamp: Date.now(),
       });
       this.emit('process-added', { pid, timestamp: Date.now() });
-      logger.debug(`Tracking process ${pid}`, { component: 'ResourceMonitor' });
+      
+      const processContext = CorrelationContext.generate();
+      CorrelationContext.run(processContext, () => {
+        this.loggingContext.debug(`Tracking process ${pid}`, { 
+          component: 'ResourceMonitor',
+          processId: pid,
+          action: 'process-added',
+        });
+      });
     }
   }
 
@@ -220,7 +265,15 @@ export class ResourceMonitor extends EventEmitter {
     if (this.processMetrics.has(pid)) {
       this.processMetrics.delete(pid);
       this.emit('process-removed', { pid, timestamp: Date.now() });
-      logger.debug(`Stopped tracking process ${pid}`, { component: 'ResourceMonitor' });
+      
+      const processContext = CorrelationContext.generate();
+      CorrelationContext.run(processContext, () => {
+        this.loggingContext.debug(`Stopped tracking process ${pid}`, { 
+          component: 'ResourceMonitor',
+          processId: pid,
+          action: 'process-removed',
+        });
+      });
     }
   }
 
@@ -244,11 +297,29 @@ export class ResourceMonitor extends EventEmitter {
     }
 
     try {
-      const metrics = this._calculateProcessMetrics(tracking);
-      return metrics;
+      const metricsContext = CorrelationContext.generate();
+      let result: ProcessMetrics | null = null;
+      
+      CorrelationContext.run(metricsContext, () => {
+        result = this._calculateProcessMetrics(tracking);
+        this.loggingContext.debug(`Collected metrics for process ${pid}`, {
+          component: 'ResourceMonitor',
+          processId: pid,
+          cpuUsagePercent: result?.cpuUsagePercent,
+          memoryUsageMB: result?.memoryUsageMB,
+          fileHandles: result?.fileHandles,
+        });
+      });
+      
+      return result;
     } catch (error) {
-      logger.debug(`Could not get metrics for process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
-        component: 'ResourceMonitor',
+      const errorContext = CorrelationContext.generate();
+      CorrelationContext.run(errorContext, () => {
+        this.loggingContext.debug(`Could not get metrics for process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
+          component: 'ResourceMonitor',
+          processId: pid,
+          errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+        });
       });
       return null;
     }
@@ -262,14 +333,29 @@ export class ResourceMonitor extends EventEmitter {
 
     for (const [, tracking] of this.processMetrics) {
       try {
-        const metrics = this._calculateProcessMetrics(tracking);
-        allMetrics.push(metrics);
+        const metricsContext = CorrelationContext.generate();
+        CorrelationContext.run(metricsContext, () => {
+          const metrics = this._calculateProcessMetrics(tracking);
+          allMetrics.push(metrics);
+          this.loggingContext.debug(`Collected metrics for all processes`, {
+            component: 'ResourceMonitor',
+            processId: tracking.pid,
+            processCount: this.processMetrics.size,
+          });
+        });
       } catch (error) {
         // Process might be gone, skip it
-        logger.debug(
-          `Could not get metrics for process ${tracking.pid}: ${error instanceof Error ? error.message : String(error)}`,
-          { component: 'ResourceMonitor' }
-        );
+        const errorContext = CorrelationContext.generate();
+        CorrelationContext.run(errorContext, () => {
+          this.loggingContext.debug(
+            `Could not get metrics for process ${tracking.pid}: ${error instanceof Error ? error.message : String(error)}`,
+            { 
+              component: 'ResourceMonitor',
+              processId: tracking.pid,
+              errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+            }
+          );
+        });
       }
     }
 
@@ -383,70 +469,114 @@ export class ResourceMonitor extends EventEmitter {
    * Internal: Update all metrics and check thresholds
    */
   private async _updateMetrics(): Promise<void> {
-    // Update system metrics
-    const systemMetrics = this._calculateSystemMetrics();
-
-    // Check memory threshold
-    if (systemMetrics.memoryPercent > this.memoryThresholdPercent) {
-      this.emit('memory-threshold', {
-        current: systemMetrics.memoryPercent,
-        threshold: this.memoryThresholdPercent,
-        metrics: systemMetrics,
-      });
-      logger.warn(`Memory threshold exceeded: ${systemMetrics.memoryPercent.toFixed(2)}% > ${this.memoryThresholdPercent}%`, {
+    const cycleContext = CorrelationContext.generate();
+    
+    await CorrelationContext.runAsync(cycleContext, async () => {
+      // Update system metrics
+      const systemMetrics = this._calculateSystemMetrics();
+      this.loggingContext.debug('System metrics updated', {
         component: 'ResourceMonitor',
+        resourceType: 'system',
+        memoryPercent: systemMetrics.memoryPercent,
+        usedMemory: systemMetrics.usedMemory,
+        totalMemory: systemMetrics.totalMemory,
       });
-    }
 
-    // Update process metrics and check thresholds
-    for (const [pid, tracking] of this.processMetrics) {
-      try {
-        // Update file handles count
-        tracking.fileHandles = await this.getFileDescriptorCount(pid);
-        tracking.childProcessCount = this.getChildProcessCount(pid);
-        tracking.timestamp = Date.now();
-
-        const processMetrics = this._calculateProcessMetrics(tracking);
-
-        // Check CPU threshold
-        if (processMetrics.cpuUsagePercent > this.cpuThresholdPercent) {
-          this.emit('cpu-threshold', {
-            pid,
-            current: processMetrics.cpuUsagePercent,
-            threshold: this.cpuThresholdPercent,
-            metrics: processMetrics,
-          });
-          logger.warn(
-            `CPU threshold exceeded for process ${pid}: ${processMetrics.cpuUsagePercent.toFixed(2)}% > ${this.cpuThresholdPercent}%`,
-            { component: 'ResourceMonitor' }
-          );
-        }
-
-        // Check file handles threshold (on Linux, default is usually 1024)
-        const maxFileHandles = 1024; // Default limit, could be made configurable
-        const fileHandlePercent = (tracking.fileHandles / maxFileHandles) * 100;
-
-        if (fileHandlePercent > this.fileHandleThresholdPercent) {
-          this.emit('file-handles-threshold', {
-            pid,
-            current: tracking.fileHandles,
-            maxAllowed: maxFileHandles,
-            percent: fileHandlePercent,
-            threshold: this.fileHandleThresholdPercent,
-            metrics: processMetrics,
-          });
-          logger.warn(
-            `File handles threshold exceeded for process ${pid}: ${tracking.fileHandles} > ${maxFileHandles} (${fileHandlePercent.toFixed(2)}%)`,
-            { component: 'ResourceMonitor' }
-          );
-        }
-      } catch (error) {
-        // Process might have exited, will be removed by limiter
-        logger.debug(`Error updating metrics for process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
+      // Check memory threshold
+      if (systemMetrics.memoryPercent > this.memoryThresholdPercent) {
+        this.emit('memory-threshold', {
+          current: systemMetrics.memoryPercent,
+          threshold: this.memoryThresholdPercent,
+          metrics: systemMetrics,
+        });
+        this.loggingContext.warn(`Memory threshold exceeded: ${systemMetrics.memoryPercent.toFixed(2)}% > ${this.memoryThresholdPercent}%`, {
           component: 'ResourceMonitor',
+          resourceType: 'memory',
+          current: systemMetrics.memoryPercent,
+          threshold: this.memoryThresholdPercent,
+          violation: true,
         });
       }
-    }
+
+      // Update process metrics and check thresholds
+      for (const [pid, tracking] of this.processMetrics) {
+        try {
+          // Update file handles count
+          tracking.fileHandles = await this.getFileDescriptorCount(pid);
+          tracking.childProcessCount = this.getChildProcessCount(pid);
+          tracking.timestamp = Date.now();
+
+          const processMetrics = this._calculateProcessMetrics(tracking);
+          this.loggingContext.debug('Process metrics collected', {
+            component: 'ResourceMonitor',
+            resourceType: 'process',
+            processId: pid,
+            cpuUsagePercent: processMetrics.cpuUsagePercent,
+            memoryUsageMB: processMetrics.memoryUsageMB,
+            fileHandles: processMetrics.fileHandles,
+          });
+
+          // Check CPU threshold
+          if (processMetrics.cpuUsagePercent > this.cpuThresholdPercent) {
+            this.emit('cpu-threshold', {
+              pid,
+              current: processMetrics.cpuUsagePercent,
+              threshold: this.cpuThresholdPercent,
+              metrics: processMetrics,
+            });
+            this.loggingContext.warn(
+              `CPU threshold exceeded for process ${pid}: ${processMetrics.cpuUsagePercent.toFixed(2)}% > ${this.cpuThresholdPercent}%`,
+              { 
+                component: 'ResourceMonitor',
+                resourceType: 'cpu',
+                processId: pid,
+                current: processMetrics.cpuUsagePercent,
+                threshold: this.cpuThresholdPercent,
+                violation: true,
+              }
+            );
+          }
+
+          // Check file handles threshold (on Linux, default is usually 1024)
+          const maxFileHandles = 1024; // Default limit, could be made configurable
+          const fileHandlePercent = (tracking.fileHandles / maxFileHandles) * 100;
+
+          if (fileHandlePercent > this.fileHandleThresholdPercent) {
+            this.emit('file-handles-threshold', {
+              pid,
+              current: tracking.fileHandles,
+              maxAllowed: maxFileHandles,
+              percent: fileHandlePercent,
+              threshold: this.fileHandleThresholdPercent,
+              metrics: processMetrics,
+            });
+            this.loggingContext.warn(
+              `File handles threshold exceeded for process ${pid}: ${tracking.fileHandles} > ${maxFileHandles} (${fileHandlePercent.toFixed(2)}%)`,
+              { 
+                component: 'ResourceMonitor',
+                resourceType: 'fileHandles',
+                processId: pid,
+                current: tracking.fileHandles,
+                max: maxFileHandles,
+                percent: fileHandlePercent,
+                threshold: this.fileHandleThresholdPercent,
+                violation: true,
+              }
+            );
+          }
+        } catch (error) {
+          // Process might have exited, will be removed by limiter
+          const processErrorContext = CorrelationContext.generate();
+          CorrelationContext.run(processErrorContext, () => {
+            this.loggingContext.debug(`Error updating metrics for process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
+              component: 'ResourceMonitor',
+              processId: pid,
+              errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+            });
+          });
+        }
+      }
+    });
   }
 
   /**
@@ -468,7 +598,13 @@ export class ResourceMonitor extends EventEmitter {
    */
   clearTracking(): void {
     this.processMetrics.clear();
-    logger.debug('Cleared all process tracking', { component: 'ResourceMonitor' });
+    const clearContext = CorrelationContext.generate();
+    CorrelationContext.run(clearContext, () => {
+      this.loggingContext.debug('Cleared all process tracking', { 
+        component: 'ResourceMonitor',
+        action: 'clear-tracking',
+      });
+    });
   }
 
   /**
