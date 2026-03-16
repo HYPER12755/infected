@@ -2,7 +2,7 @@
 
 process.env.INFECTED_RUNTIME_MODE = 'production';
 
-import('./dist/index.js').catch((error) => {
+import('./server.js').catch((error) => {
   console.error('Failed to start infected:', error);
   process.exit(1);
 });
