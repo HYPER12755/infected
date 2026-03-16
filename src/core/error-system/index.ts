@@ -23,7 +23,7 @@ export {
    SecurityErrorCode,
    TimeoutErrorCode,
    FilesystemErrorCode,
-   ErrorMetadata,
+   type ErrorMetadata,
   } from './error-taxonomy.js';
 
   // Re-export from error-categories
@@ -40,7 +40,7 @@ export {
   // Re-export from error-metadata
   export {
     ErrorSource,
-    ErrorContext,
+    type ErrorContext,
     convertNodeError,
     convertNetworkError,
     convertProcessError,

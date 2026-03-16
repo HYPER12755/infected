@@ -39,9 +39,9 @@
 
 export {
   ExecutionStrategy,
-  ExecutionStrategyConfig,
-  StrategyExecutionResult,
-  AdvancedExecutionStrategy,
+  type ExecutionStrategyConfig,
+  type StrategyExecutionResult,
+  type AdvancedExecutionStrategy,
   ExecutionTimeoutError,
   ProcessNotFoundError,
   ProcessTerminationError,
@@ -49,28 +49,28 @@ export {
 
 export {
   ForegroundStrategy,
-  ForegroundStrategyConfig,
+  type ForegroundStrategyConfig,
 } from './foreground-strategy.js';
 
 export {
   BackgroundStrategy,
-  BackgroundStrategyConfig,
+  type BackgroundStrategyConfig,
 } from './background-strategy.js';
 
 export {
   DetachedStrategy,
-  DetachedStrategyConfig,
+  type DetachedStrategyConfig,
 } from './detached-strategy.js';
 
 export {
   AdaptiveStrategy,
-  AdaptiveStrategyConfig,
-  AdaptiveExecutionResult,
+  type AdaptiveStrategyConfig,
+  type AdaptiveExecutionResult,
 } from './adaptive-strategy.js';
 
 export {
   ExecutionStrategyFactory,
-  StrategyFactoryOptions,
-  StrategyRegistry,
+  type StrategyFactoryOptions,
+  type StrategyRegistry,
   defaultStrategyFactory,
 } from './execution-strategy-factory.js';
