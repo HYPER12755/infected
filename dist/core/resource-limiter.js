@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import logger from './logger.js';
 import { CircuitBreaker } from './recovery/circuit-breaker.js';
 import { LoggingContext, CorrelationContext } from './logging/index.js';
 /**
@@ -582,7 +581,15 @@ export class ResourceLimiter extends EventEmitter {
                 await handler(error, context);
             }
             catch (e) {
-                logger.warn(`Recovery handler failed for ${action}`, { error: String(e) });
+                const handlerErrorContext = CorrelationContext.generate();
+                CorrelationContext.run(handlerErrorContext, () => {
+                    this.loggingContext.warn(`Recovery handler failed for ${action}`, {
+                        component: 'ResourceLimiter',
+                        handlerAction: action,
+                        errorType: e instanceof Error ? e.constructor.name : 'Unknown',
+                        error: String(e),
+                    });
+                });
             }
         }
     }
