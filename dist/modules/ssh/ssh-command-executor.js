@@ -94,8 +94,7 @@ export class SSHCommandExecutor {
                 const startTime = Date.now();
                 let foundEnd = false;
                 let stableCount = 0;
-                let timedOut = false;
-                // Poll for end marker with explicit timeout tracking
+                // Poll for end marker
                 while (Date.now() - startTime < validTimeout) {
                     if (session.outputBuffer.includes(endMarker)) {
                         await this.sleep(200);
@@ -109,19 +108,9 @@ export class SSHCommandExecutor {
                     }
                     await this.sleep(50);
                 }
-                // Check if we exited due to timeout
-                if (!foundEnd) {
-                    timedOut = true;
-                }
                 session.isReady = true;
-                if (timedOut) {
-                    // Send Ctrl+C to kill the running command
-                    session.ptyProcess.write('\x03'); // Ctrl+C
-                    await this.sleep(200);
-                    // Send newline to get fresh prompt
-                    session.ptyProcess.write('\n');
-                    await this.sleep(200);
-                    throw new SSHError(`Command timed out after ${validTimeout}ms`, { code: SSHErrorCode.TIMEOUT, severity: ErrorSeverity.HIGH, retryable: true });
+                if (!foundEnd) {
+                    throw new SSHError(`Command timeout after ${validTimeout}ms. Output may still be streaming.`, { code: SSHErrorCode.TIMEOUT, severity: ErrorSeverity.HIGH, retryable: true });
                 }
                 const buffer = session.outputBuffer;
                 const startIdx = buffer.lastIndexOf(startMarker);

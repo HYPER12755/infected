@@ -34,7 +34,6 @@ import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // A
 import {
   ExecutionStrategyFactory,
   ExecutionStrategy,
-  ExecutionStrategyConfig,
   StrategyExecutionResult,
 } from './execution-strategies/index.js'; // Wave 1: ExecutionStrategy pattern
 import { RetryStrategy } from './recovery/retry-strategy.js';
@@ -90,21 +89,6 @@ export interface ProcessMetrics {
   io_write_bytes?: number;
   network_rx_bytes?: number;
   network_tx_bytes?: number;
-}
-
-type StrategyConfigOverrides = Partial<ExecutionStrategyConfig> & {
-  foregroundTimeoutMs?: number;
-  outputSizeThreshold?: number;
-  historyTTLMs?: number;
-  shellPath?: string;
-};
-
-type LegacyStatus = 'success' | 'running' | 'failed' | 'timeout';
-
-interface LegacyExecutionFields {
-  executionId: string;
-  startTime?: string;
-  endTime?: string;
 }
 
 // バックグラウンドプロセス終了時のコールバック型
@@ -273,7 +257,7 @@ export class ProcessManager {
   // Issue #13: Streaming コンポーネントの初期化
   private initializeStreamingComponents(): void {
     if (!this.fileManager) {
-      this.loggingContext.warn('ProcessManager: FileManager is required for streaming components');
+      this.loggingContext.error('ProcessManager: FileManager is required for streaming components');
       return;
     }
 
@@ -383,22 +367,14 @@ export class ProcessManager {
    * Wave 1: Get the ExecutionStrategy for a given mode.
    * This provides access to the strategy directly if needed for advanced use cases.
    */
-  getExecutionStrategy(mode: ExecutionMode, overrides: StrategyConfigOverrides = {}): ExecutionStrategy {
-    const baseConfig: ExecutionStrategyConfig = {
+  getExecutionStrategy(mode: ExecutionMode): ExecutionStrategy {
+    return this.strategyFactory.createStrategy(mode, {
       timeoutMs: 300000, // 5 minutes
       killGracePeriodMs: 5000,
       captureStderr: true,
       maxOutputSize: 10 * 1024 * 1024,
       workingDirectory: this.defaultWorkingDirectory,
-    };
-
-    const mergedConfig = {
-      ...baseConfig,
-      ...overrides,
-      workingDirectory: overrides.workingDirectory || baseConfig.workingDirectory,
-    };
-
-    return this.strategyFactory.createStrategy(mode, mergedConfig as Partial<ExecutionStrategyConfig>);
+    });
   }
 
   async executeCommand(options: ExecutionOptions): Promise<ExecutionInfo> {
@@ -523,7 +499,6 @@ export class ProcessManager {
           executionInfo.environment_variables = options.environmentVariables;
         }
 
-        this.annotateLegacyFields(executionInfo);
         this.executions.set(executionId, executionInfo);
 
         // 新規ターミナル作成オプションがある場合
@@ -581,19 +556,7 @@ export class ProcessManager {
           }
 
           // Wave 1: ExecutionStrategy への委譲 with child correlation context
-          const strategyOverrides: StrategyConfigOverrides = {
-            workingDirectory: resolvedWorkingDirectory,
-            timeoutMs: options.timeoutSeconds * 1000,
-            captureStderr: options.captureStderr,
-            maxOutputSize: options.maxOutputSize,
-            environmentVariables: options.environmentVariables,
-            ...(resolvedInputData !== undefined ? { inputData: resolvedInputData } : {}),
-            ...(options.foregroundTimeoutSeconds !== undefined
-              ? { foregroundTimeoutMs: options.foregroundTimeoutSeconds * 1000 }
-              : {}),
-          };
-
-          const strategy = this.getExecutionStrategy(options.executionMode, strategyOverrides);
+          const strategy = this.getExecutionStrategy(options.executionMode);
           
           // Create child context for strategy execution
           const strategyResult = await this.loggingContext.withChildContextAsync(
@@ -653,33 +616,6 @@ export class ProcessManager {
     );
   }
 
-  async execute(
-    options: ExecutionOptions
-  ): Promise<ExecutionInfo & LegacyExecutionFields & { status: LegacyStatus }> {
-    const executionInfo = await this.executeCommand(options);
-    return this.buildLegacyResponse(executionInfo);
-  }
-
-  private annotateLegacyFields(executionInfo: ExecutionInfo): void {
-    const annotated = executionInfo as ExecutionInfo & LegacyExecutionFields;
-    annotated.executionId = executionInfo.execution_id;
-    annotated.startTime = executionInfo.started_at || executionInfo.created_at;
-    annotated.endTime = executionInfo.completed_at;
-  }
-
-  private buildLegacyResponse(
-    executionInfo: ExecutionInfo
-  ): ExecutionInfo & LegacyExecutionFields & { status: LegacyStatus } {
-    this.annotateLegacyFields(executionInfo);
-    const legacyStatus: LegacyStatus =
-      executionInfo.status === 'completed' ? 'success' : (executionInfo.status as LegacyStatus);
-
-    return {
-      ...executionInfo,
-      status: legacyStatus,
-    } as ExecutionInfo & LegacyExecutionFields & { status: LegacyStatus };
-  }
-
   /**
    * Wave 1: Convert strategy execution result to ExecutionInfo for backward compatibility.
    * This ensures the public API remains unchanged while using the strategy pattern internally.
@@ -691,15 +627,7 @@ export class ProcessManager {
     options: ExecutionOptions
   ): Promise<ExecutionInfo> {
     const updated = { ...executionInfo };
-
-    // For detached mode, the process runs in background so exitCode is undefined
-    if (options.executionMode === 'detached') {
-      updated.status = 'running';
-    } else if (strategyResult.exitCode === 0) {
-      updated.status = 'completed';
-    } else {
-      updated.status = 'failed';
-    }
+    updated.status = strategyResult.exitCode === 0 ? 'completed' : 'failed';
     updated.exit_code = strategyResult.exitCode;
     updated.stdout = sanitizeString(strategyResult.stdout);
     updated.stderr = sanitizeString(strategyResult.stderr);
@@ -736,7 +664,6 @@ export class ProcessManager {
       this.setOutputStatus(updated, false, 'size_limit', updated.output_id);
     }
 
-    this.annotateLegacyFields(updated);
     this.executions.set(executionId, updated);
     return updated;
   }
@@ -1081,11 +1008,7 @@ export class ProcessManager {
   }
 
   getExecution(executionId: string): ExecutionInfo | undefined {
-    const info = this.executions.get(executionId);
-    if (info) {
-      this.annotateLegacyFields(info);
-    }
-    return info;
+    return this.executions.get(executionId);
   }
 
   listExecutions(filter?: {
@@ -1120,10 +1043,7 @@ export class ProcessManager {
       executions = executions.slice(offset, offset + limit);
     }
 
-    const result = executions as ExecutionInfo[] & { executions: ExecutionInfo[]; total: number };
-    result.executions = executions;
-    result.total = total;
-    return result;
+    return { executions, total };
   }
 
   async killProcess(

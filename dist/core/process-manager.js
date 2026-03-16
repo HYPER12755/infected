@@ -123,7 +123,7 @@ export class ProcessManager {
     // Issue #13: Streaming コンポーネントの初期化
     initializeStreamingComponents() {
         if (!this.fileManager) {
-            this.loggingContext.warn('ProcessManager: FileManager is required for streaming components');
+            this.loggingContext.error('ProcessManager: FileManager is required for streaming components');
             return;
         }
         // FileStorageSubscriber初期化（既存FileManager機能を代替）
@@ -219,20 +219,14 @@ export class ProcessManager {
      * Wave 1: Get the ExecutionStrategy for a given mode.
      * This provides access to the strategy directly if needed for advanced use cases.
      */
-    getExecutionStrategy(mode, overrides = {}) {
-        const baseConfig = {
+    getExecutionStrategy(mode) {
+        return this.strategyFactory.createStrategy(mode, {
             timeoutMs: 300000, // 5 minutes
             killGracePeriodMs: 5000,
             captureStderr: true,
             maxOutputSize: 10 * 1024 * 1024,
             workingDirectory: this.defaultWorkingDirectory,
-        };
-        const mergedConfig = {
-            ...baseConfig,
-            ...overrides,
-            workingDirectory: overrides.workingDirectory || baseConfig.workingDirectory,
-        };
-        return this.strategyFactory.createStrategy(mode, mergedConfig);
+        });
     }
     async executeCommand(options) {
         // Phase 3: Create root correlation context for this execution
@@ -324,7 +318,6 @@ export class ProcessManager {
             if (options.environmentVariables) {
                 executionInfo.environment_variables = options.environmentVariables;
             }
-            this.annotateLegacyFields(executionInfo);
             this.executions.set(executionId, executionInfo);
             // 新規ターミナル作成オプションがある場合
             if (options.createTerminal && this.terminalManager) {
@@ -375,18 +368,7 @@ export class ProcessManager {
                     return await this.executeCommandWithInputStream(executionId, updatedOptions, inputStream);
                 }
                 // Wave 1: ExecutionStrategy への委譲 with child correlation context
-                const strategyOverrides = {
-                    workingDirectory: resolvedWorkingDirectory,
-                    timeoutMs: options.timeoutSeconds * 1000,
-                    captureStderr: options.captureStderr,
-                    maxOutputSize: options.maxOutputSize,
-                    environmentVariables: options.environmentVariables,
-                    ...(resolvedInputData !== undefined ? { inputData: resolvedInputData } : {}),
-                    ...(options.foregroundTimeoutSeconds !== undefined
-                        ? { foregroundTimeoutMs: options.foregroundTimeoutSeconds * 1000 }
-                        : {}),
-                };
-                const strategy = this.getExecutionStrategy(options.executionMode, strategyOverrides);
+                const strategy = this.getExecutionStrategy(options.executionMode);
                 // Create child context for strategy execution
                 const strategyResult = await this.loggingContext.withChildContextAsync(async () => {
                     this.loggingContext.info('Executing strategy', {
@@ -422,40 +404,13 @@ export class ProcessManager {
             }
         }, 'execute-command');
     }
-    async execute(options) {
-        const executionInfo = await this.executeCommand(options);
-        return this.buildLegacyResponse(executionInfo);
-    }
-    annotateLegacyFields(executionInfo) {
-        const annotated = executionInfo;
-        annotated.executionId = executionInfo.execution_id;
-        annotated.startTime = executionInfo.started_at || executionInfo.created_at;
-        annotated.endTime = executionInfo.completed_at;
-    }
-    buildLegacyResponse(executionInfo) {
-        this.annotateLegacyFields(executionInfo);
-        const legacyStatus = executionInfo.status === 'completed' ? 'success' : executionInfo.status;
-        return {
-            ...executionInfo,
-            status: legacyStatus,
-        };
-    }
     /**
      * Wave 1: Convert strategy execution result to ExecutionInfo for backward compatibility.
      * This ensures the public API remains unchanged while using the strategy pattern internally.
      */
     async convertStrategyResultToExecutionInfo(executionId, executionInfo, strategyResult, options) {
         const updated = { ...executionInfo };
-        // For detached mode, the process runs in background so exitCode is undefined
-        if (options.executionMode === 'detached') {
-            updated.status = 'running';
-        }
-        else if (strategyResult.exitCode === 0) {
-            updated.status = 'completed';
-        }
-        else {
-            updated.status = 'failed';
-        }
+        updated.status = strategyResult.exitCode === 0 ? 'completed' : 'failed';
         updated.exit_code = strategyResult.exitCode;
         updated.stdout = sanitizeString(strategyResult.stdout);
         updated.stderr = sanitizeString(strategyResult.stderr);
@@ -490,7 +445,6 @@ export class ProcessManager {
         else {
             this.setOutputStatus(updated, false, 'size_limit', updated.output_id);
         }
-        this.annotateLegacyFields(updated);
         this.executions.set(executionId, updated);
         return updated;
     }
@@ -786,11 +740,7 @@ export class ProcessManager {
         }
     }
     getExecution(executionId) {
-        const info = this.executions.get(executionId);
-        if (info) {
-            this.annotateLegacyFields(info);
-        }
-        return info;
+        return this.executions.get(executionId);
     }
     listExecutions(filter) {
         let executions = Array.from(this.executions.values());
@@ -814,10 +764,7 @@ export class ProcessManager {
             const limit = filter.limit || 50;
             executions = executions.slice(offset, offset + limit);
         }
-        const result = executions;
-        result.executions = executions;
-        result.total = total;
-        return result;
+        return { executions, total };
     }
     async killProcess(processId, signal = 'TERM', force = false) {
         const childProcess = this.processes.get(processId);
