@@ -367,13 +367,27 @@ export class ProcessManager {
    * Wave 1: Get the ExecutionStrategy for a given mode.
    * This provides access to the strategy directly if needed for advanced use cases.
    */
-  getExecutionStrategy(mode: ExecutionMode): ExecutionStrategy {
-    return this.strategyFactory.createStrategy(mode, {
-      timeoutMs: 300000, // 5 minutes
+  getExecutionStrategy(
+    executionId: string,
+    options: ExecutionOptions,
+    workingDirectory: string
+  ): ExecutionStrategy {
+    const timeoutSeconds = options.timeoutSeconds ?? 60;
+    const timeoutMs = Math.min(Math.max(timeoutSeconds, 1), 3600) * 1000;
+
+    return this.strategyFactory.createStrategy(options.executionMode, {
+      timeoutMs,
       killGracePeriodMs: 5000,
-      captureStderr: true,
-      maxOutputSize: 10 * 1024 * 1024,
-      workingDirectory: this.defaultWorkingDirectory,
+      captureStderr: options.captureStderr,
+      maxOutputSize: options.maxOutputSize,
+      workingDirectory,
+      environmentVariables: options.environmentVariables,
+      inputData: options.inputData,
+      onComplete: (completedId, strategyResult) => {
+        if (completedId === executionId) {
+          this.handleBackgroundStrategyCompletion(completedId, strategyResult);
+        }
+      },
     });
   }
 
@@ -556,7 +570,7 @@ export class ProcessManager {
           }
 
           // Wave 1: ExecutionStrategy への委譲 with child correlation context
-          const strategy = this.getExecutionStrategy(options.executionMode);
+          const strategy = this.getExecutionStrategy(executionId, options, resolvedWorkingDirectory);
           
           // Create child context for strategy execution
           const strategyResult = await this.loggingContext.withChildContextAsync(
@@ -627,13 +641,19 @@ export class ProcessManager {
     options: ExecutionOptions
   ): Promise<ExecutionInfo> {
     const updated = { ...executionInfo };
-    updated.status = strategyResult.exitCode === 0 ? 'completed' : 'failed';
-    updated.exit_code = strategyResult.exitCode;
     updated.stdout = sanitizeString(strategyResult.stdout);
     updated.stderr = sanitizeString(strategyResult.stderr);
-    updated.execution_time_ms = strategyResult.duration;
-    updated.completed_at = getCurrentTimestamp();
-    updated.output_truncated = strategyResult.outputTruncated;
+
+    if (strategyResult.exitCode !== undefined) {
+      const exitCode = strategyResult.exitCode;
+      updated.status = exitCode === 0 ? 'completed' : 'failed';
+      updated.exit_code = exitCode;
+      updated.execution_time_ms = strategyResult.duration;
+      updated.completed_at = getCurrentTimestamp();
+      updated.output_truncated = strategyResult.outputTruncated;
+    } else {
+      updated.status = 'running';
+    }
 
     // Phase 3: Log execution result with correlation context
     this.loggingContext.info('Strategy execution completed', {
@@ -657,6 +677,10 @@ export class ProcessManager {
       }
     }
 
+    if (strategyResult.processId && !updated.process_id) {
+      updated.process_id = strategyResult.processId;
+    }
+
     // 出力状態情報の設定
     if (strategyResult.outputTruncated) {
       this.setOutputStatus(updated, true, 'size_limit', updated.output_id);
@@ -666,6 +690,45 @@ export class ProcessManager {
 
     this.executions.set(executionId, updated);
     return updated;
+  }
+
+  private handleBackgroundStrategyCompletion(
+    executionId: string,
+    strategyResult: StrategyExecutionResult
+  ): void {
+    const executionInfo = this.executions.get(executionId);
+    if (!executionInfo) {
+      return;
+    }
+    if (executionInfo.status !== 'running') {
+      return;
+    }
+
+    executionInfo.stdout = sanitizeString(strategyResult.stdout);
+    executionInfo.stderr = sanitizeString(strategyResult.stderr);
+    executionInfo.execution_time_ms = strategyResult.duration;
+    executionInfo.completed_at = getCurrentTimestamp();
+    executionInfo.output_truncated = strategyResult.outputTruncated;
+    if (strategyResult.processId) {
+      executionInfo.process_id = strategyResult.processId;
+    }
+
+    const exitCode = strategyResult.exitCode;
+    if (exitCode !== undefined) {
+      executionInfo.exit_code = exitCode;
+      executionInfo.status = exitCode === 0 ? 'completed' : 'failed';
+    } else {
+      executionInfo.status = 'completed';
+    }
+
+    this.executions.set(executionId, executionInfo);
+
+    if (executionInfo.status === 'completed') {
+      this.backgroundProcessCallbacks.onComplete?.(executionId, executionInfo);
+    } else {
+      const error = new Error(`Command exited with code ${exitCode ?? 'unknown'}`);
+      this.backgroundProcessCallbacks.onError?.(executionId, executionInfo, error);
+    }
   }
 
   /**
@@ -1056,48 +1119,37 @@ export class ProcessManager {
     exit_code?: number;
     message: string;
   }> {
-    const childProcess = this.processes.get(processId);
-
-    if (!childProcess) {
-      throw new ResourceNotFoundError('process', processId.toString());
-    }
+    const signalName = signal === 'KILL' ? 'SIGKILL' : `SIG${signal}`;
 
     try {
-      // プロセスを終了
-      const signalName = signal === 'KILL' ? 'SIGKILL' : `SIG${signal}`;
-      const killed = childProcess.kill(signalName as NodeJS.Signals);
-
-      if (!killed && force && signal !== 'KILL') {
-        // 強制終了
-        childProcess.kill('SIGKILL');
-      }
-
-      // プロセスが終了するまで待機
-      await new Promise<void>((resolve) => {
-        childProcess.on('close', () => resolve());
-        setTimeout(() => resolve(), 5000); // 5秒でタイムアウト
-      });
-
-      this.processes.delete(processId);
-
-      return {
-        success: true,
-        signal_sent: signal,
-        exit_code: childProcess.exitCode || undefined,
-        message: 'Process terminated successfully',
-      } as {
-        success: boolean;
-        signal_sent: ProcessSignal;
-        exit_code?: number;
-        message: string;
-      };
+      process.kill(processId, signalName as NodeJS.Signals);
     } catch (error) {
+      if (error instanceof Error && error.message.includes('ESRCH')) {
+        throw new ResourceNotFoundError('process', processId.toString());
+      }
       return {
         success: false,
         signal_sent: signal,
         message: `Failed to kill process: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+
+    if (force && signal !== 'KILL') {
+      try {
+        process.kill(processId, 'SIGKILL');
+      } catch {
+        // ignore - process may already exit
+      }
+    }
+
+    // Wait briefly to allow exit handlers to run
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    return {
+      success: true,
+      signal_sent: signal,
+      message: 'Process termination signal dispatched',
+    };
   }
 
   listProcesses(): ExecutionProcessInfo[] {
