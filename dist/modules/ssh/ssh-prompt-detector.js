@@ -1,4 +1,5 @@
-import logger from '../../core/logger.js';
+import { LoggingContext } from '../../core/logging/logging-context.js';
+import { CorrelationContext } from '../../core/logging/correlation-context.js';
 /**
  * SSHPromptDetector handles interactive shell prompt detection
  * - Detects various shell prompts (bash, zsh, fish, etc.)
@@ -9,6 +10,7 @@ export class SSHPromptDetector {
     constructor() {
         this.promptCache = new Map();
         this.CACHE_TTL = 5000; // 5 seconds
+        this.loggingContext = new LoggingContext();
     }
     /**
      * Detects interactive prompts in output
@@ -60,17 +62,19 @@ export class SSHPromptDetector {
      * Waits for a prompt to be detected
      */
     async waitForPrompt(sessionId, session, timeoutMs = 5000) {
-        const startTime = Date.now();
-        while (Date.now() - startTime < timeoutMs) {
-            if (this.isPromptDetected(sessionId, session)) {
-                return;
+        const context = CorrelationContext.generate(undefined, undefined, sessionId);
+        return CorrelationContext.runAsync(context, async () => {
+            const startTime = Date.now();
+            while (Date.now() - startTime < timeoutMs) {
+                if (this.isPromptDetected(sessionId, session)) {
+                    return;
+                }
+                await this.sleep(100);
             }
-            await this.sleep(100);
-        }
-        logger.warn('Prompt detection timeout', {
-            component: 'SSHPromptDetector',
-            sessionId,
-            timeoutMs,
+            this.loggingContext.warn('Prompt detection timeout', {
+                sessionId,
+                timeoutMs,
+            });
         });
     }
     /**
@@ -99,9 +103,7 @@ export class SSHPromptDetector {
      */
     clearCache() {
         this.promptCache.clear();
-        logger.debug('Prompt detector cache cleared', {
-            component: 'SSHPromptDetector',
-        });
+        this.loggingContext.debug('Prompt detector cache cleared');
     }
     // ===== PRIVATE METHODS =====
     sleep(ms) {

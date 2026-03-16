@@ -1,4 +1,5 @@
-import logger from '../../core/logger.js';
+import { LoggingContext } from '../../core/logging/logging-context.js';
+import { CorrelationContext } from '../../core/logging/correlation-context.js';
 import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
 import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
 import { SSHConnectionPool, } from '../../core/ssh-connection-pool.js';
@@ -32,72 +33,83 @@ export class SSHConnectionPoolWrapper {
         this.connectionMap = new Map();
         this.config = config || {};
         this.pool = new SSHConnectionPool(this.config);
-        logger.info('SSH Connection Pool Wrapper initialized', {
-            component: 'SSHConnectionPoolWrapper',
-            maxConnections: this.config.maxConnections || 50,
+        this.loggingContext = new LoggingContext();
+        const context = CorrelationContext.generate();
+        CorrelationContext.run(context, () => {
+            this.loggingContext.info('SSH Connection Pool Wrapper initialized', {
+                maxConnections: this.config.maxConnections || 50,
+            });
         });
     }
     /**
      * Gets or creates an SSH connection from the pool
      */
     async getSSHConnection(options) {
-        try {
-            // Get connection from pool
-            const pooledConn = await this.pool.getConnection({
-                host: options.host,
-                port: options.port,
-                username: options.username,
-                password: options.password,
-                privateKey: options.identityFile,
-                timeout: options.timeout,
-            });
-            const sshConn = {
-                host: pooledConn.host,
-                port: pooledConn.port,
-                username: pooledConn.username,
-                connectionId: pooledConn.connectionId,
-            };
-            // Track the connection
-            this.connectionMap.set(pooledConn.connectionId, sshConn);
-            logger.debug('SSH connection acquired from pool', {
-                component: 'SSHConnectionPoolWrapper',
-                connectionId: pooledConn.connectionId,
-                host: options.host,
-                port: options.port,
-                username: options.username,
-            });
-            return sshConn;
-        }
-        catch (error) {
-            logger.error('Failed to get SSH connection from pool', {
-                component: 'SSHConnectionPoolWrapper',
-                host: options.host,
-                port: options.port,
-                username: options.username,
-                error: error instanceof Error ? error.message : String(error),
-            });
-            throw error;
-        }
+        const context = CorrelationContext.generate();
+        return CorrelationContext.runAsync(context, async () => {
+            try {
+                // Get connection from pool
+                const pooledConn = await this.pool.getConnection({
+                    host: options.host,
+                    port: options.port,
+                    username: options.username,
+                    password: options.password,
+                    privateKey: options.identityFile,
+                    timeout: options.timeout,
+                });
+                const sshConn = {
+                    host: pooledConn.host,
+                    port: pooledConn.port,
+                    username: pooledConn.username,
+                    connectionId: pooledConn.connectionId,
+                };
+                // Track the connection
+                this.connectionMap.set(pooledConn.connectionId, sshConn);
+                const poolStats = this.pool.getConnectionStats();
+                this.loggingContext.debug('SSH connection acquired from pool', {
+                    connectionId: pooledConn.connectionId,
+                    host: options.host,
+                    port: options.port,
+                    username: options.username,
+                    activeConnections: poolStats.activeConnections,
+                    idleConnections: poolStats.idleConnections,
+                });
+                return sshConn;
+            }
+            catch (error) {
+                this.loggingContext.error('Failed to get SSH connection from pool', {
+                    host: options.host,
+                    port: options.port,
+                    username: options.username,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                throw error;
+            }
+        });
     }
     /**
      * Releases an SSH connection back to the pool
      */
     releaseSSHConnection(connectionId) {
-        try {
-            this.pool.releaseConnection(connectionId);
-            this.connectionMap.delete(connectionId);
-            logger.debug('SSH connection released to pool', {
-                component: 'SSHConnectionPoolWrapper',
-                connectionId,
-            });
-        }
-        catch (error) {
-            logger.error('Error releasing SSH connection', {
-                component: 'SSHConnectionPoolWrapper',
-                connectionId,
-                error: error instanceof Error ? error.message : String(error),
-            });
-        }
+        const context = CorrelationContext.generate();
+        CorrelationContext.run(context, () => {
+            try {
+                this.pool.releaseConnection(connectionId);
+                this.connectionMap.delete(connectionId);
+                const poolStats = this.pool.getConnectionStats();
+                this.loggingContext.debug('SSH connection released to pool', {
+                    connectionId,
+                    activeConnections: poolStats.activeConnections,
+                    idleConnections: poolStats.idleConnections,
+                });
+            }
+            catch (error) {
+                this.loggingContext.error('Error releasing SSH connection', {
+                    connectionId,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        });
     }
     /**
      * Gets pool statistics
@@ -121,19 +133,19 @@ export class SSHConnectionPoolWrapper {
      * Gracefully shuts down the pool
      */
     async shutdown() {
-        try {
-            this.connectionMap.clear();
-            await this.pool.shutdown();
-            logger.info('SSH Connection Pool Wrapper shutdown complete', {
-                component: 'SSHConnectionPoolWrapper',
-            });
-        }
-        catch (error) {
-            logger.error('Error shutting down SSH Connection Pool Wrapper', {
-                component: 'SSHConnectionPoolWrapper',
-                error: error instanceof Error ? error.message : String(error),
-            });
-            throw error;
-        }
+        const context = CorrelationContext.generate();
+        return CorrelationContext.runAsync(context, async () => {
+            try {
+                this.connectionMap.clear();
+                await this.pool.shutdown();
+                this.loggingContext.info('SSH Connection Pool Wrapper shutdown complete');
+            }
+            catch (error) {
+                this.loggingContext.error('Error shutting down SSH Connection Pool Wrapper', {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                throw error;
+            }
+        });
     }
 }

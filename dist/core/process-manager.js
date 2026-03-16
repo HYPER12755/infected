@@ -7,13 +7,13 @@ import { StreamPublisher } from './stream-publisher.js'; // Adapted import
 import { FileStorageSubscriber } from './file-storage-subscriber.js'; // Adapted import
 import { StreamingPipelineReader } from './streaming-pipeline-reader.js'; // Adapted import
 import { RealtimeStreamSubscriber } from './realtime-stream-subscriber.js'; // Adapted import
-import logger from './logger.js'; // Use our central logger
 import { ExecutionStrategyFactory, } from './execution-strategies/index.js'; // Wave 1: ExecutionStrategy pattern
 import { RetryStrategy } from './recovery/retry-strategy.js';
 import { CircuitBreaker } from './recovery/circuit-breaker.js';
 import { RecoveryHandler } from './recovery/recovery-handler.js';
 import { ResourceError, TimeoutError as BaseTimeoutError } from './error-system/error-categories.js';
 import { ProcessErrorCode, ResourceErrorCode, TimeoutErrorCode, ErrorSeverity } from './error-system/error-taxonomy.js';
+import { LoggingContext, CorrelationContext, attachContextToError, } from './logging/index.js'; // Phase 3: Correlation ID system
 // Configuration constants
 const DEFAULT_PROCESS_TIMEOUT = 5000; // 5 seconds for process operations
 export class ProcessManager {
@@ -30,6 +30,8 @@ export class ProcessManager {
         this.allowedWorkingDirectories = process.env['MCP_SHELL_ALLOWED_WORKDIRS']
             ? process.env['MCP_SHELL_ALLOWED_WORKDIRS'].split(',').map((dir) => dir.trim())
             : [process.cwd()];
+        // Phase 3: Initialize LoggingContext for correlation ID tracking
+        this.loggingContext = new LoggingContext();
         // StreamPublisher初期化
         this.streamPublisher = new StreamPublisher({
             enableRealtimeStreaming: false, // 初期状態は無効
@@ -86,10 +88,10 @@ export class ProcessManager {
         });
         // Register default recovery handlers
         this.registerRecoveryHandler(ProcessErrorCode.TIMEOUT, async (error, context) => {
-            logger.warn(`Process timeout on attempt ${context.attempt}`, { executionPath: context.executionPath });
+            this.loggingContext.warn(`Process timeout on attempt ${context.attempt}`, { executionPath: context.executionPath });
         });
         this.registerRecoveryHandler(ResourceErrorCode.NOT_AVAILABLE, async (error, context) => {
-            logger.warn(`Resource not available, will retry on attempt ${context.attempt}`, { executionPath: context.executionPath });
+            this.loggingContext.warn(`Resource not available, will retry on attempt ${context.attempt}`, { executionPath: context.executionPath });
         });
         // 環境変数でStreaming機能を制御（段階的展開、デフォルト有効）
         this.enableStreaming = process.env['MCP_SHELL_ENABLE_STREAMING'] !== 'false';
@@ -121,7 +123,7 @@ export class ProcessManager {
     // Issue #13: Streaming コンポーネントの初期化
     initializeStreamingComponents() {
         if (!this.fileManager) {
-            logger.error('ProcessManager: FileManager is required for streaming components');
+            this.loggingContext.error('ProcessManager: FileManager is required for streaming components');
             return;
         }
         // FileStorageSubscriber初期化（既存FileManager機能を代替）
@@ -135,7 +137,7 @@ export class ProcessManager {
             maxBuffers: 1000,
         });
         this.streamPublisher.subscribe(this.realtimeStreamSubscriber);
-        logger.info('ProcessManager: Streaming components initialized');
+        this.loggingContext.info('ProcessManager: Streaming components initialized');
     }
     // Issue #13: Streaming機能の有効/無効切り替え
     enableStreamingFeature(enable = true) {
@@ -203,7 +205,7 @@ export class ProcessManager {
                 await handler(error, context);
             }
             catch (e) {
-                logger.warn(`Recovery handler failed for error code ${errorCode}`, { error: String(e) });
+                this.loggingContext.warn(`Recovery handler failed for error code ${errorCode}`, { error: String(e) });
             }
         }
     }
@@ -227,144 +229,180 @@ export class ProcessManager {
         });
     }
     async executeCommand(options) {
-        // 同時実行数のチェック
-        const runningProcesses = Array.from(this.executions.values()).filter((exec) => exec.status === 'running').length;
-        try {
-            await this.limiterCircuitBreaker.execute(async () => {
-                if (runningProcesses >= this.maxConcurrentProcesses) {
-                    throw new ResourceLimitError('concurrent processes', this.maxConcurrentProcesses);
-                }
-                return true;
+        // Phase 3: Create root correlation context for this execution
+        const executionCorrelationId = CorrelationContext.generate();
+        return await this.loggingContext.withContextAsync(executionCorrelationId, async () => {
+            // Log execution start with correlation context
+            this.loggingContext.info('Execution started', {
+                executionMode: options.executionMode,
+                command: options.command,
+                timeoutSeconds: options.timeoutSeconds,
             });
-        }
-        catch (error) {
-            if (error instanceof Error && error.message.includes('CIRCUIT_BREAKER_OPEN')) {
-                throw new ResourceError('Process execution temporarily disabled due to resource limits', {
-                    code: ResourceErrorCode.NOT_AVAILABLE,
-                    severity: ErrorSeverity.HIGH,
-                    retryable: true,
-                    context: { runningProcesses, maxConcurrent: this.maxConcurrentProcesses }
-                });
-            }
-            throw error;
-        }
-        // 入力データの準備 - input_output_idが指定された場合の処理
-        let resolvedInputData = options.inputData;
-        let inputStream = undefined;
-        if (options.inputOutputId) {
-            if (!this.fileManager) {
-                throw new ExecutionError('FileManager is not available for input_output_id processing', {
-                    inputOutputId: options.inputOutputId,
-                });
-            }
-            // output_idから実行IDを特定
-            const sourceExecutionId = this.findExecutionIdByOutputId(options.inputOutputId);
-            if (sourceExecutionId && this.realtimeStreamSubscriber) {
-                // 実行中プロセスの場合: StreamingPipelineReaderを使用
-                const streamState = this.realtimeStreamSubscriber.getStreamState(sourceExecutionId);
-                if (streamState && streamState.isActive) {
-                    logger.info(`ProcessManager: Using streaming pipeline for active process ${sourceExecutionId}`);
-                    inputStream = new StreamingPipelineReader(this.fileManager, this.realtimeStreamSubscriber, options.inputOutputId, sourceExecutionId);
-                }
-            }
-            // 実行中プロセスでない場合、または失敗した場合: 従来のファイル読み取り
-            if (!inputStream) {
-                try {
-                    logger.info(`ProcessManager: Using traditional file read for ${options.inputOutputId}`);
-                    const result = await this.fileManager.readFile(options.inputOutputId, 0, 100 * 1024 * 1024, // 100MB まで読み取り
-                    'utf-8');
-                    resolvedInputData = result.content;
-                }
-                catch (error) {
-                    throw new ExecutionError(`Failed to read input from output_id: ${options.inputOutputId}`, {
-                        inputOutputId: options.inputOutputId,
-                        originalError: String(error),
-                    });
-                }
-            }
-        }
-        const executionId = generateId();
-        const startTime = getCurrentTimestamp();
-        // 実行情報の初期化
-        const resolvedWorkingDirectory = this.resolveWorkingDirectory(options.workingDirectory);
-        const executionInfo = {
-            execution_id: executionId,
-            command: options.command,
-            status: 'running',
-            working_directory: resolvedWorkingDirectory,
-            default_working_directory: this.defaultWorkingDirectory,
-            working_directory_changed: resolvedWorkingDirectory !== this.defaultWorkingDirectory,
-            created_at: startTime,
-            started_at: startTime,
-        };
-        if (options.environmentVariables) {
-            executionInfo.environment_variables = options.environmentVariables;
-        }
-        this.executions.set(executionId, executionInfo);
-        // 新規ターミナル作成オプションがある場合
-        if (options.createTerminal && this.terminalManager) {
+            // 同時実行数のチェック
+            const runningProcesses = Array.from(this.executions.values()).filter((exec) => exec.status === 'running').length;
             try {
-                const terminalOptions = {
-                    sessionName: `exec-${executionId}`,
-                    shellType: options.terminalShell || 'bash',
-                    dimensions: options.terminalDimensions || { width: 80, height: 24 },
-                    autoSaveHistory: true,
-                };
-                if (options.workingDirectory) {
-                    terminalOptions.workingDirectory = options.workingDirectory;
-                }
-                if (options.environmentVariables) {
-                    terminalOptions.environmentVariables = options.environmentVariables;
-                }
-                const terminalInfo = await this.terminalCreationRetry.execute(async () => this.terminalManager.createTerminal(terminalOptions));
-                executionInfo.terminal_id = terminalInfo.terminal_id;
-                // ターミナルにコマンドを送信
-                this.terminalManager.sendInput(terminalInfo.terminal_id, options.command, true);
-                // 実行情報を更新
-                executionInfo.status = 'completed';
-                executionInfo.completed_at = getCurrentTimestamp();
-                this.executions.set(executionId, executionInfo);
-                return executionInfo;
+                await this.limiterCircuitBreaker.execute(async () => {
+                    if (runningProcesses >= this.maxConcurrentProcesses) {
+                        throw new ResourceLimitError('concurrent processes', this.maxConcurrentProcesses);
+                    }
+                    return true;
+                });
             }
             catch (error) {
-                executionInfo.status = 'failed';
-                executionInfo.completed_at = getCurrentTimestamp();
-                this.executions.set(executionId, executionInfo);
-                throw new ExecutionError(`Failed to create terminal: ${error}`, {
-                    originalError: String(error),
-                });
+                if (error instanceof Error && error.message.includes('CIRCUIT_BREAKER_OPEN')) {
+                    const resourceError = new ResourceError('Process execution temporarily disabled due to resource limits', {
+                        code: ResourceErrorCode.NOT_AVAILABLE,
+                        severity: ErrorSeverity.HIGH,
+                        retryable: true,
+                        context: { runningProcesses, maxConcurrent: this.maxConcurrentProcesses }
+                    });
+                    // Attach correlation context to error for tracing
+                    attachContextToError(resourceError);
+                    throw resourceError;
+                }
+                throw error;
             }
-        }
-        try {
-            // 実行オプションを準備
-            const { inputOutputId: _inputOutputId, ...baseOptions } = options;
-            const updatedOptions = {
-                ...baseOptions,
-                ...(resolvedInputData !== undefined && { inputData: resolvedInputData }),
+            // 入力データの準備 - input_output_idが指定された場合の処理
+            let resolvedInputData = options.inputData;
+            let inputStream = undefined;
+            if (options.inputOutputId) {
+                if (!this.fileManager) {
+                    const execError = new ExecutionError('FileManager is not available for input_output_id processing', {
+                        inputOutputId: options.inputOutputId,
+                    });
+                    attachContextToError(execError);
+                    throw execError;
+                }
+                // output_idから実行IDを特定
+                const sourceExecutionId = this.findExecutionIdByOutputId(options.inputOutputId);
+                if (sourceExecutionId && this.realtimeStreamSubscriber) {
+                    // 実行中プロセスの場合: StreamingPipelineReaderを使用
+                    const streamState = this.realtimeStreamSubscriber.getStreamState(sourceExecutionId);
+                    if (streamState && streamState.isActive) {
+                        this.loggingContext.info(`Using streaming pipeline for active process`, { sourceExecutionId });
+                        inputStream = new StreamingPipelineReader(this.fileManager, this.realtimeStreamSubscriber, options.inputOutputId, sourceExecutionId);
+                    }
+                }
+                // 実行中プロセスでない場合、または失敗した場合: 従来のファイル読み取り
+                if (!inputStream) {
+                    try {
+                        this.loggingContext.info(`Using traditional file read`, { outputId: options.inputOutputId });
+                        const result = await this.fileManager.readFile(options.inputOutputId, 0, 100 * 1024 * 1024, // 100MB まで読み取り
+                        'utf-8');
+                        resolvedInputData = result.content;
+                    }
+                    catch (error) {
+                        const readError = new ExecutionError(`Failed to read input from output_id: ${options.inputOutputId}`, {
+                            inputOutputId: options.inputOutputId,
+                            originalError: String(error),
+                        });
+                        attachContextToError(readError);
+                        throw readError;
+                    }
+                }
+            }
+            const executionId = generateId();
+            const startTime = getCurrentTimestamp();
+            // 実行情報の初期化
+            const resolvedWorkingDirectory = this.resolveWorkingDirectory(options.workingDirectory);
+            const executionInfo = {
+                execution_id: executionId,
+                command: options.command,
+                status: 'running',
+                working_directory: resolvedWorkingDirectory,
+                default_working_directory: this.defaultWorkingDirectory,
+                working_directory_changed: resolvedWorkingDirectory !== this.defaultWorkingDirectory,
+                created_at: startTime,
+                started_at: startTime,
             };
-            // StreamingPipelineReaderがある場合は特別処理
-            if (inputStream) {
-                return await this.executeCommandWithInputStream(executionId, updatedOptions, inputStream);
+            if (options.environmentVariables) {
+                executionInfo.environment_variables = options.environmentVariables;
             }
-            // Wave 1: ExecutionStrategy への委譲
-            const strategy = this.getExecutionStrategy(options.executionMode);
-            const strategyResult = await this.commandExecutionRecoveryHandler.executeWithRecovery(() => strategy.execute(options.command, executionId), {
-                circuitBreakerName: `exec-${options.executionMode}`,
-                tag: executionId
-            });
-            // 戦略の結果をExecutionInfoに変換（後方互換性）
-            return await this.convertStrategyResultToExecutionInfo(executionId, executionInfo, strategyResult, options);
-        }
-        catch (error) {
-            // エラー時の実行情報更新
-            const updatedInfo = this.executions.get(executionId);
-            if (updatedInfo) {
-                updatedInfo.status = 'failed';
-                updatedInfo.completed_at = getCurrentTimestamp();
-                this.executions.set(executionId, updatedInfo);
+            this.executions.set(executionId, executionInfo);
+            // 新規ターミナル作成オプションがある場合
+            if (options.createTerminal && this.terminalManager) {
+                try {
+                    const terminalOptions = {
+                        sessionName: `exec-${executionId}`,
+                        shellType: options.terminalShell || 'bash',
+                        dimensions: options.terminalDimensions || { width: 80, height: 24 },
+                        autoSaveHistory: true,
+                    };
+                    if (options.workingDirectory) {
+                        terminalOptions.workingDirectory = options.workingDirectory;
+                    }
+                    if (options.environmentVariables) {
+                        terminalOptions.environmentVariables = options.environmentVariables;
+                    }
+                    const terminalInfo = await this.terminalCreationRetry.execute(async () => this.terminalManager.createTerminal(terminalOptions));
+                    executionInfo.terminal_id = terminalInfo.terminal_id;
+                    // ターミナルにコマンドを送信
+                    this.terminalManager.sendInput(terminalInfo.terminal_id, options.command, true);
+                    // 実行情報を更新
+                    executionInfo.status = 'completed';
+                    executionInfo.completed_at = getCurrentTimestamp();
+                    this.executions.set(executionId, executionInfo);
+                    this.loggingContext.info('Execution completed via terminal', { executionId });
+                    return executionInfo;
+                }
+                catch (error) {
+                    executionInfo.status = 'failed';
+                    executionInfo.completed_at = getCurrentTimestamp();
+                    this.executions.set(executionId, executionInfo);
+                    const terminalError = new ExecutionError(`Failed to create terminal: ${error}`, {
+                        originalError: String(error),
+                    });
+                    attachContextToError(terminalError);
+                    throw terminalError;
+                }
             }
-            throw error;
-        }
+            try {
+                // 実行オプションを準備
+                const { inputOutputId: _inputOutputId, ...baseOptions } = options;
+                const updatedOptions = {
+                    ...baseOptions,
+                    ...(resolvedInputData !== undefined && { inputData: resolvedInputData }),
+                };
+                // StreamingPipelineReaderがある場合は特別処理
+                if (inputStream) {
+                    return await this.executeCommandWithInputStream(executionId, updatedOptions, inputStream);
+                }
+                // Wave 1: ExecutionStrategy への委譲 with child correlation context
+                const strategy = this.getExecutionStrategy(options.executionMode);
+                // Create child context for strategy execution
+                const strategyResult = await this.loggingContext.withChildContextAsync(async () => {
+                    this.loggingContext.info('Executing strategy', {
+                        strategy: options.executionMode,
+                        executionId,
+                    });
+                    return await this.commandExecutionRecoveryHandler.executeWithRecovery(() => strategy.execute(options.command, executionId), {
+                        circuitBreakerName: `exec-${options.executionMode}`,
+                        tag: executionId
+                    });
+                }, `strategy-${options.executionMode}`, undefined, executionId);
+                // 戦略の結果をExecutionInfoに変換（後方互換性）
+                return await this.convertStrategyResultToExecutionInfo(executionId, executionInfo, strategyResult, options);
+            }
+            catch (error) {
+                // エラー時の実行情報更新
+                const updatedInfo = this.executions.get(executionId);
+                if (updatedInfo) {
+                    updatedInfo.status = 'failed';
+                    updatedInfo.completed_at = getCurrentTimestamp();
+                    this.executions.set(executionId, updatedInfo);
+                }
+                // Attach correlation context to error
+                if (error instanceof Error) {
+                    attachContextToError(error);
+                }
+                this.loggingContext.error('Execution failed', {
+                    executionId,
+                    error: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined,
+                });
+                throw error;
+            }
+        }, 'execute-command');
     }
     /**
      * Wave 1: Convert strategy execution result to ExecutionInfo for backward compatibility.
@@ -379,6 +417,13 @@ export class ProcessManager {
         updated.execution_time_ms = strategyResult.duration;
         updated.completed_at = getCurrentTimestamp();
         updated.output_truncated = strategyResult.outputTruncated;
+        // Phase 3: Log execution result with correlation context
+        this.loggingContext.info('Strategy execution completed', {
+            executionId,
+            exitCode: strategyResult.exitCode,
+            duration: strategyResult.duration,
+            outputTruncated: strategyResult.outputTruncated,
+        });
         // 出力をFileManagerに保存
         if (this.fileManager && (strategyResult.stdout || strategyResult.stderr)) {
             try {
@@ -388,7 +433,7 @@ export class ProcessManager {
                 updated.output_id = outputId;
             }
             catch (error) {
-                logger.error(`Failed to save output for ${executionId}:`, {
+                this.loggingContext.error(`Failed to save output for ${executionId}:`, {
                     error: error instanceof Error ? error.message : String(error),
                 });
             }
@@ -407,7 +452,7 @@ export class ProcessManager {
      * Issue #13: StreamingPipelineReaderを使用したコマンド実行
      */
     async executeCommandWithInputStream(executionId, options, inputStream) {
-        logger.info(`ProcessManager: Executing command with input stream for ${executionId}`);
+        this.loggingContext.info(`Executing command with input stream`, { executionId });
         return new Promise((resolve, reject) => {
             const startTime = Date.now();
             let stdout = '';
@@ -426,7 +471,10 @@ export class ProcessManager {
                 inputStream.pipe(child.stdin);
             }
             inputStream.on('error', (error) => {
-                logger.error(`StreamingPipelineReader error for ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
+                this.loggingContext.error(`StreamingPipelineReader error`, {
+                    executionId,
+                    error: error instanceof Error ? error.message : String(error)
+                });
                 child.kill('SIGTERM');
             });
             // StreamPublisher通知
@@ -443,7 +491,7 @@ export class ProcessManager {
                     else {
                         outputTruncated = true;
                     }
-                    // StreamPublisher通知
+                    // StreamPublisher通知 with correlation context metadata
                     if (this.streamPublisher) {
                         this.streamPublisher.notifyOutputData(executionId, chunk, false);
                     }
@@ -459,7 +507,7 @@ export class ProcessManager {
                     else {
                         outputTruncated = true;
                     }
-                    // StreamPublisher通知
+                    // StreamPublisher通知 with correlation context metadata
                     if (this.streamPublisher) {
                         this.streamPublisher.notifyOutputData(executionId, chunk, true);
                     }
@@ -469,7 +517,9 @@ export class ProcessManager {
             child.on('close', async (code) => {
                 const executionInfo = this.executions.get(executionId);
                 if (!executionInfo) {
-                    reject(new ExecutionError('Execution info not found', { executionId }));
+                    const error = new ExecutionError('Execution info not found', { executionId });
+                    attachContextToError(error);
+                    reject(error);
                     return;
                 }
                 // 実行時間の計算
@@ -492,7 +542,10 @@ export class ProcessManager {
                         }
                     }
                     catch (error) {
-                        logger.error(`Failed to save output for ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
+                        this.loggingContext.error(`Failed to save output`, {
+                            executionId,
+                            error: error instanceof Error ? error.message : String(error)
+                        });
                     }
                 }
                 this.executions.set(executionId, executionInfo);
@@ -500,20 +553,29 @@ export class ProcessManager {
                 if (this.streamPublisher) {
                     this.streamPublisher.notifyProcessEnd(executionId, code);
                 }
-                logger.info(`Command completed: ${options.command} (exit code: ${code})`);
+                this.loggingContext.info(`Command completed via input stream`, {
+                    executionId,
+                    exitCode: code,
+                    executionTimeMs: executionTime,
+                });
                 resolve(executionInfo);
             });
             child.on('error', (error) => {
-                logger.error(`Process error for ${executionId}:`, { error: error instanceof Error ? error.message : String(error) });
+                this.loggingContext.error(`Process error`, {
+                    executionId,
+                    error: error instanceof Error ? error.message : String(error)
+                });
                 // StreamPublisher通知
                 if (this.streamPublisher) {
                     this.streamPublisher.notifyError(executionId, error);
                 }
-                reject(new ExecutionError(`Process error: ${error.message}`, { originalError: String(error) }));
+                const execError = new ExecutionError(`Process error: ${error.message}`, { originalError: String(error) });
+                attachContextToError(execError);
+                reject(execError);
             });
             // タイムアウト処理
             const timeout = setTimeout(() => {
-                logger.warn(`Process timeout for ${executionId}`);
+                this.loggingContext.warn(`Process timeout`, { executionId });
                 child.kill('SIGTERM');
                 setTimeout(() => {
                     if (!child.killed) {
@@ -780,9 +842,13 @@ export class ProcessManager {
                 }, DEFAULT_PROCESS_TIMEOUT);
             }
             catch (error) {
-                logger.error(`Failed to cleanup process:`, { error: error instanceof Error ? error.message : String(error) });
+                this.loggingContext.error(`Failed to cleanup process:`, { error: error instanceof Error ? error.message : String(error) });
             }
         }
+        this.loggingContext.info('ProcessManager cleanup completed', {
+            processesTerminated: this.processes.size,
+            executionsCleared: this.executions.size,
+        });
         this.processes.clear();
         this.executions.clear();
     }

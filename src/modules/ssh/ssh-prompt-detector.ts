@@ -1,4 +1,6 @@
 import logger from '../../core/logger.js';
+import { LoggingContext } from '../../core/logging/logging-context.js';
+import { CorrelationContext } from '../../core/logging/correlation-context.js';
 import { Session } from './ssh-session-manager.js';
 
 /**
@@ -19,6 +21,11 @@ export interface PromptInfo {
 export class SSHPromptDetector {
   private promptCache = new Map<string, PromptInfo>();
   private readonly CACHE_TTL = 5000; // 5 seconds
+  private loggingContext: LoggingContext;
+
+  constructor() {
+    this.loggingContext = new LoggingContext();
+  }
 
   /**
    * Detects interactive prompts in output
@@ -74,19 +81,22 @@ export class SSHPromptDetector {
    * Waits for a prompt to be detected
    */
   async waitForPrompt(sessionId: string, session: Session, timeoutMs: number = 5000): Promise<void> {
-    const startTime = Date.now();
+    const context = CorrelationContext.generate(undefined, undefined, sessionId);
+    
+    return CorrelationContext.runAsync(context, async () => {
+      const startTime = Date.now();
 
-    while (Date.now() - startTime < timeoutMs) {
-      if (this.isPromptDetected(sessionId, session)) {
-        return;
+      while (Date.now() - startTime < timeoutMs) {
+        if (this.isPromptDetected(sessionId, session)) {
+          return;
+        }
+        await this.sleep(100);
       }
-      await this.sleep(100);
-    }
 
-    logger.warn('Prompt detection timeout', {
-      component: 'SSHPromptDetector',
-      sessionId,
-      timeoutMs,
+      this.loggingContext.warn('Prompt detection timeout', {
+        sessionId,
+        timeoutMs,
+      });
     });
   }
 
@@ -121,9 +131,7 @@ export class SSHPromptDetector {
    */
   clearCache(): void {
     this.promptCache.clear();
-    logger.debug('Prompt detector cache cleared', {
-      component: 'SSHPromptDetector',
-    });
+    this.loggingContext.debug('Prompt detector cache cleared');
   }
 
   // ===== PRIVATE METHODS =====

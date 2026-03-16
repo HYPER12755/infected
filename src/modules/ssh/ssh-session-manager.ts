@@ -1,6 +1,8 @@
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import { EventEmitter } from 'node:events';
 import logger from '../../core/logger.js';
+import { LoggingContext } from '../../core/logging/logging-context.js';
+import { CorrelationContext, ICorrelationContext } from '../../core/logging/correlation-context.js';
 import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
 import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
 import { SSHError } from '../../core/error-system/error-categories.js';
@@ -70,6 +72,12 @@ export class SSHSessionManager extends EventEmitter {
   });
   private sessions = new Map<string, Session>();
   private connectionIdCounter = 0;
+  private loggingContext: LoggingContext;
+
+  constructor() {
+    super();
+    this.loggingContext = new LoggingContext();
+  }
 
   /**
    * Creates a new SSH session
@@ -79,84 +87,92 @@ export class SSHSessionManager extends EventEmitter {
     target: SSHConnectionTarget,
     options?: { timeout?: number }
   ): Promise<Session> {
-    if (this.sessions.has(sessionId)) {
-      throw new Error(`Session ${sessionId} already exists. Close it before recreating.`);
-    }
-
-    const shellPath = 'ssh';
-    const args = this.buildSshArgs(target);
-
-    const ptyProcess = ptySpawn(shellPath, args, {
-      name: 'xterm-256color',
-      cols: 160,
-      rows: 40,
-      cwd: process.env.HOME || process.cwd(),
-      env: {
-        ...process.env,
-        TERM: 'xterm-256color',
-        PS1: '[READY]$ ',
-        SSH_ASKPASS: '',
-        GIT_TERMINAL_PROMPT: '0',
-      },
-    });
-
-    const connectionId = `conn_${this.connectionIdCounter++}`;
-    const now = Date.now();
-
-    const session: Session = {
-      id: sessionId,
-      connectionId,
-      created: now,
-      lastUsed: now,
-      state: 'active',
-      ptyProcess,
-      outputBuffer: '',
-      historyLog: '',
-      isReady: true,
-      isConnected: true,
-      lastCommand: '',
-      target,
-    };
-
-    // Set up data listener
-    ptyProcess.onData((data) => {
-      session.outputBuffer += data;
-      if (session.outputBuffer.length > MAX_BUFFER_CHARS) {
-        session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_CHARS);
+    // Create correlation context for this session
+    const context = CorrelationContext.generate(undefined, undefined, sessionId);
+    
+    return CorrelationContext.runAsync(context, async () => {
+      if (this.sessions.has(sessionId)) {
+        throw new Error(`Session ${sessionId} already exists. Close it before recreating.`);
       }
-    });
 
-    // Set up exit listener
-    ptyProcess.onExit((e: { exitCode: number; signal?: number }) => {
-      session.isConnected = false;
-      session.state = 'closed';
-      logger.warn(`SSH Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`);
-      this.emit('session:closed', {
-        sessionId,
-        exitCode: e.exitCode,
+      const shellPath = 'ssh';
+      const args = this.buildSshArgs(target);
+
+      const ptyProcess = ptySpawn(shellPath, args, {
+        name: 'xterm-256color',
+        cols: 160,
+        rows: 40,
+        cwd: process.env.HOME || process.cwd(),
+        env: {
+          ...process.env,
+          TERM: 'xterm-256color',
+          PS1: '[READY]$ ',
+          SSH_ASKPASS: '',
+          GIT_TERMINAL_PROMPT: '0',
+        },
       });
-      // Remove from map after a delay to allow cleanup
-      setTimeout(() => {
-        this.sessions.delete(sessionId);
-      }, 100);
+
+      const connectionId = `conn_${this.connectionIdCounter++}`;
+      const now = Date.now();
+
+      const session: Session = {
+        id: sessionId,
+        connectionId,
+        created: now,
+        lastUsed: now,
+        state: 'active',
+        ptyProcess,
+        outputBuffer: '',
+        historyLog: '',
+        isReady: true,
+        isConnected: true,
+        lastCommand: '',
+        target,
+      };
+
+      // Set up data listener
+      ptyProcess.onData((data) => {
+        session.outputBuffer += data;
+        if (session.outputBuffer.length > MAX_BUFFER_CHARS) {
+          session.outputBuffer = session.outputBuffer.slice(-MAX_BUFFER_CHARS);
+        }
+      });
+
+      // Set up exit listener
+      ptyProcess.onExit((e: { exitCode: number; signal?: number }) => {
+        session.isConnected = false;
+        session.state = 'closed';
+        this.loggingContext.warn(`SSH Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`, {
+          sessionId,
+          exitCode: e.exitCode,
+          signal: e.signal,
+        });
+        this.emit('session:closed', {
+          sessionId,
+          exitCode: e.exitCode,
+        });
+        // Remove from map after a delay to allow cleanup
+        setTimeout(() => {
+          this.sessions.delete(sessionId);
+        }, 100);
+      });
+
+      this.sessions.set(sessionId, session);
+
+      this.loggingContext.debug('SSH session created', {
+        sessionId,
+        connectionId,
+        target: `${target.user}@${target.host}:${target.port}`,
+      });
+
+      this.emit('session:created', {
+        sessionId,
+        connectionId,
+        target,
+      });
+
+      return session;
     });
-
-    this.sessions.set(sessionId, session);
-
-    logger.debug('SSH session created', {
-      component: 'SSHSessionManager',
-      sessionId,
-      connectionId,
-      target: `${target.user}@${target.host}:${target.port}`,
-    });
-
-    this.emit('session:created', {
-      sessionId,
-      connectionId,
-      target,
-    });
-
-    return session;
   }
 
   /**
@@ -171,31 +187,33 @@ export class SSHSessionManager extends EventEmitter {
    * Closes and cleans up a session
    */
   async closeSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
+    const context = CorrelationContext.generate(undefined, undefined, sessionId);
+    
+    return CorrelationContext.runAsync(context, async () => {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        throw new Error(`Session ${sessionId} not found`);
+      }
 
-    try {
-      session.ptyProcess.kill();
-      session.isConnected = false;
-      session.state = 'closed';
-      this.sessions.delete(sessionId);
+      try {
+        session.ptyProcess.kill();
+        session.isConnected = false;
+        session.state = 'closed';
+        this.sessions.delete(sessionId);
 
-      logger.debug('SSH session closed', {
-        component: 'SSHSessionManager',
-        sessionId,
-      });
+        this.loggingContext.debug('SSH session closed', {
+          sessionId,
+        });
 
-      this.emit('session:closed', { sessionId });
-    } catch (error) {
-      logger.error('Error closing SSH session', {
-        component: 'SSHSessionManager',
-        sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+        this.emit('session:closed', { sessionId });
+      } catch (error) {
+        this.loggingContext.error('Error closing SSH session', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
   }
 
   /**
@@ -232,23 +250,24 @@ export class SSHSessionManager extends EventEmitter {
    * Cleans up all sessions
    */
   async shutdown(): Promise<void> {
-    const sessionIds = Array.from(this.sessions.keys());
+    const context = CorrelationContext.generate();
+    
+    return CorrelationContext.runAsync(context, async () => {
+      const sessionIds = Array.from(this.sessions.keys());
 
-    for (const sessionId of sessionIds) {
-      try {
-        await this.closeSession(sessionId);
-      } catch (error) {
-        logger.warn('Error closing session during shutdown', {
-          component: 'SSHSessionManager',
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+      for (const sessionId of sessionIds) {
+        try {
+          await this.closeSession(sessionId);
+        } catch (error) {
+          this.loggingContext.warn('Error closing session during shutdown', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
-    }
 
-    this.sessions.clear();
-    logger.info('SSH session manager shutdown complete', {
-      component: 'SSHSessionManager',
+      this.sessions.clear();
+      this.loggingContext.info('SSH session manager shutdown complete');
     });
   }
 

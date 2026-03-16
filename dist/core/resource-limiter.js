@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import logger from './logger.js';
 import { CircuitBreaker } from './recovery/circuit-breaker.js';
+import { LoggingContext, CorrelationContext } from './logging/index.js';
 /**
  * Custom error thrown when resource limits are exceeded
  */
@@ -54,6 +55,8 @@ export class ResourceLimiter extends EventEmitter {
         // Configuration for enforcement behavior
         this.enableEnforcement = true;
         this.gracefulShutdownTimeoutMs = 5000;
+        // Initialize logging context
+        this.loggingContext = new LoggingContext();
         this.setMaxListeners(20);
         // Phase 2.3: Initialize enforcement circuit breaker
         this.enforcementCircuitBreaker = new CircuitBreaker({
@@ -62,7 +65,10 @@ export class ResourceLimiter extends EventEmitter {
             timeout: 30000,
             windowSize: 60000
         });
-        logger.info('ResourceLimiter initialized', { component: 'ResourceLimiter' });
+        const initContext = CorrelationContext.generate();
+        CorrelationContext.run(initContext, () => {
+            this.loggingContext.info('ResourceLimiter initialized', { component: 'ResourceLimiter' });
+        });
     }
     /**
      * Set maximum memory limit for the system
@@ -72,7 +78,15 @@ export class ResourceLimiter extends EventEmitter {
             throw new Error('Memory limit must be greater than 0');
         }
         this.memoryLimitMB = limitMB;
-        logger.info(`Memory limit set to ${limitMB}MB`, { component: 'ResourceLimiter' });
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.info(`Memory limit set to ${limitMB}MB`, {
+                component: 'ResourceLimiter',
+                resourceType: 'memory',
+                limit: limitMB,
+                action: 'set-limit',
+            });
+        });
     }
     /**
      * Set maximum CPU usage limit
@@ -82,7 +96,15 @@ export class ResourceLimiter extends EventEmitter {
             throw new Error('CPU limit must be between 0 and 100');
         }
         this.cpuLimitPercent = limitPercent;
-        logger.info(`CPU limit set to ${limitPercent}%`, { component: 'ResourceLimiter' });
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.info(`CPU limit set to ${limitPercent}%`, {
+                component: 'ResourceLimiter',
+                resourceType: 'cpu',
+                limit: limitPercent,
+                action: 'set-limit',
+            });
+        });
     }
     /**
      * Set maximum open file handle limit
@@ -92,7 +114,15 @@ export class ResourceLimiter extends EventEmitter {
             throw new Error('File handle limit must be greater than 0');
         }
         this.fileHandleLimitCount = limitCount;
-        logger.info(`File handle limit set to ${limitCount}`, { component: 'ResourceLimiter' });
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.info(`File handle limit set to ${limitCount}`, {
+                component: 'ResourceLimiter',
+                resourceType: 'fileHandles',
+                limit: limitCount,
+                action: 'set-limit',
+            });
+        });
     }
     /**
      * Set maximum concurrent connection limit
@@ -102,7 +132,15 @@ export class ResourceLimiter extends EventEmitter {
             throw new Error('Connection limit must be greater than 0');
         }
         this.connectionLimitCount = limitCount;
-        logger.info(`Connection limit set to ${limitCount}`, { component: 'ResourceLimiter' });
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.info(`Connection limit set to ${limitCount}`, {
+                component: 'ResourceLimiter',
+                resourceType: 'connections',
+                limit: limitCount,
+                action: 'set-limit',
+            });
+        });
     }
     /**
      * Get current limits
@@ -121,7 +159,14 @@ export class ResourceLimiter extends EventEmitter {
     setEnforcementEnabled(enabled) {
         this.enableEnforcement = enabled;
         const status = enabled ? 'enabled' : 'disabled';
-        logger.info(`Resource enforcement ${status}`, { component: 'ResourceLimiter' });
+        const enforcementContext = CorrelationContext.generate();
+        CorrelationContext.run(enforcementContext, () => {
+            this.loggingContext.info(`Resource enforcement ${status}`, {
+                component: 'ResourceLimiter',
+                enforcementEnabled: enabled,
+                action: 'set-enforcement-status',
+            });
+        });
     }
     /**
      * Set graceful shutdown timeout for terminated processes
@@ -137,14 +182,28 @@ export class ResourceLimiter extends EventEmitter {
      */
     registerProcess(pid) {
         this.monitoredProcesses.set(pid, Date.now());
-        logger.debug(`Process ${pid} registered with limiter`, { component: 'ResourceLimiter' });
+        const processContext = CorrelationContext.generate();
+        CorrelationContext.run(processContext, () => {
+            this.loggingContext.debug(`Process ${pid} registered with limiter`, {
+                component: 'ResourceLimiter',
+                processId: pid,
+                action: 'register-process',
+            });
+        });
     }
     /**
      * Unregister a process from monitoring
      */
     unregisterProcess(pid) {
         this.monitoredProcesses.delete(pid);
-        logger.debug(`Process ${pid} unregistered from limiter`, { component: 'ResourceLimiter' });
+        const processContext = CorrelationContext.generate();
+        CorrelationContext.run(processContext, () => {
+            this.loggingContext.debug(`Process ${pid} unregistered from limiter`, {
+                component: 'ResourceLimiter',
+                processId: pid,
+                action: 'unregister-process',
+            });
+        });
     }
     /**
      * Check and enforce memory limit
@@ -161,8 +220,15 @@ export class ResourceLimiter extends EventEmitter {
             timestamp: Date.now(),
         };
         this.emit('limit-exceeded', info);
-        logger.warn(`Memory limit exceeded: ${currentUsageMB}MB > ${this.memoryLimitMB}MB`, {
-            component: 'ResourceLimiter',
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.warn(`Memory limit exceeded: ${currentUsageMB}MB > ${this.memoryLimitMB}MB`, {
+                component: 'ResourceLimiter',
+                resourceType: 'memory',
+                current: currentUsageMB,
+                limit: this.memoryLimitMB,
+                violation: true,
+            });
         });
         if (this.enableEnforcement) {
             this._enforceMemoryLimit(currentUsageMB);
@@ -183,7 +249,17 @@ export class ResourceLimiter extends EventEmitter {
             timestamp: Date.now(),
         };
         this.emit('limit-exceeded', info);
-        logger.warn(`CPU limit exceeded${processId ? ` for process ${processId}` : ''}: ${currentUsagePercent.toFixed(2)}% > ${this.cpuLimitPercent}%`, { component: 'ResourceLimiter' });
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.warn(`CPU limit exceeded${processId ? ` for process ${processId}` : ''}: ${currentUsagePercent.toFixed(2)}% > ${this.cpuLimitPercent}%`, {
+                component: 'ResourceLimiter',
+                resourceType: 'cpu',
+                processId,
+                current: currentUsagePercent,
+                limit: this.cpuLimitPercent,
+                violation: true,
+            });
+        });
         if (this.enableEnforcement) {
             this._enforceCPULimit(currentUsagePercent, processId);
         }
@@ -203,7 +279,17 @@ export class ResourceLimiter extends EventEmitter {
             timestamp: Date.now(),
         };
         this.emit('limit-exceeded', info);
-        logger.warn(`File handle limit exceeded${processId ? ` for process ${processId}` : ''}: ${currentCount} > ${this.fileHandleLimitCount}`, { component: 'ResourceLimiter' });
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.warn(`File handle limit exceeded${processId ? ` for process ${processId}` : ''}: ${currentCount} > ${this.fileHandleLimitCount}`, {
+                component: 'ResourceLimiter',
+                resourceType: 'fileHandles',
+                processId,
+                current: currentCount,
+                limit: this.fileHandleLimitCount,
+                violation: true,
+            });
+        });
         if (this.enableEnforcement) {
             this._enforceFileHandleLimit(currentCount, processId);
         }
@@ -222,8 +308,15 @@ export class ResourceLimiter extends EventEmitter {
             timestamp: Date.now(),
         };
         this.emit('limit-exceeded', info);
-        logger.warn(`Connection limit exceeded: ${currentCount} > ${this.connectionLimitCount}`, {
-            component: 'ResourceLimiter',
+        const limitContext = CorrelationContext.generate();
+        CorrelationContext.run(limitContext, () => {
+            this.loggingContext.warn(`Connection limit exceeded: ${currentCount} > ${this.connectionLimitCount}`, {
+                component: 'ResourceLimiter',
+                resourceType: 'connections',
+                current: currentCount,
+                limit: this.connectionLimitCount,
+                violation: true,
+            });
         });
         if (this.enableEnforcement) {
             this._enforceConnectionLimit(currentCount);
@@ -236,76 +329,114 @@ export class ResourceLimiter extends EventEmitter {
         // Sort processes by creation time (oldest first)
         const sorted = Array.from(this.monitoredProcesses.entries()).sort(([, timeA], [, timeB]) => timeA - timeB);
         if (sorted.length === 0) {
-            logger.warn('Memory limit exceeded but no processes to terminate', { component: 'ResourceLimiter' });
+            const warningContext = CorrelationContext.generate();
+            CorrelationContext.run(warningContext, () => {
+                this.loggingContext.warn('Memory limit exceeded but no processes to terminate', {
+                    component: 'ResourceLimiter',
+                    resourceType: 'memory',
+                    action: 'enforce-memory-limit',
+                });
+            });
             return;
         }
         // Terminate the oldest process
         const [oldestPid] = sorted[0];
-        const action = this._terminateProcess(oldestPid, `Memory limit exceeded (${currentUsageMB}MB > ${this.memoryLimitMB}MB)`);
-        this.emit('action-taken', action);
+        const actionContext = CorrelationContext.generate();
+        CorrelationContext.run(actionContext, () => {
+            const action = this._terminateProcess(oldestPid, `Memory limit exceeded (${currentUsageMB}MB > ${this.memoryLimitMB}MB)`);
+            this.emit('action-taken', action);
+        });
     }
     /**
      * Enforce CPU limit by warning or throttling
      */
     _enforceCPULimit(currentUsagePercent, processId) {
-        const action = {
-            timestamp: Date.now(),
-            limitType: 'cpu',
-            action: 'warning-issued',
-            target: processId,
-            reason: `CPU usage ${currentUsagePercent.toFixed(2)}% exceeds limit of ${this.cpuLimitPercent}%`,
-            details: {
+        const actionContext = CorrelationContext.generate();
+        CorrelationContext.run(actionContext, () => {
+            const action = {
+                timestamp: Date.now(),
+                limitType: 'cpu',
+                action: 'warning-issued',
+                target: processId,
+                reason: `CPU usage ${currentUsagePercent.toFixed(2)}% exceeds limit of ${this.cpuLimitPercent}%`,
+                details: {
+                    currentUsage: currentUsagePercent,
+                    limit: this.cpuLimitPercent,
+                },
+            };
+            this._recordAction(action);
+            this.emit('action-taken', action);
+            this.loggingContext.info(`CPU threshold enforcement: Warning issued${processId ? ` for process ${processId}` : ''}`, {
+                component: 'ResourceLimiter',
+                resourceType: 'cpu',
+                processId,
+                action: 'warning-issued',
                 currentUsage: currentUsagePercent,
                 limit: this.cpuLimitPercent,
-            },
-        };
-        this._recordAction(action);
-        this.emit('action-taken', action);
-        logger.info(`CPU threshold enforcement: Warning issued${processId ? ` for process ${processId}` : ''}`, {
-            component: 'ResourceLimiter',
+            });
         });
     }
     /**
      * Enforce file handle limit by preventing new process spawns
      */
     _enforceFileHandleLimit(currentCount, processId) {
-        const action = {
-            timestamp: Date.now(),
-            limitType: 'fileHandles',
-            action: 'new-spawn-blocked',
-            target: processId,
-            reason: `File handle limit exceeded (${currentCount} > ${this.fileHandleLimitCount})`,
-            details: {
+        const actionContext = CorrelationContext.generate();
+        CorrelationContext.run(actionContext, () => {
+            const action = {
+                timestamp: Date.now(),
+                limitType: 'fileHandles',
+                action: 'new-spawn-blocked',
+                target: processId,
+                reason: `File handle limit exceeded (${currentCount} > ${this.fileHandleLimitCount})`,
+                details: {
+                    currentCount,
+                    limit: this.fileHandleLimitCount,
+                },
+            };
+            this._recordAction(action);
+            this.emit('action-taken', action);
+            this.loggingContext.warn('File handle limit enforcement: New process spawn blocked', {
+                component: 'ResourceLimiter',
+                resourceType: 'fileHandles',
+                processId,
+                action: 'new-spawn-blocked',
                 currentCount,
                 limit: this.fileHandleLimitCount,
-            },
-        };
-        this._recordAction(action);
-        this.emit('action-taken', action);
-        logger.warn('File handle limit enforcement: New process spawn blocked', { component: 'ResourceLimiter' });
+            });
+        });
     }
     /**
      * Enforce connection limit by rejecting new connections
      */
     _enforceConnectionLimit(currentCount) {
-        const action = {
-            timestamp: Date.now(),
-            limitType: 'connections',
-            action: 'connection-rejected',
-            reason: `Connection limit exceeded (${currentCount} > ${this.connectionLimitCount})`,
-            details: {
+        const actionContext = CorrelationContext.generate();
+        CorrelationContext.run(actionContext, () => {
+            const action = {
+                timestamp: Date.now(),
+                limitType: 'connections',
+                action: 'connection-rejected',
+                reason: `Connection limit exceeded (${currentCount} > ${this.connectionLimitCount})`,
+                details: {
+                    currentCount,
+                    limit: this.connectionLimitCount,
+                },
+            };
+            this._recordAction(action);
+            this.emit('action-taken', action);
+            this.loggingContext.warn('Connection limit enforcement: New connection rejected', {
+                component: 'ResourceLimiter',
+                resourceType: 'connections',
+                action: 'connection-rejected',
                 currentCount,
                 limit: this.connectionLimitCount,
-            },
-        };
-        this._recordAction(action);
-        this.emit('action-taken', action);
-        logger.warn('Connection limit enforcement: New connection rejected', { component: 'ResourceLimiter' });
+            });
+        });
     }
     /**
      * Terminate a process gracefully
      */
     _terminateProcess(pid, reason) {
+        const terminationContext = CorrelationContext.generate();
         const action = {
             timestamp: Date.now(),
             limitType: 'memory',
@@ -313,7 +444,14 @@ export class ResourceLimiter extends EventEmitter {
             target: pid,
             reason,
         };
-        logger.info(`Terminating process ${pid}: ${reason}`, { component: 'ResourceLimiter' });
+        CorrelationContext.run(terminationContext, () => {
+            this.loggingContext.info(`Terminating process ${pid}: ${reason}`, {
+                component: 'ResourceLimiter',
+                processId: pid,
+                reason,
+                action: 'process-terminated',
+            });
+        });
         try {
             // Try graceful shutdown first
             process.kill(pid, 'SIGTERM');
@@ -321,11 +459,23 @@ export class ResourceLimiter extends EventEmitter {
             const forceKillTimeout = setTimeout(() => {
                 try {
                     process.kill(pid, 'SIGKILL');
-                    logger.info(`Force killed process ${pid}`, { component: 'ResourceLimiter' });
+                    const forceKillContext = CorrelationContext.generate();
+                    CorrelationContext.run(forceKillContext, () => {
+                        this.loggingContext.info(`Force killed process ${pid}`, {
+                            component: 'ResourceLimiter',
+                            processId: pid,
+                            action: 'force-kill',
+                        });
+                    });
                 }
                 catch (error) {
-                    logger.debug(`Could not force kill process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
-                        component: 'ResourceLimiter',
+                    const forceKillErrorContext = CorrelationContext.generate();
+                    CorrelationContext.run(forceKillErrorContext, () => {
+                        this.loggingContext.debug(`Could not force kill process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
+                            component: 'ResourceLimiter',
+                            processId: pid,
+                            errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+                        });
                     });
                 }
             }, this.gracefulShutdownTimeoutMs);
@@ -343,8 +493,13 @@ export class ResourceLimiter extends EventEmitter {
             }, 100);
         }
         catch (error) {
-            logger.debug(`Could not terminate process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
-                component: 'ResourceLimiter',
+            const terminationErrorContext = CorrelationContext.generate();
+            CorrelationContext.run(terminationErrorContext, () => {
+                this.loggingContext.debug(`Could not terminate process ${pid}: ${error instanceof Error ? error.message : String(error)}`, {
+                    component: 'ResourceLimiter',
+                    processId: pid,
+                    errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+                });
             });
         }
         this._recordAction(action);
@@ -397,7 +552,13 @@ export class ResourceLimiter extends EventEmitter {
      */
     clearProcesses() {
         this.monitoredProcesses.clear();
-        logger.debug('Cleared all monitored processes', { component: 'ResourceLimiter' });
+        const clearContext = CorrelationContext.generate();
+        CorrelationContext.run(clearContext, () => {
+            this.loggingContext.debug('Cleared all monitored processes', {
+                component: 'ResourceLimiter',
+                action: 'clear-processes',
+            });
+        });
     }
     /**
      * Reset enforcement history
