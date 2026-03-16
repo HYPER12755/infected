@@ -60,5 +60,29 @@
     "model": "",
     "elicitationEnabled": false,
     "skipSafeCommands": true
+  },
+  "execution": {
+    "defaultTimeoutMs": 300000,
+    "defaultKillGracePeriodMs": 5000
+  },
+  "sshConnectionPool": {
+    "maxConnections": 50,
+    "maxIdleTime": 300000,
+    "maxConnectionAge": 3600000,
+    "maxReusesPerConnection": 100,
+    "staleCheckInterval": 30000,
+    "enableCredentialCaching": true
+  },
+  "resources": {
+    "maxMemoryMB": 4096,
+    "maxCPUPercent": 80,
+    "maxFileHandles": 2048,
+    "maxConnections": 50,
+    "monitoringIntervalMs": 5000,
+    "thresholdPercent": 85,
+    "cpuThresholdPercent": 80,
+    "fileHandleThresholdPercent": 90,
+    "enableLimiting": true,
+    "enableMonitoring": true
   }
 }

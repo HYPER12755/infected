@@ -11,6 +11,33 @@ export const ProcessManagerConfigSchema = z.object({
     maxConcurrentProcesses: z.number().int().positive().default(50).describe("Maximum number of concurrent background processes."),
     outputDir: z.string().default('/tmp/mcp-shell-outputs').describe("Directory for storing background process outputs."),
 }).default({});
+// Phase 1 Integration: ExecutionStrategy configuration
+export const ExecutionStrategyConfigSchema = z.object({
+    defaultTimeoutMs: z.number().int().positive().default(300000).describe("Default timeout for command execution (5 minutes)."),
+    defaultKillGracePeriodMs: z.number().int().positive().default(5000).describe("Grace period for process termination before force kill."),
+}).optional().describe("Execution strategy configuration.");
+// Phase 1 Integration: SSH Connection Pool configuration
+export const SSHConnectionPoolConfigSchema = z.object({
+    maxConnections: z.number().int().positive().default(50).describe("Maximum number of concurrent SSH connections."),
+    maxIdleTime: z.number().int().positive().default(300000).describe("Maximum idle time before connection is closed (5 minutes)."),
+    maxConnectionAge: z.number().int().positive().default(3600000).describe("Maximum age of a connection before it must be recreated (1 hour)."),
+    maxReusesPerConnection: z.number().int().positive().default(100).describe("Maximum number of times a single connection can be reused."),
+    staleCheckInterval: z.number().int().positive().default(30000).describe("Interval for checking stale connections (30 seconds)."),
+    enableCredentialCaching: z.boolean().default(true).describe("Enable credential caching with hashing."),
+}).optional().describe("SSH connection pool configuration.");
+// Phase 1 Integration: Resource configuration
+export const ResourcesConfigSchema = z.object({
+    maxMemoryMB: z.number().int().positive().default(4096).describe("Maximum memory limit in MB."),
+    maxCPUPercent: z.number().int().min(1).max(100).default(80).describe("Maximum CPU usage percentage."),
+    maxFileHandles: z.number().int().positive().default(2048).describe("Maximum open file handles."),
+    maxConnections: z.number().int().positive().default(50).describe("Maximum concurrent connections."),
+    monitoringIntervalMs: z.number().int().positive().default(5000).describe("Resource monitoring interval in milliseconds."),
+    thresholdPercent: z.number().int().min(1).max(100).default(85).describe("Memory threshold percentage for alerts."),
+    cpuThresholdPercent: z.number().int().min(1).max(100).default(80).describe("CPU threshold percentage for alerts."),
+    fileHandleThresholdPercent: z.number().int().min(1).max(100).default(90).describe("File handle threshold percentage for alerts."),
+    enableLimiting: z.boolean().default(true).describe("Enable resource limit enforcement."),
+    enableMonitoring: z.boolean().default(true).describe("Enable resource monitoring."),
+}).optional().describe("Resource monitoring and limiting configuration.");
 export const InfectedConfigSchema = z.object({
     transport: z.union([z.literal('stdio'), z.literal('http'), z.literal('sse'), z.literal('websocket')]).default('stdio'),
     modules: z.array(z.string()).default(['shell', 'filesystem', 'memory', 'sequentialthinking', 'fetch', 'system']),
@@ -73,4 +100,7 @@ export const InfectedConfigSchema = z.object({
         skipSafeCommands: z.boolean().default(true).describe("Optimize: Skip LLM checks for commands pre-identified as safe patterns.")
     }).default({}).describe("Configuration for LLM-based security features."),
     processManager: ProcessManagerConfigSchema.optional(),
+    execution: ExecutionStrategyConfigSchema,
+    sshConnectionPool: SSHConnectionPoolConfigSchema,
+    resources: ResourcesConfigSchema,
 });
