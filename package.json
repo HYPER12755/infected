@@ -16,9 +16,9 @@
     "build": "npm run build:server && npm run build:tools",
     "pack": "npm run build && npm pack",
     "publish:npm": "npm run pack && npm publish --access public",
-    "test": "node --test --loader tsx tests/unit/**/*.test.ts",
-    "test:watch": "node --test --loader tsx --watch tests/unit/**/*.test.ts",
-    "test:verbose": "node --test --loader tsx --reporter=verbose tests/unit/**/*.test.ts"
+    "test": "node --test --import tsx tests/unit/**/*.test.ts",
+    "test:watch": "node --test --import tsx --watch tests/unit/**/*.test.ts",
+    "test:verbose": "node --test --import tsx --reporter=verbose tests/unit/**/*.test.ts"
   },
   "keywords": [],
   "author": "",
