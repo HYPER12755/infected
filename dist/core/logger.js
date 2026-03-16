@@ -1,6 +1,6 @@
 import winston from 'winston';
 import chalk from 'chalk';
-import { EventEmitterTransport } from './log-event-emitter.js'; // Import the custom transport
+import { EventEmitterTransport, logEventEmitter } from './log-event-emitter.js'; // Import the custom transport
 // Define custom levels and colors
 const levels = {
     error: 0,
@@ -85,4 +85,8 @@ console.info = (...args) => logger.info(formatConsoleArgs(args));
 console.warn = (...args) => logger.warn(formatConsoleArgs(args));
 console.error = (...args) => logger.error(formatConsoleArgs(args));
 console.debug = (...args) => logger.debug(formatConsoleArgs(args));
+// Ensure logEventEmitter has an 'error' listener to avoid unhandled errors when emitting 'error' level logs
+logEventEmitter.on('error', () => {
+    // Swallow to prevent unhandled error events; logs are already processed elsewhere.
+});
 export default logger;
