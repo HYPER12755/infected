@@ -16,6 +16,7 @@ export interface SSHConnectionTarget {
   port: number;
   user: string;
   identityFile?: string;
+  password?: string;
   extraArgs?: string[];
 }
 

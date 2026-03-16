@@ -33,14 +33,16 @@ export interface TransferResult {
   size: number;
 }
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+export type FileTransferMethod = 'scp' | 'sftp' | 'ftp';
+const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
 const FILE_TRANSFER_TIMEOUT = 300000; // 5 minutes
+const DEFAULT_TRANSFER_METHOD: FileTransferMethod = 'scp';
 
 /**
  * SSHFileTransferHandler manages file transfer operations
- * - SCP and SFTP file transfer
- * - Base64 encoding/decoding for large files
- * - Directory support and recursive operations
+ * - SCP / SFTP / FTP transfers with `get`/`put` semantics
+ * - Protocol-specific handling, retries, and logging
+ * - Directory support and remote verification
  */
 export class SSHFileTransferHandler {
   private fileTransferRetry = new RetryStrategy({
@@ -72,6 +74,7 @@ export class SSHFileTransferHandler {
     session: Session,
     localPath: string,
     remotePath: string,
+    method: FileTransferMethod = DEFAULT_TRANSFER_METHOD,
     timeout: number = FILE_TRANSFER_TIMEOUT
   ): Promise<TransferResult> {
     const transferId = `upload_${++this.transferCounter}_${Date.now()}`;
@@ -95,7 +98,11 @@ export class SSHFileTransferHandler {
 
         if (stats.size > MAX_FILE_SIZE) {
           throw new Error(
-            `File size (${(stats.size / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`
+            `File size (${(stats.size / 1024 / 1024).toFixed(2)}MB) exceeds the ${(
+              MAX_FILE_SIZE /
+              1024 /
+              1024
+            ).toFixed(0)}MB limit.`
           );
         }
 
@@ -136,33 +143,7 @@ export class SSHFileTransferHandler {
           // ignore
         }
 
-        // Use base64 encoding with temp file approach
-        const base64Content = (await fsPromises.readFile(localPath)).toString('base64');
-        const tempBase64File = `/tmp/mcp_upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
-
-        // Write base64 content to temp file
-        const writeTempCmd = `printf '%s' '${base64Content}' > ${this.escapeShellArg(tempBase64File)}`;
-        await this.commandExecutor.executeCommand(session, writeTempCmd, timeout);
-
-        // Decode temp file to destination
-        const decodeCmd = `base64 -d ${this.escapeShellArg(tempBase64File)} > ${this.escapeShellArg(finalRemotePath)} && rm -f ${this.escapeShellArg(tempBase64File)}`;
-        const decodeResult = await this.commandExecutor.executeCommand(session, decodeCmd, timeout);
-
-        if (decodeResult.exitCode !== 0) {
-          const output = decodeResult.output || '';
-          if (
-            output.includes('permission denied') ||
-            output.includes('Permission denied') ||
-            output.includes('EACCES')
-          ) {
-            throw new Error(
-              `Permission denied writing to remote path: ${finalRemotePath}. Check write permissions for the target directory.`
-            );
-          } else if (output.includes('no such file') || output.includes('No such file')) {
-            throw new Error(`Remote directory does not exist: ${path.dirname(finalRemotePath)}`);
-          }
-          throw new Error(`Failed to decode and write file to remote: ${output || 'Unknown error'}`);
-        }
+        await this.transferViaMethod(session, 'upload', localPath, finalRemotePath, method, timeout);
 
         // Verify file was created
         const verify = await this.commandExecutor.executeCommand(
@@ -191,13 +172,14 @@ export class SSHFileTransferHandler {
           sessionId: session.id,
           transferId,
           operationType: 'upload',
+          transferMethod: method,
           localPath,
           remotePath: finalRemotePath,
           size: stats.size,
         });
 
         return {
-          message: `File uploaded successfully: ${localPath} -> ${finalRemotePath}\n${verify.output}`,
+          message: `File uploaded successfully (${method.toUpperCase()}): ${localPath} -> ${finalRemotePath}\n${verify.output}`,
           remotePath: finalRemotePath,
           size: stats.size,
         };
@@ -206,6 +188,7 @@ export class SSHFileTransferHandler {
           sessionId: session.id,
           transferId,
           operationType: 'upload',
+          transferMethod: method,
           localPath,
           remotePath,
           error: error instanceof Error ? error.message : String(error),
@@ -222,6 +205,7 @@ export class SSHFileTransferHandler {
     session: Session,
     remotePath: string,
     localPath: string,
+    method: FileTransferMethod = DEFAULT_TRANSFER_METHOD,
     timeout: number = FILE_TRANSFER_TIMEOUT
   ): Promise<TransferResult> {
     const transferId = `download_${++this.transferCounter}_${Date.now()}`;
@@ -276,66 +260,30 @@ export class SSHFileTransferHandler {
         }
         if (fileSize > MAX_FILE_SIZE) {
           throw new Error(
-            `Remote file (${(fileSize / 1024 / 1024).toFixed(2)}MB) exceeds the 10MB limit.`
+            `Remote file (${(fileSize / 1024 / 1024).toFixed(2)}MB) exceeds the ${(
+              MAX_FILE_SIZE /
+              1024 /
+              1024
+            ).toFixed(0)}MB limit.`
           );
         }
 
-        // Download using base64 encoding
-        const tempRemoteFile = `/tmp/mcp_download_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.b64`;
-
-        // Encode to temp file on remote
-        const encodeCmd = `base64 ${escapedPath} > ${this.escapeShellArg(tempRemoteFile)}`;
-        const encodeResult = await this.commandExecutor.executeCommand(session, encodeCmd, timeout);
-
-        if (encodeResult.exitCode !== 0) {
-          const output = encodeResult.output || '';
-          if (
-            output.includes('permission denied') ||
-            output.includes('Permission denied') ||
-            output.includes('EACCES')
-          ) {
-            throw new Error(`Permission denied reading remote file: ${remotePath}. Check read permissions.`);
-          }
-          if (output.includes('No such file') || output.includes('no such file')) {
-            throw new Error(`Remote file not found: ${remotePath}`);
-          }
-          throw new Error(`Failed to encode remote file: ${output || 'Unknown error'}`);
-        }
-
-        // Read the temp file content
-        const readTempCmd = `cat ${this.escapeShellArg(tempRemoteFile)}`;
-        const tempResult = await this.commandExecutor.executeCommand(session, readTempCmd, timeout);
-
-        // Clean up temp file
-        await this.commandExecutor.executeCommand(
-          session,
-          `rm -f ${this.escapeShellArg(tempRemoteFile)}`,
-          5000
-        );
-
-        const cleaned = tempResult.output.replace(/[\s\n\r]+/g, '');
-        let buffer: Buffer;
-        try {
-          buffer = Buffer.from(cleaned, 'base64');
-        } catch (e) {
-          throw new Error(`Failed to decode base64 content: ${e}`);
-        }
-
         await fsPromises.mkdir(path.dirname(localPath), { recursive: true });
-        await fsPromises.writeFile(localPath, buffer);
+        await this.transferViaMethod(session, 'download', localPath, remotePath, method, timeout);
         const localStats = await fsPromises.stat(localPath);
 
         this.loggingContext.info('File downloaded successfully', {
           sessionId: session.id,
           transferId,
           operationType: 'download',
+          transferMethod: method,
           remotePath,
           localPath,
           size: localStats.size,
         });
 
         return {
-          message: `File downloaded successfully: ${remotePath} -> ${localPath}\nSize: ${(localStats.size / 1024).toFixed(2)}KB`,
+          message: `File downloaded successfully (${method.toUpperCase()}): ${remotePath} -> ${localPath}\nSize: ${(localStats.size / 1024).toFixed(2)}KB`,
           localPath,
           size: localStats.size,
         };
@@ -344,6 +292,7 @@ export class SSHFileTransferHandler {
           sessionId: session.id,
           transferId,
           operationType: 'download',
+          transferMethod: method,
           remotePath,
           localPath,
           error: error instanceof Error ? error.message : String(error),
@@ -443,6 +392,176 @@ export class SSHFileTransferHandler {
         throw error;
       }
     });
+  }
+
+  private async transferViaMethod(
+    session: Session,
+    direction: 'upload' | 'download',
+    localPath: string,
+    remotePath: string,
+    method: FileTransferMethod,
+    timeout: number
+  ): Promise<void> {
+    switch (method) {
+      case 'scp':
+        return this.transferWithScp(session, direction, localPath, remotePath, timeout);
+      case 'sftp':
+        return this.transferWithSftp(session, direction, localPath, remotePath, timeout);
+      case 'ftp':
+        return this.transferWithFtp(session, direction, localPath, remotePath, timeout);
+      default:
+        throw new Error(`Unsupported transfer method: ${method}`);
+    }
+  }
+
+  private async transferWithScp(
+    session: Session,
+    direction: 'upload' | 'download',
+    localPath: string,
+    remotePath: string,
+    timeout: number
+  ) {
+    const target = this.ensureSessionTarget(session);
+    const options = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null'];
+    if (target.port) {
+      options.push('-P', String(target.port));
+    }
+    if (target.identityFile) {
+      options.push('-i', this.escapeShellArg(target.identityFile));
+    }
+
+    const remoteSpec = `${target.user ? `${target.user}@` : ''}${target.host}`;
+    const remoteTarget = `${remoteSpec}:${remotePath}`;
+    const optionString = options.join(' ');
+    const command =
+      direction === 'upload'
+        ? `scp ${optionString} ${this.escapeShellArg(localPath)} ${this.escapeShellArg(remoteTarget)}`
+        : `scp ${optionString} ${this.escapeShellArg(remoteTarget)} ${this.escapeShellArg(localPath)}`;
+
+    await this.runLocalCommand(command, timeout);
+  }
+
+  private async transferWithSftp(
+    session: Session,
+    direction: 'upload' | 'download',
+    localPath: string,
+    remotePath: string,
+    timeout: number
+  ) {
+    const target = this.ensureSessionTarget(session);
+    const scriptPath = path.join(
+      os.tmpdir(),
+      `mcp_sftp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.cmd`
+    );
+    const action =
+      direction === 'upload'
+        ? `put ${this.escapeSftpPath(localPath)} ${this.escapeSftpPath(remotePath)}`
+        : `get ${this.escapeSftpPath(remotePath)} ${this.escapeSftpPath(localPath)}`;
+    await fsPromises.writeFile(scriptPath, `${action}\nbye\n`, { mode: 0o600 });
+
+    const options = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null'];
+    if (target.port) {
+      options.push('-P', String(target.port));
+    }
+    if (target.identityFile) {
+      options.push('-i', this.escapeShellArg(target.identityFile));
+    }
+    const targetHost = `${target.user ? `${target.user}@` : ''}${target.host}`;
+    const command = `sftp ${options.join(' ')} -b ${this.escapeShellArg(scriptPath)} ${this.escapeShellArg(targetHost)}`;
+
+    try {
+      await this.runLocalCommand(command, timeout);
+    } finally {
+      await fsPromises.rm(scriptPath).catch(() => {});
+    }
+  }
+
+  private async transferWithFtp(
+    session: Session,
+    direction: 'upload' | 'download',
+    localPath: string,
+    remotePath: string,
+    timeout: number
+  ) {
+    const target = this.ensureSessionTarget(session);
+    if (!target.password) {
+      throw new Error('FTP transfers require a password on the SSH target configuration.');
+    }
+
+    const ftpUrl = this.buildFtpUrl(target, remotePath);
+    const credentials = `${target.user}:${target.password}`;
+    const baseFlags = '--fail --silent --show-error';
+    const command =
+      direction === 'upload'
+        ? `curl ${baseFlags} --ftp-create-dirs -T ${this.escapeShellArg(localPath)} -u ${this.escapeShellArg(
+            credentials
+          )} ${this.escapeShellArg(ftpUrl)}`
+        : `curl ${baseFlags} -o ${this.escapeShellArg(localPath)} -u ${this.escapeShellArg(credentials)} ${this.escapeShellArg(
+            ftpUrl
+          )}`;
+
+    await this.runLocalCommand(command, timeout);
+  }
+
+  private async runLocalCommand(command: string, timeout: number) {
+    return new Promise<void>((resolve, reject) => {
+      const proc = cpSpawn(command, { shell: true, env: process.env });
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill('SIGTERM');
+      }, timeout);
+
+      proc.stdout?.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      proc.stderr?.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        if (timedOut) {
+          reject(new Error(`Transfer command timed out after ${timeout}ms`));
+          return;
+        }
+        if (code !== 0) {
+          reject(new Error(`Transfer command exited with code ${code}: ${stderr || stdout}`));
+          return;
+        }
+        resolve();
+      });
+      proc.on('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
+  private ensureSessionTarget(session: Session): SSHConnectionTarget {
+    if (!session.target) {
+      throw new Error('No SSH target configured for file transfer.');
+    }
+    return session.target;
+  }
+
+  private escapeSftpPath(value: string): string {
+    const escaped = value.replace(/(["\\])/g, '\\$1');
+    return `"${escaped}"`;
+  }
+
+  private buildFtpUrl(target: SSHConnectionTarget, remotePath: string): string {
+    const normalizedPath = remotePath.replace(/^\/+/, '');
+    const encodedPath = normalizedPath
+      .split('/')
+      .filter((part) => part.length > 0)
+      .map(encodeURIComponent)
+      .join('/');
+    const port = target.port || 21;
+    const suffix = encodedPath ? `/${encodedPath}` : '';
+    return `ftp://${target.host}:${port}${suffix}`;
   }
 
   /**

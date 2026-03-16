@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager** that provides persistent terminal sessions with PTY (pseudo-terminal) support. It allows clients to execute commands on the local system through persistent shell sessions, with support for file uploads/downloads via base64 encoding. The module is designed as a plugin that integrates with the project's MCP (Model Context Protocol) framework.
+The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager** that provides persistent terminal sessions with PTY (pseudo-terminal) support. It allows clients to execute commands on the local system through persistent shell sessions, with support for file uploads/downloads via configurable SCP/SFTP/FTP transfers. The module is designed as a plugin that integrates with the project's MCP (Model Context Protocol) framework.
 
 ---
 
@@ -20,30 +20,27 @@ The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager*
 - Returns command output, exit code, and execution duration
 - **Code**: `executeCommand()` (lines 619-673), `handleSshExecute()` (lines 243-295)
 
-+### 3. **Session Management**
+### 3. **Session Management**
 - Create new sessions by supplying a remote target (host, user, port, etc.)
 - List all active sessions with metadata (status, uptime, last command)
 - Close and clean up sessions
 - **Code**: `handleSshNewSession()`, `handleListSessions()`, `handleCloseSession()`
 
-+### 4. **Unified SSH Operations (`ssh_operate`)**
+### 4. **Unified SSH Operations (`ssh_operate`)**
 - Combines session creation, command execution, and output retrieval in a single tool
 - Can create new sessions on-the-fly by providing a `target` parameter
 - Use existing sessions by providing `session_id`
 - Send commands or input to sessions
 - Automatically retrieve output with configurable delay
 - Option to strip ANSI/control sequences
-- **Code**: `handleSshOperate()`, `formatSshOperateText()`
-
-- Read the full history log (commands and outputs) for any session
-- Option to strip ANSI/control sequences for clean output
-- **Code**: `handleGetBuffer()` (lines 405-461), `cleanOutput()` (lines 708-727)
+- Inspect the session history/buffer (`ssh_get_buffer`) with optional ANSI stripping for clean logs
+- **Code**: `handleSshOperate()`, `formatSshOperateText()`, `handleGetBuffer()`
 
 ### 5. **File Transfer (Upload/Download)**
-- **Upload**: Read local file → base64 encode → write to remote via session commands
-- **Download**: Read remote file → base64 encode → decode locally
-- 10MB file size limit, 5-minute default timeout
-- **Code**: `handleUploadFile()` (lines 463-509), `handleDownloadFile()` (lines 511-557), `uploadFile()` (lines 745-832), `downloadFile()` (lines 834-870)
+- **Upload**: Use SCP/SFTP/FTP (selectable `transfer_method`) to push files directly to the remote host, verify creation, and keep logs clean.
+- **Download**: Use SCP/SFTP/FTP get/put flows to pull files locally, ensure local writes succeed, and report structured status.
+- 200MB file size limit, 5-minute default timeout, and transfer logs include protocol names for success/failure clarity.
+- **Code**: `handleUploadFile()` (lines 463-509), `handleDownloadFile()` (lines 511-557), `transferViaMethod()` (new helper in `ssh-file-transfer-handler.ts`), `uploadFile()` (lines 745-832), `downloadFile()` (lines 834-870)
 
 ---
 
@@ -51,7 +48,7 @@ The SSH module (`src/modules/ssh/index.ts`) is a **Stateful SSH Session Manager*
 
 ### Connection & Session Establishment
 
-The module only establishes real SSH connections. `ssh_new_session` now requires a `target` object (host, user, port, identity file, etc.). It runs the `ssh` binary to keep an interactive session open on that remote host, and every later `ssh_execute`, upload, download or buffer access works inside that remote shell. There is no local shell fallback, so you cannot run commands on the controller host from these tools anymore.
+The module only establishes real SSH connections. `ssh_new_session` now requires a `target` object (host, user, port, identity file, etc.). It runs the `ssh` binary to keep an interactive session open on that remote host, and every later `ssh_execute`, upload, download or buffer access works inside that remote shell. `target` also accepts an optional `password` entry for FTP transfers and other fallbacks when SSH keys are unavailable. There is no local shell fallback, so you cannot run commands on the controller host from these tools anymore.
 
 ```
 createSession() (lines 576-617):
@@ -139,8 +136,8 @@ executeCommand() (lines 619-673):
 | `escapeShellArg()` (737-743) | Escapes single quotes for safe shell arguments |
 | `escapeRegex()` (729-731) | Escapes regex special characters |
 | `resolveRemotePath()` (559-565) | Resolves ~ to home directory |
-| `uploadFile()` (745-832) | Base64 chunked file upload implementation |
-| `downloadFile()` (834-870) | Base64 file download implementation |
+| `uploadFile()` (745-832) | Pushes files via SCP/SFTP/FTP and verifies remote creation |
+| `downloadFile()` (834-870) | Fetches files via SCP/SFTP/FTP and ensures local writes |
 | `sleep()` (733-735) | Promise-based delay utility |
 
 ### Input Schemas (Zod)
@@ -154,6 +151,8 @@ executeCommand() (lines 619-673):
 | `sshBufferSchema` | Validates session_id, clean flag |
 | `sshUploadSchema` | Validates session_id, local_path, remote_path, timeout |
 | `sshDownloadSchema` | Validates session_id, remote_path, local_path, timeout |
+
+`sshUploadSchema` and `sshDownloadSchema` each expose `transfer_method` (scp/sftp/ftp) to control the transfer protocol; FTP requires the target to include a password entry. SCP is the default.
 
 ---
 

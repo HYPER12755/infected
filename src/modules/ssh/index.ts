@@ -9,7 +9,7 @@ import logger from '../../core/logger.js';
 import { SSHSessionManager, type SSHConnectionTarget } from './ssh-session-manager.js';
 import { SSHCommandExecutor, type CommandResult } from './ssh-command-executor.js';
 import { SSHPromptDetector } from './ssh-prompt-detector.js';
-import { SSHFileTransferHandler } from './ssh-file-transfer-handler.js';
+import { SSHFileTransferHandler, type FileTransferMethod } from './ssh-file-transfer-handler.js';
 import { SSHConnectionPoolWrapper } from './ssh-connection-pool-wrapper.js';
 
 // ===== STREAMING TYPES FOR SSH =====
@@ -79,6 +79,11 @@ const sshTargetSchema = z
     port: z.number().int().min(1).max(65535).describe('Remote SSH port.'),
     user: z.string().min(1).describe('Remote username.'),
     identityFile: z.string().min(1).optional().describe('Path to private key file for authentication.'),
+    password: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Optional password used by FTP transfers or when SSH keys are unavailable.'),
     extraArgs: z
       .array(z.string())
       .optional()
@@ -153,6 +158,13 @@ const sshBufferSchema = z.object({
   clean: z.boolean().optional().default(true).describe('Strip ANSI/control sequences.'),
 });
 
+const transferMethodSchema = z
+  .enum(['scp', 'sftp', 'ftp'])
+  .default('scp')
+  .describe(
+    'Preferred transfer method for uploads/downloads. SCP is the default; SFTP uses get/put scripts, FTP requires a password.'
+  );
+
 const sshUploadSchema = z.object({
   session_id: z
     .string()
@@ -169,6 +181,7 @@ const sshUploadSchema = z.object({
     .optional()
     .default(FILE_TRANSFER_TIMEOUT)
     .describe('Upload timeout in milliseconds (default 5 minutes).'),
+  transfer_method: transferMethodSchema,
 });
 
 const sshDownloadSchema = z.object({
@@ -187,6 +200,7 @@ const sshDownloadSchema = z.object({
     .optional()
     .default(FILE_TRANSFER_TIMEOUT)
     .describe('Download timeout in milliseconds (default 5 minutes).'),
+  transfer_method: transferMethodSchema,
 });
 
 /**
@@ -387,7 +401,7 @@ export default class SshModule implements IUnifiedPlugin {
         return this.handleUploadFile(args, context);
       },
       'ssh_upload_file',
-      'Upload a local file into the remote session environment via base64 transfer.',
+      'Upload a local file into the remote session environment using SCP/SFTP/FTP (select transfer_method).',
       sshUploadSchema,
       this.manifest.id
     );
@@ -402,7 +416,7 @@ export default class SshModule implements IUnifiedPlugin {
         return this.handleDownloadFile(args, context);
       },
       'ssh_download_file',
-      'Download a remote file through the session and save it locally.',
+      'Download a remote file through the session and save it locally via SCP/SFTP/FTP get/put.',
       sshDownloadSchema,
       this.manifest.id
     );
@@ -871,7 +885,13 @@ ${buffer || '(empty)'}`;
       const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
 
-      const result = await this.fileTransferHandler.uploadFile(session, localPath, remoteTarget, timeout);
+      const result = await this.fileTransferHandler.uploadFile(
+        session,
+        localPath,
+        remoteTarget,
+        args.transfer_method,
+        timeout
+      );
 
       return {
         content: [
@@ -884,6 +904,7 @@ ${buffer || '(empty)'}`;
           sessionId: args.session_id,
           localPath,
           remotePath: result.remotePath,
+          transferMethod: args.transfer_method,
           size: result.size,
         },
       };
@@ -915,7 +936,13 @@ ${buffer || '(empty)'}`;
       const localPath = path.resolve(process.cwd(), args.local_path);
       const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
 
-      const result = await this.fileTransferHandler.downloadFile(session, remoteTarget, localPath, timeout);
+      const result = await this.fileTransferHandler.downloadFile(
+        session,
+        remoteTarget,
+        localPath,
+        args.transfer_method,
+        timeout
+      );
 
       return {
         content: [
@@ -928,6 +955,7 @@ ${buffer || '(empty)'}`;
           sessionId: args.session_id,
           remotePath: remoteTarget,
           localPath: result.localPath,
+          transferMethod: args.transfer_method,
           size: result.size,
         },
       };

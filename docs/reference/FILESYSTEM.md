@@ -11,8 +11,8 @@ The Filesystem module (`src/modules/filesystem/index.ts`) is a **secure file ope
 ### 1. **Secure File Reading**
 - Read text files with optional `head` (first N lines) and `tail` (last N lines) options
 - Read multiple files in a single operation
-- Read media files (images, audio) as base64-encoded data with MIME type detection
-- **Code**: `readTextFileHandler` (lines 142-162), `readFileAsBase64Stream()` (lines 124-137)
+- Binary or multimedia files are flagged and should be transferred through dedicated file-transfer tools instead of inlining text output.
+- **Code**: `readTextFileHandler` (lines 142-162), `read_multiple_files` (lines 268-287)
 
 ### 2. **File Writing & Editing**
 - Write new files or overwrite existing files with content
@@ -106,14 +106,12 @@ updateAllowedDirectoriesFromRoots() (lines 655-664):
 |----------|------|
 | `register()` (lines 35-689) | Initializes allowed directories, registers all 14 MCP tools |
 | `shutdown()` (lines 691-708) | Deregisters all tools on module unload |
-| `readFileAsBase64Stream()` (lines 124-137) | Memory-efficient streaming base64 encoding for media files |
 
 ### Handler Functions
 
 | Function | Lines | Role |
 |----------|-------|------|
 | `readTextFileHandler` | 142-162 | Handles read_file, read_text_file tools with head/tail support |
-| `read_media_file` | 218-247 | Handles media file reading with MIME type detection |
 | `read_multiple_files` | 268-287 | Batch file reading with error handling per file |
 | `write_file` | 304-313 | Creates or overwrites files |
 | `edit_file` | 334-342 | Applies line-based edits with diff output |
@@ -163,7 +161,6 @@ updateAllowedDirectoriesFromRoots() (lines 655-664):
 | Schema | Lines | Purpose |
 |--------|-------|---------|
 | `ReadTextFileArgsSchema` | 54-58 | Validates path, optional head/tail |
-| `ReadMediaFileArgsSchema` | 60-62 | Validates media file path |
 | `ReadMultipleFilesArgsSchema` | 64-69 | Validates array of paths |
 | `WriteFileArgsSchema` | 71-74 | Validates path and content |
 | `EditFileArgsSchema` | 81-85 | Validates path, edits array, dryRun |
@@ -235,7 +232,6 @@ The Filesystem module implements the `Module` interface:
 |-----------|-------------|
 | `read_file` | (Deprecated) Read text file |
 | `read_text_file` | Read text file with head/tail options |
-| `read_media_file` | Read image/audio as base64 |
 | `read_multiple_files` | Batch read multiple files |
 | `write_file` | Create or overwrite file |
 | `edit_file` | Edit file with diff output |

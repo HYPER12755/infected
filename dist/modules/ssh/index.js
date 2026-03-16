@@ -40,6 +40,11 @@ const sshTargetSchema = z
     port: z.number().int().min(1).max(65535).describe('Remote SSH port.'),
     user: z.string().min(1).describe('Remote username.'),
     identityFile: z.string().min(1).optional().describe('Path to private key file for authentication.'),
+    password: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Optional password used by FTP transfers or when SSH keys are unavailable.'),
     extraArgs: z
         .array(z.string())
         .optional()
@@ -107,6 +112,10 @@ const sshBufferSchema = z.object({
         .describe('Session ID to inspect.'),
     clean: z.boolean().optional().default(true).describe('Strip ANSI/control sequences.'),
 });
+const transferMethodSchema = z
+    .enum(['scp', 'sftp', 'ftp'])
+    .default('scp')
+    .describe('Preferred transfer method for uploads/downloads. SCP is the default; SFTP uses get/put scripts, FTP requires a password.');
 const sshUploadSchema = z.object({
     session_id: z
         .string()
@@ -123,6 +132,7 @@ const sshUploadSchema = z.object({
         .optional()
         .default(FILE_TRANSFER_TIMEOUT)
         .describe('Upload timeout in milliseconds (default 5 minutes).'),
+    transfer_method: transferMethodSchema,
 });
 const sshDownloadSchema = z.object({
     session_id: z
@@ -140,6 +150,7 @@ const sshDownloadSchema = z.object({
         .optional()
         .default(FILE_TRANSFER_TIMEOUT)
         .describe('Download timeout in milliseconds (default 5 minutes).'),
+    transfer_method: transferMethodSchema,
 });
 /**
  * Main SSH Module - orchestrates 5 focused sub-modules
@@ -272,14 +283,14 @@ export default class SshModule {
         const deregister = context.moduleManager.registerToolExecution('ssh_upload_file', async (rawArgs) => {
             const args = sshUploadSchema.parse(rawArgs);
             return this.handleUploadFile(args, context);
-        }, 'ssh_upload_file', 'Upload a local file into the remote session environment via base64 transfer.', sshUploadSchema, this.manifest.id);
+        }, 'ssh_upload_file', 'Upload a local file into the remote session environment using SCP/SFTP/FTP (select transfer_method).', sshUploadSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshDownloadFile(context) {
         const deregister = context.moduleManager.registerToolExecution('ssh_download_file', async (rawArgs) => {
             const args = sshDownloadSchema.parse(rawArgs);
             return this.handleDownloadFile(args, context);
-        }, 'ssh_download_file', 'Download a remote file through the session and save it locally.', sshDownloadSchema, this.manifest.id);
+        }, 'ssh_download_file', 'Download a remote file through the session and save it locally via SCP/SFTP/FTP get/put.', sshDownloadSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     // ===== TOOL HANDLERS =====
@@ -683,7 +694,7 @@ ${buffer || '(empty)'}`;
             const localPath = path.resolve(process.cwd(), args.local_path);
             const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
             const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
-            const result = await this.fileTransferHandler.uploadFile(session, localPath, remoteTarget, timeout);
+            const result = await this.fileTransferHandler.uploadFile(session, localPath, remoteTarget, args.transfer_method, timeout);
             return {
                 content: [
                     {
@@ -695,6 +706,7 @@ ${buffer || '(empty)'}`;
                     sessionId: args.session_id,
                     localPath,
                     remotePath: result.remotePath,
+                    transferMethod: args.transfer_method,
                     size: result.size,
                 },
             };
@@ -719,7 +731,7 @@ ${buffer || '(empty)'}`;
             const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
             const localPath = path.resolve(process.cwd(), args.local_path);
             const timeout = Math.min(args.timeout, FILE_TRANSFER_TIMEOUT);
-            const result = await this.fileTransferHandler.downloadFile(session, remoteTarget, localPath, timeout);
+            const result = await this.fileTransferHandler.downloadFile(session, remoteTarget, localPath, args.transfer_method, timeout);
             return {
                 content: [
                     {
@@ -731,6 +743,7 @@ ${buffer || '(empty)'}`;
                     sessionId: args.session_id,
                     remotePath: remoteTarget,
                     localPath: result.localPath,
+                    transferMethod: args.transfer_method,
                     size: result.size,
                 },
             };

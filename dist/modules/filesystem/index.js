@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises"; // Use node:fs/promises
-import { createReadStream } from "node:fs"; // Use node:fs for createReadStream
 import * as path from "node:path"; // Use node:path
 import { z } from "zod";
 import { minimatch } from "minimatch";
@@ -13,6 +12,7 @@ export class FilesystemModule {
         this.name = 'filesystem';
         this.allowedDirectories = [];
         this.deregisterFunctions = []; // Store SDK tool handles/deregister functions
+        this.rootsRequestWarned = false;
     }
     async register(server, config) {
         // Check if config.shell is defined before accessing its properties
@@ -45,9 +45,6 @@ export class FilesystemModule {
             head: z.number().optional().describe('If provided, returns only the first N lines of the file'),
             start_line: z.number().int().min(1).optional().describe('Line number to start reading from (1-indexed)'),
             end_line: z.number().int().min(1).optional().describe('Line number to end reading at (1-indexed, inclusive)')
-        });
-        const ReadMediaFileArgsSchema = z.object({
-            path: z.string()
         });
         const ReadMultipleFilesArgsSchema = z.object({
             paths: z
@@ -99,20 +96,6 @@ export class FilesystemModule {
         // Reads a file as a stream of buffers, concatenates them, and then encodes
         // the result to a Base64 string. This is a memory-efficient way to handle
         // binary data from a stream before the final encoding.
-        async function readFileAsBase64Stream(filePath) {
-            return new Promise((resolve, reject) => {
-                const stream = createReadStream(filePath);
-                const chunks = [];
-                stream.on('data', (chunk) => {
-                    chunks.push(chunk);
-                });
-                stream.on('end', () => {
-                    const finalBuffer = Buffer.concat(chunks);
-                    resolve(finalBuffer.toString('base64'));
-                });
-                stream.on('error', (err) => reject(err));
-            });
-        }
         // Helper function - kept for potential future use but not currently applied
         // function formatContentWithLineNumbers(content: string): string {
         //   const lines = content.split('\n');
@@ -208,50 +191,6 @@ export class FilesystemModule {
             outputSchema: { content: z.string() },
             annotations: { readOnlyHint: true }
         }, readTextFileHandler));
-        this.deregisterFunctions.push(server.registerTool("read_media_file", {
-            title: "Read Media File",
-            description: "Read an image or audio file. Returns the base64 encoded data and MIME type. " +
-                "Only works within allowed directories.",
-            inputSchema: {
-                path: z.string()
-            },
-            outputSchema: {
-                content: z.array(z.object({
-                    type: z.enum(["image", "audio", "blob"]),
-                    data: z.string(),
-                    mimeType: z.string()
-                }))
-            },
-            annotations: { readOnlyHint: true }
-        }, async (args) => {
-            const validPath = await validatePath(args.path);
-            const extension = path.extname(validPath).toLowerCase();
-            const mimeTypes = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".webp": "image/webp",
-                ".bmp": "image/bmp",
-                ".svg": "image/svg+xml",
-                ".mp3": "audio/mpeg",
-                ".wav": "audio/wav",
-                ".ogg": "audio/ogg",
-                ".flac": "audio/flac",
-            };
-            const mimeType = mimeTypes[extension] || "application/octet-stream";
-            const data = await readFileAsBase64Stream(validPath);
-            const type = mimeType.startsWith("image/")
-                ? "image"
-                : mimeType.startsWith("audio/")
-                    ? "audio"
-                    : "blob";
-            const contentItem = { type: type, data, mimeType };
-            return {
-                content: [contentItem],
-                structuredContent: { content: [contentItem] }
-            };
-        }));
         this.deregisterFunctions.push(server.registerTool("read_multiple_files", {
             title: "Read Multiple Files",
             description: "Read the contents of multiple files simultaneously. This is more " +
@@ -275,12 +214,12 @@ export class FilesystemModule {
                     const ext = filePath.toLowerCase().split('.').pop();
                     const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg', 'mp3', 'mp4', 'wav', 'ogg', 'zip', 'tar', 'gz', 'rar', '7z', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
                     if (ext && binaryExtensions.includes(ext)) {
-                        return `${filePath}: Error - Binary file detected (${ext}). Use read_media_file tool for images/audio, or download the file directly.`;
+                        return `${filePath}: Error - Binary file detected (${ext}). Download it via a file-transfer tool instead.`;
                     }
                     const content = await readFileContent(validPath);
                     // Check for binary content (null bytes)
                     if (content.includes('\0')) {
-                        return `${filePath}: Error - Binary file detected. Contains null bytes. Use read_media_file tool for media files.`;
+                        return `${filePath}: Error - Binary file detected. Contains null bytes. Download it via a file-transfer tool instead.`;
                     }
                     return `${filePath}:\n${content}\n`;
                 }
@@ -684,7 +623,14 @@ export class FilesystemModule {
                     }
                 }
                 catch (error) {
-                    logger.error("Failed to request initial roots from client:", error instanceof Error ? error.message : String(error));
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (!this.rootsRequestWarned) {
+                        logger.warn("Failed to request initial roots from client:", message);
+                        this.rootsRequestWarned = true;
+                    }
+                    else {
+                        logger.debug("Failed to request initial roots from client (suppressed warning):", message);
+                    }
                 }
             }
             else {
