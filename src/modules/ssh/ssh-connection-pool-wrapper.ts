@@ -1,4 +1,9 @@
 import logger from '../../core/logger.js';
+import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
+import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
+import { SSHError } from '../../core/error-system/error-categories.js';
+import { SSHErrorCode, NetworkErrorCode, ErrorSeverity } from '../../core/error-system/error-taxonomy.js';
+import { NetworkError } from '../../core/error-system/error-categories.js';
 import {
   SSHConnectionPool,
   type SSHConnectionPoolConfig,
@@ -35,6 +40,26 @@ export interface GetSSHConnectionOptions {
  * - Tracks connection lifecycle
  */
 export class SSHConnectionPoolWrapper {
+  private hostCircuitBreakers = new Map<string, CircuitBreaker>();
+  private connectionAcquisitionRetry = new RetryStrategy({
+    maxAttempts: 3,
+    initialDelayMs: 100,
+    maxDelayMs: 2000,
+    useJitter: true
+  });
+
+  private getHostCircuitBreaker(host: string): CircuitBreaker {
+    const key = host;
+    if (!this.hostCircuitBreakers.has(key)) {
+      this.hostCircuitBreakers.set(key, new CircuitBreaker({
+        failureThreshold: 5,
+        successThreshold: 2,
+        timeout: 30000,
+        windowSize: 60000
+      }));
+    }
+    return this.hostCircuitBreakers.get(key)!;
+  }
   private pool: SSHConnectionPool;
   private connectionMap = new Map<string, SSHConnection>();
   private config: SSHConnectionPoolConfig;

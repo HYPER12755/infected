@@ -3,6 +3,10 @@ import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import { spawn as cpSpawn } from 'node:child_process';
 import logger from '../../core/logger.js';
+import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
+import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
+import { SSHError } from '../../core/error-system/error-categories.js';
+import { SSHErrorCode, ErrorSeverity } from '../../core/error-system/error-taxonomy.js';
 import { Session, SSHConnectionTarget } from './ssh-session-manager.js';
 import { SSHCommandExecutor } from './ssh-command-executor.js';
 
@@ -37,6 +41,19 @@ const FILE_TRANSFER_TIMEOUT = 300000; // 5 minutes
  * - Directory support and recursive operations
  */
 export class SSHFileTransferHandler {
+  private fileTransferRetry = new RetryStrategy({
+    maxAttempts: 3,
+    initialDelayMs: 100,
+    maxDelayMs: 2000,
+    useJitter: true
+  });
+
+  private fileTransferCircuitBreaker = new CircuitBreaker({
+    failureThreshold: 5,
+    successThreshold: 2,
+    timeout: 30000,
+    windowSize: 60000
+  });
   private commandExecutor: SSHCommandExecutor;
 
   constructor(commandExecutor: SSHCommandExecutor) {

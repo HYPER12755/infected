@@ -1,5 +1,9 @@
 import logger from '../../core/logger.js';
 import { Session } from './ssh-session-manager.js';
+import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
+import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
+import { SSHError } from '../../core/error-system/error-categories.js';
+import { SSHErrorCode, ErrorSeverity } from '../../core/error-system/error-taxonomy.js';
 
 /**
  * Result of command execution
@@ -30,6 +34,29 @@ const MAX_HISTORY_CHARS = 400_000;
  * - Supports exit code extraction
  */
 export class SSHCommandExecutor {
+  private sessionCircuitBreakers = new Map<string, CircuitBreaker>();
+  private commandRetryStrategy = new RetryStrategy({
+    maxAttempts: 2,
+    initialDelayMs: 100,
+    maxDelayMs: 1000,
+    useJitter: true
+  });
+
+  private getSessionCircuitBreaker(sessionId: string): CircuitBreaker {
+    if (!this.sessionCircuitBreakers.has(sessionId)) {
+      this.sessionCircuitBreakers.set(sessionId, new CircuitBreaker({
+        failureThreshold: 5,
+        successThreshold: 2,
+        timeout: 30000,
+        windowSize: 60000
+      }));
+    }
+    return this.sessionCircuitBreakers.get(sessionId)!;
+  }
+
+  cleanupSessionCircuitBreaker(sessionId: string): void {
+    this.sessionCircuitBreakers.delete(sessionId);
+  }
   /**
    * Executes a command in an SSH session
    */
@@ -38,8 +65,25 @@ export class SSHCommandExecutor {
     command: string,
     timeout: number = DEFAULT_TIMEOUT_MS
   ): Promise<CommandResult> {
-    if (!session.isConnected) {
-      throw new Error(`Session ${session.id} is not connected`);
+    const sessionCB = this.getSessionCircuitBreaker(session.id);
+    try {
+      await sessionCB.execute(async () => {
+        if (!session.isConnected) {
+          throw new SSHError(
+            `Session ${session.id} is not connected`,
+            { code: SSHErrorCode.DISCONNECTED, severity: ErrorSeverity.HIGH, retryable: true }
+          );
+        }
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('CIRCUIT_BREAKER_OPEN')) {
+        throw new SSHError(
+          `SSH session ${session.id} circuit breaker open - too many disconnection failures`,
+          { code: SSHErrorCode.DISCONNECTED, severity: ErrorSeverity.HIGH, retryable: true }
+        );
+      }
+      throw error;
     }
 
     if (!session.isReady) {
@@ -104,7 +148,10 @@ export class SSHCommandExecutor {
       session.isReady = true;
 
       if (!foundEnd) {
-        throw new Error(`Command timeout after ${validTimeout}ms. Output may still be streaming.`);
+        throw new SSHError(
+        `Command timeout after ${validTimeout}ms. Output may still be streaming.`,
+        { code: SSHErrorCode.TIMEOUT, severity: ErrorSeverity.HIGH, retryable: true }
+      );
       }
 
       const buffer = session.outputBuffer;

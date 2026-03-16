@@ -1,6 +1,10 @@
 import { spawn as ptySpawn, type IPty } from 'node-pty';
 import { EventEmitter } from 'node:events';
 import logger from '../../core/logger.js';
+import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
+import { CircuitBreaker } from '../../core/recovery/circuit-breaker.js';
+import { SSHError } from '../../core/error-system/error-categories.js';
+import { SSHErrorCode, ErrorSeverity } from '../../core/error-system/error-taxonomy.js';
 
 /**
  * Represents connection target information
@@ -58,6 +62,12 @@ const MAX_HISTORY_CHARS = 400_000;
  * - Tracks active sessions
  */
 export class SSHSessionManager extends EventEmitter {
+  private sessionCreationRetry = new RetryStrategy({
+    maxAttempts: 3,
+    initialDelayMs: 100,
+    maxDelayMs: 2000,
+    useJitter: true
+  });
   private sessions = new Map<string, Session>();
   private connectionIdCounter = 0;
 
