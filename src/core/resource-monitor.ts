@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
-import logger from './logger.js';
 import { CircuitBreaker } from './recovery/circuit-breaker.js';
 import { RecoveryHandler } from './recovery/recovery-handler.js';
 import type { RecoveryContext } from './recovery/recovery-handler.js';
@@ -620,16 +619,24 @@ export class ResourceMonitor extends EventEmitter {
   /**
    * Invoke recovery handler for alert
    */
-  private async invokeRecoveryHandler(alertType: string, error: Error, context: RecoveryContext): Promise<void> {
-    const handler = this.recoveryHandlers.get(alertType);
-    if (handler) {
-      try {
-        await handler(error, context);
-      } catch (e) {
-        logger.warn(`Recovery handler failed for ${alertType}`, { error: String(e) });
-      }
-    }
-  }
+   private async invokeRecoveryHandler(alertType: string, error: Error, context: RecoveryContext): Promise<void> {
+     const handler = this.recoveryHandlers.get(alertType);
+     if (handler) {
+       try {
+         await handler(error, context);
+       } catch (e) {
+         const handlerErrorContext = CorrelationContext.generate();
+         CorrelationContext.run(handlerErrorContext, () => {
+           this.loggingContext.warn(`Recovery handler failed for ${alertType}`, { 
+             component: 'ResourceMonitor',
+             handlerType: alertType,
+             errorType: e instanceof Error ? e.constructor.name : 'Unknown',
+             error: String(e),
+           });
+         });
+       }
+     }
+   }
 
 }
 

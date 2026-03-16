@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import logger from './logger.js';
 import { CircuitBreaker } from './recovery/circuit-breaker.js';
 import { RecoveryHandler } from './recovery/recovery-handler.js';
 import type { RecoveryContext } from './recovery/recovery-handler.js';
@@ -685,16 +684,24 @@ export class ResourceLimiter extends EventEmitter {
   /**
    * Invoke recovery handler for enforcement action
    */
-  private async invokeRecoveryHandler(action: string, error: Error, context: RecoveryContext): Promise<void> {
-    const handler = this.recoveryHandlers.get(action);
-    if (handler) {
-      try {
-        await handler(error, context);
-      } catch (e) {
-        logger.warn(`Recovery handler failed for ${action}`, { error: String(e) });
-      }
-    }
-  }
+   private async invokeRecoveryHandler(action: string, error: Error, context: RecoveryContext): Promise<void> {
+     const handler = this.recoveryHandlers.get(action);
+     if (handler) {
+       try {
+         await handler(error, context);
+       } catch (e) {
+         const handlerErrorContext = CorrelationContext.generate();
+         CorrelationContext.run(handlerErrorContext, () => {
+           this.loggingContext.warn(`Recovery handler failed for ${action}`, { 
+             component: 'ResourceLimiter',
+             handlerAction: action,
+             errorType: e instanceof Error ? e.constructor.name : 'Unknown',
+             error: String(e),
+           });
+         });
+       }
+     }
+   }
 
 }
 
