@@ -179,7 +179,9 @@ export class SSHFileTransferHandler {
         });
 
         return {
-          message: `File uploaded successfully (${method.toUpperCase()}): ${localPath} -> ${finalRemotePath}\n${verify.output}`,
+          message: `File uploaded successfully (${method.toUpperCase()}): ${localPath} -> ${finalRemotePath} (${(stats.size / 1024 / 1024).toFixed(
+            2
+          )}MB)`,
           remotePath: finalRemotePath,
           size: stats.size,
         };
