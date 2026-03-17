@@ -71,6 +71,30 @@ const sshExecuteSchema = z.object({
     .optional()
     .default(false)
     .describe('Return the output even if the command exits with a non-zero code.'),
+  working_directory: z
+    .string()
+    .optional()
+    .describe('Working directory for command execution on the remote host.'),
+  environment_variables: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe('Environment variables to set for the command.'),
+  input_data: z
+    .string()
+    .optional()
+    .describe('Input data to send via stdin to the command.'),
+  max_output_size: z
+    .number()
+    .int()
+    .min(1024)
+    .max(100 * 1024 * 1024)
+    .optional()
+    .describe('Maximum output size in bytes (default 5MB, max 100MB).'),
+  capture_stderr: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe('Whether to capture stderr output.'),
 });
 
 const sshTargetSchema = z
@@ -101,6 +125,11 @@ const sshNewSessionSchema = z.object({
 const sshCloseSessionSchema = z.object({
   session_id: z.string().min(1).describe('Session ID to close.'),
 });
+
+const TerminalDimensionsSchema = z.object({
+  width: z.number().int().min(1).max(500).default(120).describe('Terminal width in characters.'),
+  height: z.number().int().min(1).max(100).default(30).describe('Terminal height in rows.'),
+}).describe('Terminal dimensions for PTY.');
 
 const sshOperateSchema = z.object({
   session_id: z
@@ -147,6 +176,15 @@ const sshOperateSchema = z.object({
     .string()
     .optional()
     .describe('Unique ID for streaming output subscription. If provided, real-time output updates will be emitted.'),
+  dimensions: TerminalDimensionsSchema.optional().describe('Terminal dimensions for PTY.'),
+  working_directory: z.string().optional().describe('Working directory for command execution.'),
+  environment_variables: z.record(z.string(), z.string()).optional().describe('Environment variables.'),
+  control_codes: z.boolean().default(false).describe('Interpret input as control codes (e.g., \n, \t, \x03 for Ctrl+C).'),
+  send_to: z.string().optional().describe('Program guard target for input routing.'),
+  force_input: z.boolean().default(false).describe('Force input even if unread output exists.'),
+  output_lines: z.number().int().min(1).max(1000).default(20).describe('Number of output lines to retrieve.'),
+  include_ansi: z.boolean().default(false).describe('Include ANSI control codes in output.'),
+  response_level: z.enum(['minimal', 'standard', 'full']).default('standard').describe('Response detail level.'),
 });
 
 const sshBufferSchema = z.object({
@@ -202,6 +240,31 @@ const sshDownloadSchema = z.object({
     .describe('Download timeout in milliseconds (default 5 minutes).'),
   transfer_method: transferMethodSchema,
 });
+
+const sshGetSessionInfoSchema = z.object({
+  session_id: z.string().min(1).describe('Session ID to get information about.'),
+});
+
+const sshProcessListSchema = z.object({
+  session_id: z.string().optional().describe('Filter by session ID.'),
+  status_filter: z.enum(['running', 'completed', 'failed', 'all']).optional().default('all').describe('Filter by execution status.'),
+  command_pattern: z.string().optional().describe('Filter by command substring.'),
+  limit: z.number().int().min(1).max(500).optional().default(50).describe('Maximum results.'),
+  offset: z.number().int().min(0).optional().default(0).describe('Pagination offset.'),
+});
+
+const sshProcessKillSchema = z.object({
+  session_id: z.string().min(1).describe('Session ID.'),
+  process_id: z.number().int().describe('Process ID to terminate.'),
+  signal: z.enum(['TERM', 'KILL', 'INT', 'HUP', 'USR1', 'USR2']).optional().default('TERM').describe('Signal to send.'),
+  force: z.boolean().default(false).describe('Force immediate termination (sends KILL).'),
+});
+
+const sshSetDefaultWorkdirSchema = z.object({
+  session_id: z.string().optional().describe('Session ID to set default workdir for.'),
+  working_directory: z.string().min(1).describe('Default working directory path.'),
+});
+
 
 /**
  * Main SSH Module - orchestrates 5 focused sub-modules
@@ -281,6 +344,10 @@ export default class SshModule implements IUnifiedPlugin {
     this.registerSshBuffer(context);
     this.registerSshUploadFile(context);
     this.registerSshDownloadFile(context);
+    this.registerSshGetSessionInfo(context);
+    this.registerSshProcessList(context);
+    this.registerSshProcessKill(context);
+    this.registerSshSetDefaultWorkdir(context);
 
     context.logger.info('SSH Session Manager module loaded (refactored with 5 sub-modules).', {
       component: this.manifest.id,
@@ -422,6 +489,67 @@ export default class SshModule implements IUnifiedPlugin {
     );
     this.deregisterFns.push(deregister);
   }
+
+  private registerSshGetSessionInfo(context: UnifiedModuleContext): void {
+    const deregister = context.moduleManager.registerToolExecution(
+      'ssh_get_session_info',
+      async (rawArgs: any) => {
+        const args = sshGetSessionInfoSchema.parse(rawArgs);
+        return this.handleSshGetSessionInfo(args, context);
+      },
+      'ssh_get_session_info',
+      'Get detailed information about a specific SSH session.',
+      sshGetSessionInfoSchema,
+      this.manifest.id
+    );
+    this.deregisterFns.push(deregister);
+  }
+
+  private registerSshProcessList(context: UnifiedModuleContext): void {
+    const deregister = context.moduleManager.registerToolExecution(
+      'ssh_process_list',
+      async (rawArgs: any) => {
+        const args = sshProcessListSchema.parse(rawArgs);
+        return this.handleSshProcessList(args, context);
+      },
+      'ssh_process_list',
+      'List SSH session executions with filtering and pagination.',
+      sshProcessListSchema,
+      this.manifest.id
+    );
+    this.deregisterFns.push(deregister);
+  }
+
+  private registerSshProcessKill(context: UnifiedModuleContext): void {
+    const deregister = context.moduleManager.registerToolExecution(
+      'ssh_process_kill',
+      async (rawArgs: any) => {
+        const args = sshProcessKillSchema.parse(rawArgs);
+        return this.handleSshProcessKill(args, context);
+      },
+      'ssh_process_kill',
+      'Send a signal to terminate a running SSH process.',
+      sshProcessKillSchema,
+      this.manifest.id
+    );
+    this.deregisterFns.push(deregister);
+  }
+
+  private registerSshSetDefaultWorkdir(context: UnifiedModuleContext): void {
+    const deregister = context.moduleManager.registerToolExecution(
+      'ssh_set_default_workdir',
+      async (rawArgs: any) => {
+        const args = sshSetDefaultWorkdirSchema.parse(rawArgs);
+        return this.handleSshSetDefaultWorkdir(args, context);
+      },
+      'ssh_set_default_workdir',
+      'Set the default working directory for SSH command execution.',
+      sshSetDefaultWorkdirSchema,
+      this.manifest.id
+    );
+    this.deregisterFns.push(deregister);
+  }
+
 
   // ===== TOOL HANDLERS =====
 
@@ -970,6 +1098,141 @@ ${buffer || '(empty)'}`;
       });
     }
   }
+
+  private async handleSshGetSessionInfo(
+    args: z.infer<typeof sshGetSessionInfoSchema>,
+    context: UnifiedModuleContext
+  ) {
+    const session = this.sessionManager.getSession(args.session_id);
+    if (!session) {
+      throw new Error(`Session ${args.session_id} not found.`);
+    }
+
+    const info = {
+      session_id: session.id,
+      target: session.target ? {
+        host: session.target.host,
+        port: session.target.port,
+        user: session.target.user,
+      } : null,
+      is_connected: session.isConnected,
+      is_ready: session.isReady,
+      last_command: session.lastCommand,
+      created_at: session.created,
+      output_buffer_size: session.outputBuffer?.length || 0,
+    };
+
+    return {
+      content: [{ type: 'text', text: JSON.stringify(info, null, 2) }],
+      structuredContent: info,
+    };
+  }
+
+  private async handleSshProcessList(
+    args: z.infer<typeof sshProcessListSchema>,
+    context: UnifiedModuleContext
+  ) {
+    const sessions = this.sessionManager.listSessions();
+    
+    let filtered = sessions;
+    if (args.session_id) {
+      filtered = filtered.filter(s => s.id === args.session_id);
+    }
+    if (args.command_pattern) {
+      const pattern = args.command_pattern || '';
+      filtered = filtered.filter(s => s.lastCommand ? s.lastCommand.includes(pattern) : false);
+    }
+
+    const limit = args.limit || 50;
+    const offset = args.offset || 0;
+    const paginated = filtered.slice(offset, offset + limit);
+
+    const executions = paginated.map(s => ({
+      session_id: s.id,
+      status: s.isReady ? 'completed' : (s.isConnected ? 'running' : 'failed'),
+      command: s.lastCommand || '',
+      start_time: s.created,
+      output_buffer_size: s.outputBuffer?.length || 0,
+    }));
+
+    return {
+      content: [{ type: 'text', text: JSON.stringify(executions, null, 2) }],
+      structuredContent: {
+        total: filtered.length,
+        limit,
+        offset,
+        executions,
+      },
+    };
+  }
+
+  private async handleSshProcessKill(
+    args: z.infer<typeof sshProcessKillSchema>,
+    context: UnifiedModuleContext
+  ) {
+    const session = this.sessionManager.getSession(args.session_id);
+    if (!session) {
+      throw new Error(`Session ${args.session_id} not found.`);
+    }
+
+    if (!session.ptyProcess) {
+      throw new Error(`No PTY process found for session ${args.session_id}`);
+    }
+
+    // Send signal to the process
+    const signalMap: Record<string, string> = {
+      'TERM': '\x03',
+      'KILL': '\x09',
+      'INT': '\x03',
+      'HUP': '\x01',
+      'USR1': '\x1b',
+      'USR2': '\x1c',
+    };
+
+    const signal = args.force ? '\x09' : (signalMap[args.signal] || '\x03');
+    session.ptyProcess.write(signal);
+
+    return {
+      content: [{ type: 'text', text: `Signal ${args.signal} sent to session ${args.session_id}` }],
+      structuredContent: {
+        session_id: args.session_id,
+        signal: args.signal,
+        forced: args.force,
+      },
+    };
+  }
+
+  private async handleSshSetDefaultWorkdir(
+    args: z.infer<typeof sshSetDefaultWorkdirSchema>,
+    context: UnifiedModuleContext
+  ) {
+    let targetSession: string | undefined;
+    
+    if (args.session_id) {
+      const session = this.sessionManager.getSession(args.session_id);
+      if (!session) {
+        throw new Error(`Session ${args.session_id} not found.`);
+      }
+      targetSession = args.session_id;
+    }
+
+    // Set working directory via cd command
+    if (targetSession) {
+      const session = this.sessionManager.getSession(targetSession)!;
+      if (session.ptyProcess) {
+        session.ptyProcess.write(`cd ${args.working_directory}\n`);
+      }
+    }
+
+    return {
+      content: [{ type: 'text', text: `Default working directory set to ${args.working_directory}` }],
+      structuredContent: {
+        session_id: targetSession || 'default',
+        working_directory: args.working_directory,
+      },
+    };
+  }
+
 
   // ===== PRIVATE HELPERS =====
 
