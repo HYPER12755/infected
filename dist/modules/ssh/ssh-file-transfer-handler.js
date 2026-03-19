@@ -2,6 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import { spawn as cpSpawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { stripVTControlCharacters } from 'node:util';
 import { LoggingContext } from '../../core/logging/logging-context.js';
 import { CorrelationContext } from '../../core/logging/correlation-context.js';
 import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
@@ -33,6 +35,24 @@ export class SSHFileTransferHandler {
         this.commandExecutor = commandExecutor;
         this.loggingContext = new LoggingContext();
     }
+    stripAnsiCodes(text) {
+        if (!text)
+            return '';
+        // First use Node.js built-in
+        let result = stripVTControlCharacters(text);
+        // Also handle leftover ESC characters and other ANSI remnants
+        result = result
+            .replace(/\x1B/g, '') // Remove standalone ESC characters
+            .replace(/\\x1B/g, '') // Remove escaped ESC
+            .replace(/\u0033/g, '') // Remove octal ESC
+            .replace(/\\u0033/g, '') // Remove escaped octal
+            .replace(/\[([0-9;]*)m/g, '') // Remove any remaining SGR sequences
+            .replace(/\n/g, '\n') // Normalize newlines
+            .trim();
+        // Also filter out lines that are just ANSI codes
+        const lines = result.split('\n').filter(line => line.trim().length > 0);
+        return lines.join('\n').trim();
+    }
     /**
      * Uploads a file to remote host
      */
@@ -46,10 +66,28 @@ export class SSHFileTransferHandler {
             if (!session.isReady) {
                 throw new Error(`Session ${session.id} is busy executing: ${session.lastCommand}`);
             }
+            const resolvedLocalPath = path.resolve(localPath);
             try {
-                const stats = await fsPromises.stat(localPath);
+                this.loggingContext.debug('Upload file path info', {
+                    localPath,
+                    resolvedLocalPath,
+                    sessionId: session.id,
+                });
+                if (!existsSync(resolvedLocalPath)) {
+                    throw new Error(`Local file not found: ${resolvedLocalPath}`);
+                }
+                const stats = await fsPromises.stat(resolvedLocalPath);
                 if (!stats.isFile()) {
                     throw new Error('Upload source must be a regular file.');
+                }
+                if (Number.isNaN(stats.size) || stats.size < 0) {
+                    throw new Error(`Invalid file size detected for ${resolvedLocalPath}: ${stats.size}`);
+                }
+                if (stats.size === 0) {
+                    this.loggingContext.warn('Uploading empty file', {
+                        localPath: resolvedLocalPath,
+                        sessionId: session.id,
+                    });
                 }
                 if (stats.size > MAX_FILE_SIZE) {
                     throw new Error(`File size (${(stats.size / 1024 / 1024).toFixed(2)}MB) exceeds the ${(MAX_FILE_SIZE /
@@ -84,7 +122,7 @@ export class SSHFileTransferHandler {
                 catch {
                     // ignore
                 }
-                await this.transferViaMethod(session, 'upload', localPath, finalRemotePath, method, timeout);
+                await this.transferViaMethod(session, 'upload', resolvedLocalPath, finalRemotePath, method, timeout);
                 // Verify file was created
                 const verify = await this.commandExecutor.executeCommand(session, `ls -lh ${this.escapeShellArg(finalRemotePath)}`, 10000);
                 if (verify.exitCode !== 0) {
@@ -102,12 +140,18 @@ export class SSHFileTransferHandler {
                     transferId,
                     operationType: 'upload',
                     transferMethod: method,
-                    localPath,
+                    localPath: resolvedLocalPath,
                     remotePath: finalRemotePath,
                     size: stats.size,
                 });
+                const sizeInKB = stats.size / 1024;
+                const sizeStr = stats.size < 1024
+                    ? `${stats.size} bytes`
+                    : stats.size < 1024 * 1024
+                        ? `${sizeInKB.toFixed(2)} KB`
+                        : `${(stats.size / 1024 / 1024).toFixed(2)} MB`;
                 return {
-                    message: `File uploaded successfully (${method.toUpperCase()}): ${localPath} -> ${finalRemotePath} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`,
+                    message: `File uploaded successfully (${method.toUpperCase()}): ${resolvedLocalPath} -> ${finalRemotePath} (${sizeStr})`,
                     remotePath: finalRemotePath,
                     size: stats.size,
                 };
@@ -118,7 +162,7 @@ export class SSHFileTransferHandler {
                     transferId,
                     operationType: 'upload',
                     transferMethod: method,
-                    localPath,
+                    localPath: resolvedLocalPath,
                     remotePath,
                     error: error instanceof Error ? error.message : String(error),
                 });
@@ -143,8 +187,9 @@ export class SSHFileTransferHandler {
                 const escapedPath = this.escapeShellArg(remotePath);
                 const sizeCheckCmd = `if [ -f ${escapedPath} ]; then stat -c%s ${escapedPath} 2>&1 || stat -f%z ${escapedPath} 2>&1; else echo "FILE_NOT_FOUND"; fi`;
                 const sizeResult = await this.commandExecutor.executeCommand(session, sizeCheckCmd, 10000);
+                const cleanedOutput = this.stripAnsiCodes(sizeResult.output);
                 if (sizeResult.exitCode !== 0) {
-                    const output = sizeResult.output || '';
+                    const output = cleanedOutput || '';
                     if (output.includes('permission denied') ||
                         output.includes('Permission denied') ||
                         output.includes('EACCES')) {
@@ -155,7 +200,7 @@ export class SSHFileTransferHandler {
                     }
                     throw new Error(`Failed to access remote file: ${output || 'Unknown error'}`);
                 }
-                const outputLines = sizeResult.output.trim().split('\n').filter((l) => l.trim());
+                const outputLines = cleanedOutput.trim().split('\n').filter((l) => l.trim());
                 const lastLine = outputLines[outputLines.length - 1]?.trim() || '';
                 if (lastLine === 'FILE_NOT_FOUND' || lastLine === '') {
                     throw new Error(`Remote file not found: ${remotePath}`);
@@ -296,29 +341,40 @@ export class SSHFileTransferHandler {
     }
     async transferWithScp(session, direction, localPath, remotePath, timeout) {
         const target = this.ensureSessionTarget(session);
-        const options = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null'];
+        const options = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null'];
+        if (!target.password) {
+            options.push('-o', 'BatchMode=yes');
+        }
         if (target.port) {
             options.push('-P', String(target.port));
         }
         if (target.identityFile) {
-            options.push('-i', this.escapeShellArg(target.identityFile));
+            const keyPath = target.identityFile.startsWith('~')
+                ? target.identityFile.replace('~', os.homedir())
+                : target.identityFile;
+            options.push('-i', this.escapeShellArg(keyPath));
         }
         const remoteSpec = `${target.user ? `${target.user}@` : ''}${target.host}`;
         const remoteTarget = `${remoteSpec}:${remotePath}`;
         const optionString = options.join(' ');
+        const resolvedLocalPath = path.resolve(localPath);
         const command = direction === 'upload'
-            ? `scp ${optionString} ${this.escapeShellArg(localPath)} ${this.escapeShellArg(remoteTarget)}`
-            : `scp ${optionString} ${this.escapeShellArg(remoteTarget)} ${this.escapeShellArg(localPath)}`;
+            ? `scp ${optionString} ${this.escapeShellArg(resolvedLocalPath)} ${this.escapeShellArg(remoteTarget)}`
+            : `scp ${optionString} ${this.escapeShellArg(remoteTarget)} ${this.escapeShellArg(resolvedLocalPath)}`;
         await this.runLocalCommand(command, timeout);
     }
     async transferWithSftp(session, direction, localPath, remotePath, timeout) {
         const target = this.ensureSessionTarget(session);
         const scriptPath = path.join(os.tmpdir(), `mcp_sftp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.cmd`);
+        const resolvedLocalPath = path.resolve(localPath);
         const action = direction === 'upload'
-            ? `put ${this.escapeSftpPath(localPath)} ${this.escapeSftpPath(remotePath)}`
-            : `get ${this.escapeSftpPath(remotePath)} ${this.escapeSftpPath(localPath)}`;
+            ? `put ${this.escapeSftpPath(resolvedLocalPath)} ${this.escapeSftpPath(remotePath)}`
+            : `get ${this.escapeSftpPath(remotePath)} ${this.escapeSftpPath(resolvedLocalPath)}`;
         await fsPromises.writeFile(scriptPath, `${action}\nbye\n`, { mode: 0o600 });
-        const options = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null'];
+        const options = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null'];
+        if (!target.password) {
+            options.push('-o', 'BatchMode=yes');
+        }
         if (target.port) {
             options.push('-P', String(target.port));
         }
@@ -348,6 +404,10 @@ export class SSHFileTransferHandler {
         await this.runLocalCommand(command, timeout);
     }
     async runLocalCommand(command, timeout) {
+        const commandName = command.split(' ')[0];
+        if (!this.isCommandAvailable(commandName)) {
+            throw new Error(`Required command '${commandName}' not found. Please ensure OpenSSH (scp, sftp) is installed on the system.`);
+        }
         return new Promise((resolve, reject) => {
             const proc = cpSpawn(command, { shell: true, env: process.env });
             let stdout = '';
@@ -377,8 +437,28 @@ export class SSHFileTransferHandler {
             });
             proc.on('error', (error) => {
                 clearTimeout(timer);
+                if (error.message.includes('ENOENT')) {
+                    reject(new Error(`Required command '${commandName}' not found. Please ensure OpenSSH (scp, sftp) is installed.`));
+                    return;
+                }
                 reject(error);
             });
+        });
+    }
+    isCommandAvailable(command) {
+        const commandPath = command.replace(/ .*$/, '');
+        if (existsSync(commandPath)) {
+            return true;
+        }
+        const pathEnv = process.env.PATH || process.env.Path || '';
+        const pathDirs = pathEnv.split(process.platform === 'win32' ? ';' : ':');
+        return pathDirs.some((dir) => {
+            try {
+                return existsSync(path.join(dir, command));
+            }
+            catch {
+                return false;
+            }
         });
     }
     ensureSessionTarget(session) {

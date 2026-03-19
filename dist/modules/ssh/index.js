@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core/tool-error.js';
 import logger from '../../core/logger.js';
@@ -13,32 +14,12 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 120000;
 const FILE_TRANSFER_TIMEOUT = 300000;
 // ===== SCHEMA DEFINITIONS =====
-const sshExecuteSchema = z.object({
-    command: z.string().min(1).describe('Command to run inside the session.'),
-    session_id: z
-        .string()
-        .optional()
-        .default(DEFAULT_SESSION_ID)
-        .describe('Session identifier to reuse across commands.'),
-    timeout: z
-        .number()
-        .int()
-        .min(1000)
-        .max(MAX_TIMEOUT_MS)
-        .optional()
-        .default(DEFAULT_TIMEOUT_MS)
-        .describe('Timeout in milliseconds (default 30000, max 120000).'),
-    allowFailure: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe('Return the output even if the command exits with a non-zero code.'),
-});
 const sshTargetSchema = z
     .object({
     host: z.string().min(1).describe('Remote hostname or IP address.'),
     port: z.number().int().min(1).max(65535).describe('Remote SSH port.'),
     user: z.string().min(1).describe('Remote username.'),
+    identity_file: z.string().min(1).optional().describe('Path to private key file for authentication.'),
     identityFile: z.string().min(1).optional().describe('Path to private key file for authentication.'),
     password: z
         .string()
@@ -50,6 +31,10 @@ const sshTargetSchema = z
         .optional()
         .describe('Additional command-line arguments forwarded to `ssh` (e.g., "-o StrictHostKeyChecking=no").'),
 })
+    .transform((obj) => ({
+    ...obj,
+    identityFile: obj.identity_file || obj.identityFile,
+}))
     .describe('Connection target used to spawn an SSH client session to a remote host.');
 const sshNewSessionSchema = z.object({
     session_id: z.string().min(1).describe('Unique identifier for the new session.'),
@@ -58,12 +43,24 @@ const sshNewSessionSchema = z.object({
 const sshCloseSessionSchema = z.object({
     session_id: z.string().min(1).describe('Session ID to close.'),
 });
+const TerminalDimensionsSchema = z.object({
+    width: z.number().int().min(1).max(500).default(120).describe('Terminal width in characters.'),
+    height: z.number().int().min(1).max(100).default(30).describe('Terminal height in rows.'),
+}).describe('Terminal dimensions for PTY.');
 const sshOperateSchema = z.object({
     session_id: z
         .string()
         .optional()
         .describe('Session ID to use. If session exists, use it. If not found, create new session (requires target).'),
+    session_name: z
+        .string()
+        .optional()
+        .describe('Name for new session when creating one. If not provided, a random ID will be generated.'),
     target: z.union([sshTargetSchema, z.object({}).strip()]).optional().describe('SSH connection target. Used to create new session if session_id not provided or not found.'),
+    shell_type: z
+        .enum(['bash', 'zsh', 'fish', 'cmd', 'powershell'])
+        .optional()
+        .describe('Shell type to use for new session.'),
     command: z
         .string()
         .optional()
@@ -85,24 +82,25 @@ const sshOperateSchema = z.object({
         .int()
         .min(0)
         .max(10000)
-        .default(500)
+        .default(5000)
         .describe('Delay in milliseconds before retrieving output.'),
-    clean: z
+    strip_ansi: z
         .boolean()
         .default(true)
         .describe('Strip ANSI/control sequences from output.'),
-    timeout: z
-        .number()
-        .int()
-        .min(1000)
-        .max(MAX_TIMEOUT_MS)
-        .optional()
-        .default(DEFAULT_TIMEOUT_MS)
-        .describe('Timeout in milliseconds for command execution.'),
     output_id: z
         .string()
         .optional()
         .describe('Unique ID for streaming output subscription. If provided, real-time output updates will be emitted.'),
+    dimensions: TerminalDimensionsSchema.optional().describe('Terminal dimensions for PTY.'),
+    working_directory: z.string().optional().describe('Working directory for command execution.'),
+    environment_variables: z.record(z.string(), z.string()).optional().describe('Environment variables.'),
+    control_codes: z.boolean().default(false).describe('Interpret input as control codes (e.g., \n, \t, \x03 for Ctrl+C).'),
+    send_to: z.string().optional().describe('Program guard target for input routing.'),
+    force_input: z.boolean().default(false).describe('Force input even if unread output exists.'),
+    output_lines: z.number().int().min(1).max(1000).default(20).describe('Number of output lines to retrieve.'),
+    include_ansi: z.boolean().default(false).describe('Include ANSI control codes in output.'),
+    response_level: z.enum(['minimal', 'standard', 'full']).default('standard').describe('Response detail level.'),
 });
 const sshBufferSchema = z.object({
     session_id: z
@@ -110,7 +108,11 @@ const sshBufferSchema = z.object({
         .optional()
         .default(DEFAULT_SESSION_ID)
         .describe('Session ID to inspect.'),
-    clean: z.boolean().optional().default(true).describe('Strip ANSI/control sequences.'),
+    clean: z.boolean().optional().default(true).describe('Strip ANSI/control sequences from output.'),
+    clear: z.boolean().optional().default(false).describe('Clear the buffer after reading it.'),
+    format: z.enum(['text', 'json']).optional().default('text').describe('Return format: text or JSON.'),
+    filter: z.enum(['all', 'last_command', 'since_last']).optional().default('all').describe('Filter buffer content.'),
+    pattern: z.string().optional().describe('Filter buffer by command pattern (substring match).'),
 });
 const transferMethodSchema = z
     .enum(['scp', 'sftp', 'ftp'])
@@ -151,6 +153,22 @@ const sshDownloadSchema = z.object({
         .default(FILE_TRANSFER_TIMEOUT)
         .describe('Download timeout in milliseconds (default 5 minutes).'),
     transfer_method: transferMethodSchema,
+});
+const sshGetSessionInfoSchema = z.object({
+    session_id: z.string().min(1).describe('Session ID to get information about.'),
+});
+const sshProcessListSchema = z.object({
+    session_id: z.string().optional().describe('Filter by session ID.'),
+    status_filter: z.enum(['running', 'completed', 'failed', 'all']).optional().default('all').describe('Filter by execution status.'),
+    command_pattern: z.string().optional().describe('Filter by command substring.'),
+    limit: z.number().int().min(1).max(500).optional().default(50).describe('Maximum results.'),
+    offset: z.number().int().min(0).optional().default(0).describe('Pagination offset.'),
+});
+const sshProcessKillSchema = z.object({
+    session_id: z.string().min(1).describe('Session ID.'),
+    process_id: z.number().int().describe('Process ID to terminate.'),
+    signal: z.enum(['TERM', 'KILL', 'INT', 'HUP', 'USR1', 'USR2']).optional().default('TERM').describe('Signal to send.'),
+    force: z.boolean().default(false).describe('Force immediate termination (sends KILL).'),
 });
 /**
  * Main SSH Module - orchestrates 5 focused sub-modules
@@ -211,7 +229,6 @@ export default class SshModule {
         this.fileTransferHandler = new SSHFileTransferHandler(this.commandExecutor);
         this.poolWrapper = new SSHConnectionPoolWrapper();
         // Register all tools
-        this.registerSshExecute(context);
         this.registerSshNewSession(context);
         this.registerSshOperate(context);
         this.registerSshListSessions(context);
@@ -219,6 +236,9 @@ export default class SshModule {
         this.registerSshBuffer(context);
         this.registerSshUploadFile(context);
         this.registerSshDownloadFile(context);
+        this.registerSshGetSessionInfo(context);
+        this.registerSshProcessList(context);
+        this.registerSshProcessKill(context);
         context.logger.info('SSH Session Manager module loaded (refactored with 5 sub-modules).', {
             component: this.manifest.id,
         });
@@ -240,13 +260,6 @@ export default class SshModule {
         }
     }
     // ===== TOOL REGISTRATION =====
-    registerSshExecute(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_execute', async (rawArgs) => {
-            const args = sshExecuteSchema.parse(rawArgs);
-            return this.handleSshExecute(args, context);
-        }, 'ssh_execute', 'Execute a command inside a persistent SSH session.', sshExecuteSchema, this.manifest.id);
-        this.deregisterFns.push(deregister);
-    }
     registerSshNewSession(context) {
         const deregister = context.moduleManager.registerToolExecution('ssh_new_session', async (rawArgs) => {
             const args = sshNewSessionSchema.parse(rawArgs);
@@ -293,63 +306,28 @@ export default class SshModule {
         }, 'ssh_download_file', 'Download a remote file through the session and save it locally via SCP/SFTP/FTP get/put.', sshDownloadSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
-    // ===== TOOL HANDLERS =====
-    async handleSshExecute(args, context) {
-        try {
-            const session = this.sessionManager.getSession(args.session_id);
-            if (!session) {
-                throw new Error(`Session ${args.session_id} not found. Create it with ssh_new_session before using other tools.`);
-            }
-            const validTimeout = Math.min(Math.max(args.timeout, 1000), MAX_TIMEOUT_MS);
-            const result = await this.commandExecutor.executeCommand(session, args.command, validTimeout);
-            if (result.exitCode !== 0 && !args.allowFailure) {
-                throw new Error(`Command exited with code ${result.exitCode}\nOutput: ${result.output || '(no output)'}`);
-            }
-            const response = {
-                content: [
-                    {
-                        type: 'text',
-                        text: result.output || '(Command executed successfully with no output)',
-                    },
-                ],
-                structuredContent: {
-                    sessionId: args.session_id,
-                    target: session.target
-                        ? {
-                            host: session.target.host,
-                            port: session.target.port,
-                            user: session.target.user,
-                        }
-                        : undefined,
-                    command: args.command,
-                    exitCode: result.exitCode,
-                    durationMs: result.durationMs,
-                },
-            };
-            // Check for interactive prompts
-            if (!result.completedNormally) {
-                const promptInfo = this.promptDetector.detectInteractivePrompts(session.outputBuffer);
-                if (promptInfo.detected) {
-                    response.structuredContent.awaitingInput = true;
-                    response.structuredContent.promptType = promptInfo.type;
-                    response.structuredContent.promptText = promptInfo.prompt;
-                    response.content[0].text += `\n\n⚠️ Awaiting input: ${promptInfo.type} prompt detected. Use ssh_operate with input parameter to respond.`;
-                }
-            }
-            return response;
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const exitCodeMatch = message.match(/Command exited with code (\d+)/);
-            const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1], 10) : undefined;
-            return this.handleError(error, context, {
-                toolName: 'ssh_execute',
-                sessionId: args.session_id,
-                command: args.command,
-                details: exitCode !== undefined ? { exitCode } : undefined,
-            });
-        }
+    registerSshGetSessionInfo(context) {
+        const deregister = context.moduleManager.registerToolExecution('ssh_get_session_info', async (rawArgs) => {
+            const args = sshGetSessionInfoSchema.parse(rawArgs);
+            return this.handleSshGetSessionInfo(args, context);
+        }, 'ssh_get_session_info', 'Get detailed information about a specific SSH session.', sshGetSessionInfoSchema, this.manifest.id);
+        this.deregisterFns.push(deregister);
     }
+    registerSshProcessList(context) {
+        const deregister = context.moduleManager.registerToolExecution('ssh_process_list', async (rawArgs) => {
+            const args = sshProcessListSchema.parse(rawArgs);
+            return this.handleSshProcessList(args, context);
+        }, 'ssh_process_list', 'List SSH session executions with filtering and pagination.', sshProcessListSchema, this.manifest.id);
+        this.deregisterFns.push(deregister);
+    }
+    registerSshProcessKill(context) {
+        const deregister = context.moduleManager.registerToolExecution('ssh_process_kill', async (rawArgs) => {
+            const args = sshProcessKillSchema.parse(rawArgs);
+            return this.handleSshProcessKill(args, context);
+        }, 'ssh_process_kill', 'Send a signal to terminate a running SSH process.', sshProcessKillSchema, this.manifest.id);
+        this.deregisterFns.push(deregister);
+    }
+    // ===== TOOL HANDLERS =====
     async handleSshNewSession(args, context) {
         try {
             const existingSession = this.sessionManager.getSession(args.session_id);
@@ -470,7 +448,7 @@ export default class SshModule {
             // 3. Execute command or send input
             const inputToSend = args.command || args.input;
             if (inputToSend) {
-                const timeout = args.timeout || DEFAULT_TIMEOUT_MS;
+                const timeout = DEFAULT_TIMEOUT_MS;
                 const result = await this.commandExecutor.executeCommand(session, inputToSend, timeout);
                 commandOutput = result.output || '';
                 exitCode = result.exitCode;
@@ -479,12 +457,23 @@ export default class SshModule {
             // 4. Get output
             let output = null;
             if (args.get_output !== false && session) {
-                const delayMs = args.output_delay_ms || 500;
-                if (delayMs > 0) {
-                    await this.sleep(delayMs);
+                if (commandOutput) {
+                    output = args.strip_ansi !== false ? this.cleanOutput(commandOutput) : commandOutput;
                 }
-                const contentSource = session.historyLog || session.outputBuffer;
-                output = args.clean !== false ? this.cleanOutput(contentSource) : contentSource;
+                else {
+                    const delayMs = args.output_delay_ms || 500;
+                    if (delayMs > 0) {
+                        await this.sleep(delayMs);
+                    }
+                    const contentSource = session.historyLog || session.outputBuffer;
+                    output = args.strip_ansi !== false ? this.cleanOutput(contentSource) : contentSource;
+                }
+                if (output && args.output_lines) {
+                    const lines = output.split('\n');
+                    if (lines.length > args.output_lines) {
+                        output = lines.slice(-args.output_lines).join('\n');
+                    }
+                }
             }
             // ===== STREAMING: Emit SSH execution updates =====
             if (this.streamingEnabled && args.output_id) {
@@ -517,6 +506,7 @@ export default class SshModule {
             const response = {
                 session_id: sessionId,
                 success: true,
+                response_level: args.response_level || 'standard',
             };
             if (sessionCreated) {
                 response.session_created = true;
@@ -649,10 +639,61 @@ export default class SshModule {
                 };
             }
             const contentSource = session.historyLog || session.outputBuffer;
-            const buffer = args.clean ? this.cleanOutput(contentSource) : contentSource;
+            let buffer = contentSource;
+            if (args.filter === 'last_command' && session.lastCommand) {
+                const cmdIndex = contentSource.lastIndexOf(session.lastCommand);
+                if (cmdIndex >= 0) {
+                    buffer = contentSource.substring(cmdIndex + session.lastCommand.length);
+                }
+            }
+            else if (args.filter === 'since_last') {
+                if (session.lastCommand) {
+                    const cmdIndex = contentSource.lastIndexOf(session.lastCommand);
+                    if (cmdIndex >= 0) {
+                        buffer = contentSource.substring(cmdIndex + session.lastCommand.length);
+                    }
+                }
+            }
+            if (args.pattern) {
+                const lines = buffer.split('\n');
+                buffer = lines.filter(line => line.toLowerCase().includes(args.pattern.toLowerCase())).join('\n');
+            }
+            const shouldClean = args.clean !== false;
+            buffer = shouldClean ? this.cleanOutput(buffer) : buffer;
             const target = session.target;
             const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
             const isRunning = session.isConnected;
+            if (args.clear) {
+                session.outputBuffer = '';
+                session.historyLog = '';
+            }
+            if (args.format === 'json') {
+                const jsonData = {
+                    session_id: args.session_id || DEFAULT_SESSION_ID,
+                    target: target ? {
+                        host: target.host,
+                        port: target.port,
+                        user: target.user,
+                    } : null,
+                    status: isRunning ? 'connected' : 'disconnected',
+                    is_ready: session.isReady,
+                    buffer_size: buffer.length,
+                    last_command: session.lastCommand || null,
+                    created_at: session.created,
+                    buffer: buffer,
+                    filter: args.filter,
+                    pattern: args.pattern || null,
+                };
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify(jsonData, null, 2),
+                        },
+                    ],
+                    isJson: true,
+                };
+            }
             const info = `Session: ${args.session_id}
 Target: ${targetStr}
 Status: ${isRunning ? 'connected' : 'disconnected'} (${session.isReady ? 'ready' : 'busy'})
@@ -759,6 +800,87 @@ ${buffer || '(empty)'}`;
             });
         }
     }
+    async handleSshGetSessionInfo(args, context) {
+        const session = this.sessionManager.getSession(args.session_id);
+        if (!session) {
+            throw new Error(`Session ${args.session_id} not found.`);
+        }
+        const info = {
+            session_id: session.id,
+            target: session.target ? {
+                host: session.target.host,
+                port: session.target.port,
+                user: session.target.user,
+            } : null,
+            is_connected: session.isConnected,
+            is_ready: session.isReady,
+            last_command: session.lastCommand,
+            created_at: session.created,
+            output_buffer_size: session.outputBuffer?.length || 0,
+        };
+        return {
+            content: [{ type: 'text', text: JSON.stringify(info, null, 2) }],
+            structuredContent: info,
+        };
+    }
+    async handleSshProcessList(args, context) {
+        const sessions = this.sessionManager.listSessions();
+        let filtered = sessions;
+        if (args.session_id) {
+            filtered = filtered.filter(s => s.id === args.session_id);
+        }
+        if (args.command_pattern) {
+            const pattern = args.command_pattern || '';
+            filtered = filtered.filter(s => s.lastCommand ? s.lastCommand.includes(pattern) : false);
+        }
+        const limit = args.limit || 50;
+        const offset = args.offset || 0;
+        const paginated = filtered.slice(offset, offset + limit);
+        const executions = paginated.map(s => ({
+            session_id: s.id,
+            status: s.isReady ? 'completed' : (s.isConnected ? 'running' : 'failed'),
+            command: s.lastCommand || '',
+            start_time: s.created,
+            output_buffer_size: s.outputBuffer?.length || 0,
+        }));
+        return {
+            content: [{ type: 'text', text: JSON.stringify(executions, null, 2) }],
+            structuredContent: {
+                total: filtered.length,
+                limit,
+                offset,
+                executions,
+            },
+        };
+    }
+    async handleSshProcessKill(args, context) {
+        const session = this.sessionManager.getSession(args.session_id);
+        if (!session) {
+            throw new Error(`Session ${args.session_id} not found.`);
+        }
+        if (!session.ptyProcess) {
+            throw new Error(`No PTY process found for session ${args.session_id}`);
+        }
+        // Send signal to the process
+        const signalMap = {
+            'TERM': '\x03',
+            'KILL': '\x09',
+            'INT': '\x03',
+            'HUP': '\x01',
+            'USR1': '\x1b',
+            'USR2': '\x1c',
+        };
+        const signal = args.force ? '\x09' : (signalMap[args.signal] || '\x03');
+        session.ptyProcess.write(signal);
+        return {
+            content: [{ type: 'text', text: `Signal ${args.signal} sent to session ${args.session_id}` }],
+            structuredContent: {
+                session_id: args.session_id,
+                signal: args.signal,
+                forced: args.force,
+            },
+        };
+    }
     // ===== PRIVATE HELPERS =====
     handleError(error, context, options) {
         const message = error instanceof Error ? error.message : String(error);
@@ -808,24 +930,32 @@ ${buffer || '(empty)'}`;
     }
     formatSshOperateText(response) {
         const lines = [];
-        if (response.session_created) {
-            const target = response.target;
-            if (target) {
-                lines.push(`Created session: ${response.session_id}`);
-                lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
+        const level = response.response_level || 'standard';
+        if (level === 'full') {
+            if (response.session_created) {
+                const target = response.target;
+                if (target) {
+                    lines.push(`Created session: ${response.session_id}`);
+                    lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
+                }
+            }
+            else {
+                lines.push(`Session: ${response.session_id}`);
             }
         }
-        else {
+        else if (level === 'standard') {
             lines.push(`Session: ${response.session_id}`);
         }
-        if (response.command) {
+        if (response.command && level !== 'minimal') {
             lines.push(`Command: ${response.command}`);
             if (response.exit_code !== undefined) {
                 lines.push(`Exit code: ${response.exit_code}`);
             }
         }
         if (response.output) {
-            lines.push('');
+            if (level !== 'minimal') {
+                lines.push('');
+            }
             lines.push(String(response.output));
         }
         if (response.awaiting_input) {
@@ -837,24 +967,14 @@ ${buffer || '(empty)'}`;
         return lines.join('\n');
     }
     cleanOutput(output) {
-        return output
-            .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-            .replace(/\x1b\][0-9;]*\x07/g, '')
-            .replace(/\x1b\][0-9;]*;[^\x07]*\x07/g, '')
-            .replace(/\x1b[><=]/g, '')
-            .replace(/\[\?[0-9]+[hl]/g, '')
-            .replace(/\[READY\]\$ /g, '')
-            .replace(/^%\s*$/gm, '')
-            .replace(/^❯\s*$/gm, '')
-            .replace(/^~\s*$/gm, '')
-            .replace(/^\$\s*$/gm, '')
-            .replace(/^>\s*$/gm, '')
-            .replace(/^#\s*$/gm, '')
-            .replace(/^[❯$>#]\s+/gm, '')
-            .replace(/\r\n/g, '\n')
-            .replace(/\r/g, '\n')
+        if (!output)
+            return '';
+        let result = stripVTControlCharacters(output);
+        result = result
+            .replace(/\x1b/g, '')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
+        return result;
     }
     sleep(ms) {
         return new Promise((resolve) => setTimeout(resolve, ms));

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { EventEmitter } from 'node:events';
 import { IUnifiedPlugin, UnifiedModuleContext, UnifiedModuleManifest } from '../../core/module-system/module-types.js';
@@ -51,57 +52,12 @@ const FILE_TRANSFER_TIMEOUT = 300000;
 
 // ===== SCHEMA DEFINITIONS =====
 
-const sshExecuteSchema = z.object({
-  command: z.string().min(1).describe('Command to run inside the session.'),
-  session_id: z
-    .string()
-    .optional()
-    .default(DEFAULT_SESSION_ID)
-    .describe('Session identifier to reuse across commands.'),
-  timeout: z
-    .number()
-    .int()
-    .min(1000)
-    .max(MAX_TIMEOUT_MS)
-    .optional()
-    .default(DEFAULT_TIMEOUT_MS)
-    .describe('Timeout in milliseconds (default 30000, max 120000).'),
-  allowFailure: z
-    .boolean()
-    .optional()
-    .default(false)
-    .describe('Return the output even if the command exits with a non-zero code.'),
-  working_directory: z
-    .string()
-    .optional()
-    .describe('Working directory for command execution on the remote host.'),
-  environment_variables: z
-    .record(z.string(), z.string())
-    .optional()
-    .describe('Environment variables to set for the command.'),
-  input_data: z
-    .string()
-    .optional()
-    .describe('Input data to send via stdin to the command.'),
-  max_output_size: z
-    .number()
-    .int()
-    .min(1024)
-    .max(100 * 1024 * 1024)
-    .optional()
-    .describe('Maximum output size in bytes (default 5MB, max 100MB).'),
-  capture_stderr: z
-    .boolean()
-    .optional()
-    .default(true)
-    .describe('Whether to capture stderr output.'),
-});
-
 const sshTargetSchema = z
   .object({
     host: z.string().min(1).describe('Remote hostname or IP address.'),
     port: z.number().int().min(1).max(65535).describe('Remote SSH port.'),
     user: z.string().min(1).describe('Remote username.'),
+    identity_file: z.string().min(1).optional().describe('Path to private key file for authentication.'),
     identityFile: z.string().min(1).optional().describe('Path to private key file for authentication.'),
     password: z
       .string()
@@ -113,6 +69,10 @@ const sshTargetSchema = z
       .optional()
       .describe('Additional command-line arguments forwarded to `ssh` (e.g., "-o StrictHostKeyChecking=no").'),
   })
+  .transform((obj) => ({
+    ...obj,
+    identityFile: obj.identity_file || obj.identityFile,
+  }))
   .describe('Connection target used to spawn an SSH client session to a remote host.');
 
 type SSHConnectionTargetType = z.infer<typeof sshTargetSchema>;
@@ -136,7 +96,15 @@ const sshOperateSchema = z.object({
     .string()
     .optional()
     .describe('Session ID to use. If session exists, use it. If not found, create new session (requires target).'),
+  session_name: z
+    .string()
+    .optional()
+    .describe('Name for new session when creating one. If not provided, a random ID will be generated.'),
   target: z.union([sshTargetSchema, z.object({}).strip()]).optional().describe('SSH connection target. Used to create new session if session_id not provided or not found.'),
+  shell_type: z
+    .enum(['bash', 'zsh', 'fish', 'cmd', 'powershell'])
+    .optional()
+    .describe('Shell type to use for new session.'),
   command: z
     .string()
     .optional()
@@ -158,20 +126,12 @@ const sshOperateSchema = z.object({
     .int()
     .min(0)
     .max(10000)
-    .default(500)
+    .default(5000)
     .describe('Delay in milliseconds before retrieving output.'),
-  clean: z
+  strip_ansi: z
     .boolean()
     .default(true)
     .describe('Strip ANSI/control sequences from output.'),
-  timeout: z
-    .number()
-    .int()
-    .min(1000)
-    .max(MAX_TIMEOUT_MS)
-    .optional()
-    .default(DEFAULT_TIMEOUT_MS)
-    .describe('Timeout in milliseconds for command execution.'),
   output_id: z
     .string()
     .optional()
@@ -193,7 +153,11 @@ const sshBufferSchema = z.object({
     .optional()
     .default(DEFAULT_SESSION_ID)
     .describe('Session ID to inspect.'),
-  clean: z.boolean().optional().default(true).describe('Strip ANSI/control sequences.'),
+  clean: z.boolean().optional().default(true).describe('Strip ANSI/control sequences from output.'),
+  clear: z.boolean().optional().default(false).describe('Clear the buffer after reading it.'),
+  format: z.enum(['text', 'json']).optional().default('text').describe('Return format: text or JSON.'),
+  filter: z.enum(['all', 'last_command', 'since_last']).optional().default('all').describe('Filter buffer content.'),
+  pattern: z.string().optional().describe('Filter buffer by command pattern (substring match).'),
 });
 
 const transferMethodSchema = z
@@ -258,11 +222,6 @@ const sshProcessKillSchema = z.object({
   process_id: z.number().int().describe('Process ID to terminate.'),
   signal: z.enum(['TERM', 'KILL', 'INT', 'HUP', 'USR1', 'USR2']).optional().default('TERM').describe('Signal to send.'),
   force: z.boolean().default(false).describe('Force immediate termination (sends KILL).'),
-});
-
-const sshSetDefaultWorkdirSchema = z.object({
-  session_id: z.string().optional().describe('Session ID to set default workdir for.'),
-  working_directory: z.string().min(1).describe('Default working directory path.'),
 });
 
 
@@ -336,7 +295,6 @@ export default class SshModule implements IUnifiedPlugin {
     this.poolWrapper = new SSHConnectionPoolWrapper();
 
     // Register all tools
-    this.registerSshExecute(context);
     this.registerSshNewSession(context);
     this.registerSshOperate(context);
     this.registerSshListSessions(context);
@@ -347,7 +305,6 @@ export default class SshModule implements IUnifiedPlugin {
     this.registerSshGetSessionInfo(context);
     this.registerSshProcessList(context);
     this.registerSshProcessKill(context);
-    this.registerSshSetDefaultWorkdir(context);
 
     context.logger.info('SSH Session Manager module loaded (refactored with 5 sub-modules).', {
       component: this.manifest.id,
@@ -372,21 +329,6 @@ export default class SshModule implements IUnifiedPlugin {
   }
 
   // ===== TOOL REGISTRATION =====
-
-  private registerSshExecute(context: UnifiedModuleContext): void {
-    const deregister = context.moduleManager.registerToolExecution(
-      'ssh_execute',
-      async (rawArgs: any) => {
-        const args = sshExecuteSchema.parse(rawArgs);
-        return this.handleSshExecute(args, context);
-      },
-      'ssh_execute',
-      'Execute a command inside a persistent SSH session.',
-      sshExecuteSchema,
-      this.manifest.id
-    );
-    this.deregisterFns.push(deregister);
-  }
 
   private registerSshNewSession(context: UnifiedModuleContext): void {
     const deregister = context.moduleManager.registerToolExecution(
@@ -535,90 +477,8 @@ export default class SshModule implements IUnifiedPlugin {
     this.deregisterFns.push(deregister);
   }
 
-  private registerSshSetDefaultWorkdir(context: UnifiedModuleContext): void {
-    const deregister = context.moduleManager.registerToolExecution(
-      'ssh_set_default_workdir',
-      async (rawArgs: any) => {
-        const args = sshSetDefaultWorkdirSchema.parse(rawArgs);
-        return this.handleSshSetDefaultWorkdir(args, context);
-      },
-      'ssh_set_default_workdir',
-      'Set the default working directory for SSH command execution.',
-      sshSetDefaultWorkdirSchema,
-      this.manifest.id
-    );
-    this.deregisterFns.push(deregister);
-  }
-
 
   // ===== TOOL HANDLERS =====
-
-  private async handleSshExecute(
-    args: z.infer<typeof sshExecuteSchema>,
-    context: UnifiedModuleContext
-  ) {
-    try {
-      const session = this.sessionManager.getSession(args.session_id);
-      if (!session) {
-        throw new Error(`Session ${args.session_id} not found. Create it with ssh_new_session before using other tools.`);
-      }
-
-      const validTimeout = Math.min(Math.max(args.timeout, 1000), MAX_TIMEOUT_MS);
-      const result = await this.commandExecutor.executeCommand(session, args.command, validTimeout);
-
-      if (result.exitCode !== 0 && !args.allowFailure) {
-        throw new Error(
-          `Command exited with code ${result.exitCode}\nOutput: ${result.output || '(no output)'}`
-        );
-      }
-
-      const response: any = {
-        content: [
-          {
-            type: 'text',
-            text: result.output || '(Command executed successfully with no output)',
-          },
-        ],
-        structuredContent: {
-          sessionId: args.session_id,
-          target: session.target
-            ? {
-                host: session.target.host,
-                port: session.target.port,
-                user: session.target.user,
-              }
-            : undefined,
-          command: args.command,
-          exitCode: result.exitCode,
-          durationMs: result.durationMs,
-        },
-      };
-
-      // Check for interactive prompts
-      if (!result.completedNormally) {
-        const promptInfo = this.promptDetector.detectInteractivePrompts(session.outputBuffer);
-        if (promptInfo.detected) {
-          response.structuredContent.awaitingInput = true;
-          response.structuredContent.promptType = promptInfo.type;
-          response.structuredContent.promptText = promptInfo.prompt;
-          response.content[0].text += `\n\n⚠️ Awaiting input: ${promptInfo.type} prompt detected. Use ssh_operate with input parameter to respond.`;
-        }
-      }
-
-      return response;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const exitCodeMatch = message.match(/Command exited with code (\d+)/);
-      const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1], 10) : undefined;
-
-      return this.handleError(error, context, {
-        toolName: 'ssh_execute',
-        sessionId: args.session_id,
-        command: args.command,
-        details: exitCode !== undefined ? { exitCode } : undefined,
-      });
-    }
-  }
 
   private async handleSshNewSession(
     args: z.infer<typeof sshNewSessionSchema>,
@@ -751,7 +611,7 @@ export default class SshModule implements IUnifiedPlugin {
       // 3. Execute command or send input
       const inputToSend = args.command || args.input;
       if (inputToSend) {
-        const timeout = args.timeout || DEFAULT_TIMEOUT_MS;
+        const timeout = DEFAULT_TIMEOUT_MS;
         const result = await this.commandExecutor.executeCommand(session, inputToSend, timeout);
         commandOutput = result.output || '';
         exitCode = result.exitCode;
@@ -759,15 +619,25 @@ export default class SshModule implements IUnifiedPlugin {
       }
 
       // 4. Get output
-      let output = null;
+      let output: string | null = null;
       if (args.get_output !== false && session) {
-        const delayMs = args.output_delay_ms || 500;
-        if (delayMs > 0) {
-          await this.sleep(delayMs);
+        if (commandOutput) {
+          output = args.strip_ansi !== false ? this.cleanOutput(commandOutput) : commandOutput;
+        } else {
+          const delayMs = args.output_delay_ms || 500;
+          if (delayMs > 0) {
+            await this.sleep(delayMs);
+          }
+          const contentSource = session.historyLog || session.outputBuffer;
+          output = args.strip_ansi !== false ? this.cleanOutput(contentSource) : contentSource;
         }
 
-        const contentSource = session.historyLog || session.outputBuffer;
-        output = args.clean !== false ? this.cleanOutput(contentSource) : contentSource;
+        if (output && args.output_lines) {
+          const lines = output.split('\n');
+          if (lines.length > args.output_lines) {
+            output = lines.slice(-args.output_lines).join('\n');
+          }
+        }
       }
 
       // ===== STREAMING: Emit SSH execution updates =====
@@ -806,6 +676,7 @@ export default class SshModule implements IUnifiedPlugin {
       const response: Record<string, unknown> = {
         session_id: sessionId,
         success: true,
+        response_level: args.response_level || 'standard',
       };
 
       if (sessionCreated) {
@@ -961,10 +832,69 @@ export default class SshModule implements IUnifiedPlugin {
       }
 
       const contentSource = session.historyLog || session.outputBuffer;
-      const buffer = args.clean ? this.cleanOutput(contentSource) : contentSource;
+      let buffer = contentSource;
+
+      if (args.filter === 'last_command' && session.lastCommand) {
+        const cmdIndex = contentSource.lastIndexOf(session.lastCommand);
+        if (cmdIndex >= 0) {
+          buffer = contentSource.substring(cmdIndex + session.lastCommand.length);
+        }
+      } else if (args.filter === 'since_last') {
+        if (session.lastCommand) {
+          const cmdIndex = contentSource.lastIndexOf(session.lastCommand);
+          if (cmdIndex >= 0) {
+            buffer = contentSource.substring(cmdIndex + session.lastCommand.length);
+          }
+        }
+      }
+
+      if (args.pattern) {
+        const lines = buffer.split('\n');
+        buffer = lines.filter(line =>
+          line.toLowerCase().includes(args.pattern!.toLowerCase())
+        ).join('\n');
+      }
+
+      const shouldClean = args.clean !== false;
+      buffer = shouldClean ? this.cleanOutput(buffer) : buffer;
+
       const target = session.target;
       const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
       const isRunning = session.isConnected;
+
+      if (args.clear) {
+        session.outputBuffer = '';
+        session.historyLog = '';
+      }
+
+      if (args.format === 'json') {
+        const jsonData = {
+          session_id: args.session_id || DEFAULT_SESSION_ID,
+          target: target ? {
+            host: target.host,
+            port: target.port,
+            user: target.user,
+          } : null,
+          status: isRunning ? 'connected' : 'disconnected',
+          is_ready: session.isReady,
+          buffer_size: buffer.length,
+          last_command: session.lastCommand || null,
+          created_at: session.created,
+          buffer: buffer,
+          filter: args.filter,
+          pattern: args.pattern || null,
+        };
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(jsonData, null, 2),
+            },
+          ],
+          isJson: true,
+        };
+      }
 
       const info = `Session: ${args.session_id}
 Target: ${targetStr}
@@ -1202,37 +1132,6 @@ ${buffer || '(empty)'}`;
     };
   }
 
-  private async handleSshSetDefaultWorkdir(
-    args: z.infer<typeof sshSetDefaultWorkdirSchema>,
-    context: UnifiedModuleContext
-  ) {
-    let targetSession: string | undefined;
-    
-    if (args.session_id) {
-      const session = this.sessionManager.getSession(args.session_id);
-      if (!session) {
-        throw new Error(`Session ${args.session_id} not found.`);
-      }
-      targetSession = args.session_id;
-    }
-
-    // Set working directory via cd command
-    if (targetSession) {
-      const session = this.sessionManager.getSession(targetSession)!;
-      if (session.ptyProcess) {
-        session.ptyProcess.write(`cd ${args.working_directory}\n`);
-      }
-    }
-
-    return {
-      content: [{ type: 'text', text: `Default working directory set to ${args.working_directory}` }],
-      structuredContent: {
-        session_id: targetSession || 'default',
-        working_directory: args.working_directory,
-      },
-    };
-  }
-
 
   // ===== PRIVATE HELPERS =====
 
@@ -1292,18 +1191,23 @@ ${buffer || '(empty)'}`;
 
   private formatSshOperateText(response: Record<string, unknown>): string {
     const lines: string[] = [];
+    const level = (response.response_level as string) || 'standard';
 
-    if (response.session_created) {
-      const target = response.target as { host?: string; port?: number; user?: string } | undefined;
-      if (target) {
-        lines.push(`Created session: ${response.session_id}`);
-        lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
+    if (level === 'full') {
+      if (response.session_created) {
+        const target = response.target as { host?: string; port?: number; user?: string } | undefined;
+        if (target) {
+          lines.push(`Created session: ${response.session_id}`);
+          lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
+        }
+      } else {
+        lines.push(`Session: ${response.session_id}`);
       }
-    } else {
+    } else if (level === 'standard') {
       lines.push(`Session: ${response.session_id}`);
     }
 
-    if (response.command) {
+    if (response.command && level !== 'minimal') {
       lines.push(`Command: ${response.command}`);
       if (response.exit_code !== undefined) {
         lines.push(`Exit code: ${response.exit_code}`);
@@ -1311,7 +1215,9 @@ ${buffer || '(empty)'}`;
     }
 
     if (response.output) {
-      lines.push('');
+      if (level !== 'minimal') {
+        lines.push('');
+      }
       lines.push(String(response.output));
     }
 
@@ -1326,24 +1232,13 @@ ${buffer || '(empty)'}`;
   }
 
   private cleanOutput(output: string): string {
-    return output
-      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-      .replace(/\x1b\][0-9;]*\x07/g, '')
-      .replace(/\x1b\][0-9;]*;[^\x07]*\x07/g, '')
-      .replace(/\x1b[><=]/g, '')
-      .replace(/\[\?[0-9]+[hl]/g, '')
-      .replace(/\[READY\]\$ /g, '')
-      .replace(/^%\s*$/gm, '')
-      .replace(/^❯\s*$/gm, '')
-      .replace(/^~\s*$/gm, '')
-      .replace(/^\$\s*$/gm, '')
-      .replace(/^>\s*$/gm, '')
-      .replace(/^#\s*$/gm, '')
-      .replace(/^[❯$>#]\s+/gm, '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
+    if (!output) return '';
+    let result = stripVTControlCharacters(output);
+    result = result
+      .replace(/\x1b/g, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+    return result;
   }
 
   private sleep(ms: number): Promise<void> {

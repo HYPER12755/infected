@@ -1,5 +1,6 @@
 import { spawn as ptySpawn } from 'node-pty';
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
 import { LoggingContext } from '../../core/logging/logging-context.js';
 import { CorrelationContext } from '../../core/logging/correlation-context.js';
 import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
@@ -92,6 +93,14 @@ export class SSHSessionManager extends EventEmitter {
                 }, 100);
             });
             this.sessions.set(sessionId, session);
+            const readyResult = await this.waitForReady(session);
+            if (!readyResult.success) {
+                session.isConnected = false;
+                session.isReady = false;
+                if (readyResult.error) {
+                    session.outputBuffer += `\n${readyResult.error}\n`;
+                }
+            }
             this.loggingContext.debug('SSH session created', {
                 sessionId,
                 connectionId,
@@ -190,9 +199,15 @@ export class SSHSessionManager extends EventEmitter {
     }
     // ===== PRIVATE METHODS =====
     buildSshArgs(target) {
-        const args = ['-tt', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no'];
+        const args = ['-tt', '-o', 'StrictHostKeyChecking=no'];
+        if (!target.password) {
+            args.push('-o', 'BatchMode=yes');
+        }
         if (target.identityFile) {
-            args.push('-i', target.identityFile);
+            const keyPath = target.identityFile.startsWith('~')
+                ? target.identityFile.replace('~', os.homedir())
+                : target.identityFile;
+            args.push('-i', keyPath);
         }
         if (target.port) {
             args.push('-p', String(target.port));
@@ -202,5 +217,58 @@ export class SSHSessionManager extends EventEmitter {
             args.push(...target.extraArgs);
         }
         return args;
+    }
+    async waitForReady(session) {
+        return new Promise((resolve) => {
+            let output = '';
+            let resolved = false;
+            const handleData = (data) => {
+                if (resolved)
+                    return;
+                output += data;
+                // Auto-send password when password prompt detected
+                if (/password[:\s]*$/i.test(output) || /password:\s*$/.test(output)) {
+                    if (session.target?.password) {
+                        session.ptyProcess.write(session.target.password + '\n');
+                        output = '';
+                    }
+                }
+                // Auto-respond to host key confirmation
+                if (/are you sure you want to continue connecting/i.test(output)) {
+                    session.ptyProcess.write('yes\n');
+                    output = '';
+                }
+                // Detect shell prompt or session ready
+                if (/\[READY\]/.test(output) || /\$\s*$/.test(output) || /#\s*$/.test(output) || />\s*$/.test(output)) {
+                    resolved = true;
+                    resolve({ success: true });
+                }
+            };
+            // If already connected, resolve immediately
+            if (session.isConnected) {
+                resolve({ success: true });
+                return;
+            }
+            // Listen for data
+            session.ptyProcess.onData(handleData);
+            // Also check periodically if session is still connected
+            const checkInterval = setInterval(() => {
+                if (resolved) {
+                    clearInterval(checkInterval);
+                    return;
+                }
+                if (session.isConnected) {
+                    resolved = true;
+                    clearInterval(checkInterval);
+                    resolve({ success: true });
+                }
+                // If session is NOT connected and process has exited, fail
+                if (!session.isConnected && session.state === 'closed') {
+                    resolved = true;
+                    clearInterval(checkInterval);
+                    resolve({ success: false, error: 'Session process exited unexpectedly' });
+                }
+            }, 500);
+        });
     }
 }
