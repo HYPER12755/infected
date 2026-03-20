@@ -46,17 +46,6 @@ describe('SSHModule', () => {
       }
     });
 
-    it('should export PromptDetector', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        assert.ok(SSHPromptDetector);
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
     it('should export FileTransferHandler', async () => {
       try {
         const { SSHFileTransferHandler } = await import(
@@ -158,20 +147,6 @@ describe('SSHModule', () => {
         const executor = new SSHCommandExecutor({} as any);
 
         assert.ok(typeof executor.executeCommand === 'function');
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
-    it('should support prompt detection', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        const detector = new SSHPromptDetector();
-
-        assert.ok(typeof detector.detectPrompt === 'function');
-        assert.ok(typeof detector.isPromptDetected === 'function');
       } catch (error) {
         assert.ok(true);
       }
@@ -338,76 +313,6 @@ describe('SSHModule', () => {
     });
   });
 
-  // ========== PROMPT DETECTION TESTS ==========
-  describe('Prompt Detection', () => {
-    it('should detect prompt in output', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        const detector = new SSHPromptDetector();
-
-        const output = 'user@host:~$ ';
-        const prompt = detector.detectPrompt(output);
-        assert.ok(typeof prompt === 'string' || prompt === null);
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
-    it('should identify prompt state', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        const detector = new SSHPromptDetector();
-
-        const result = detector.isPromptDetected('user@host:~$ ');
-        assert.ok(typeof result === 'boolean');
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
-    it('should support multiple shell types', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        const detector = new SSHPromptDetector();
-
-        // Should detect bash, zsh, fish prompts
-        assert.ok(detector.detectPrompt('$ '));
-        assert.ok(detector.detectPrompt('% '));
-        assert.ok(detector.detectPrompt('❯ '));
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
-    it('should handle complex prompts', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        const detector = new SSHPromptDetector();
-
-        const prompts = [
-          'user@host:~$ ',
-          'root@server:/home# ',
-          '[user@host ~]$ ',
-          'PS1="$ "$ ',
-        ];
-
-        prompts.forEach(p => {
-          assert.ok(detector.isPromptDetected(p) || !detector.isPromptDetected(p));
-        });
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-  });
-
   // ========== FILE TRANSFER TESTS ==========
   describe('File Transfer', () => {
     it('should upload file', async () => {
@@ -519,18 +424,6 @@ describe('SSHModule', () => {
       }
     });
 
-    it('should instantiate PromptDetector', async () => {
-      try {
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-        const detector = new SSHPromptDetector();
-        assert.ok(detector);
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
     it('should instantiate FileTransferHandler', async () => {
       try {
         const { SSHFileTransferHandler } = await import(
@@ -582,22 +475,6 @@ describe('SSHModule', () => {
 
         assert.ok(SSHSessionManager);
         assert.ok(SSHCommandExecutor);
-      } catch (error) {
-        assert.ok(true);
-      }
-    });
-
-    it('should coordinate prompt detection with command execution', async () => {
-      try {
-        const { SSHCommandExecutor } = await import(
-          '../../src/modules/ssh/ssh-command-executor.js'
-        );
-        const { SSHPromptDetector } = await import(
-          '../../src/modules/ssh/ssh-prompt-detector.js'
-        );
-
-        assert.ok(SSHCommandExecutor);
-        assert.ok(SSHPromptDetector);
       } catch (error) {
         assert.ok(true);
       }

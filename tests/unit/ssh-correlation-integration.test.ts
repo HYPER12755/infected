@@ -4,7 +4,6 @@ import { CorrelationContext, ICorrelationContext } from '../../src/core/logging/
 import { LoggingContext } from '../../src/core/logging/logging-context.js';
 import { SSHSessionManager, type SSHConnectionTarget, type Session } from '../../src/modules/ssh/ssh-session-manager.js';
 import { SSHCommandExecutor } from '../../src/modules/ssh/ssh-command-executor.js';
-import { SSHPromptDetector } from '../../src/modules/ssh/ssh-prompt-detector.js';
 import { SSHFileTransferHandler } from '../../src/modules/ssh/ssh-file-transfer-handler.js';
 import { SSHConnectionPoolWrapper } from '../../src/modules/ssh/ssh-connection-pool-wrapper.js';
 
@@ -244,60 +243,6 @@ describe('SSH Correlation ID Integration', () => {
     });
   });
 
-  // ========== PROMPT DETECTOR TESTS ==========
-  describe('SSHPromptDetector Correlation Context', () => {
-    let detector: SSHPromptDetector;
-
-    beforeEach(() => {
-      detector = new SSHPromptDetector();
-    });
-
-    it('should include correlationId in debug logs', async () => {
-      const sessionId = 'prompt-session';
-      const context = CorrelationContext.generate(undefined, undefined, sessionId);
-      let capturedContext: ICorrelationContext | undefined;
-
-      await CorrelationContext.runAsync(context, async () => {
-        capturedContext = CorrelationContext.get();
-      });
-
-      assert.strictEqual(capturedContext?.sessionId, sessionId);
-    });
-
-    it('should tag detection results with correlation metadata', () => {
-      const context = CorrelationContext.generate();
-      const metadata = CorrelationContext.toMetadata(context);
-
-      assert.ok('correlationId' in metadata);
-      assert.ok('timestamp' in metadata);
-    });
-
-    it('should maintain prompt detection with session correlation', () => {
-      const sessionId = 'detection-session';
-      const context = CorrelationContext.generate(undefined, undefined, sessionId);
-
-      assert.strictEqual(context.sessionId, sessionId);
-    });
-
-    it('should handle prompt cache with correlation context', () => {
-      const context = CorrelationContext.generate();
-      const formatted = CorrelationContext.format(context);
-
-      assert.ok(formatted);
-    });
-
-    it('should log prompt timeout with correlation ID', async () => {
-      const context = CorrelationContext.generate(undefined, undefined, 'timeout-session');
-      let timeoutLogContext: ICorrelationContext | undefined;
-
-      await CorrelationContext.runAsync(context, async () => {
-        timeoutLogContext = CorrelationContext.get();
-      });
-
-      assert.strictEqual(timeoutLogContext?.sessionId, 'timeout-session');
-    });
-  });
-
   // ========== FILE TRANSFER TESTS ==========
   describe('SSHFileTransferHandler Correlation Context', () => {
     let handler: SSHFileTransferHandler;
@@ -485,14 +430,12 @@ describe('SSH Correlation ID Integration', () => {
   describe('Cross-Module Correlation Flow', () => {
     let sessionManager: SSHSessionManager;
     let executor: SSHCommandExecutor;
-    let detector: SSHPromptDetector;
     let handler: SSHFileTransferHandler;
     let poolWrapper: SSHConnectionPoolWrapper;
 
     beforeEach(() => {
       sessionManager = new SSHSessionManager();
       executor = new SSHCommandExecutor();
-      detector = new SSHPromptDetector();
       handler = new SSHFileTransferHandler(executor);
       poolWrapper = new SSHConnectionPoolWrapper();
     });
@@ -668,17 +611,6 @@ describe('SSH Correlation ID Integration', () => {
       assert.ok(typeof executor.executeCommand === 'function');
       assert.ok(typeof executor.cancelCommand === 'function');
       assert.ok(typeof executor.cleanupSessionCircuitBreaker === 'function');
-    });
-
-    it('should maintain prompt detector API', () => {
-      const detector = new SSHPromptDetector();
-
-      assert.ok(typeof detector.detectPrompt === 'function');
-      assert.ok(typeof detector.isPromptDetected === 'function');
-      assert.ok(typeof detector.waitForPrompt === 'function');
-      assert.ok(typeof detector.detectInteractivePrompts === 'function');
-      assert.ok(typeof detector.getPromptInfo === 'function');
-      assert.ok(typeof detector.clearCache === 'function');
     });
 
     it('should maintain file transfer handler API', () => {

@@ -1,4 +1,4 @@
-import { spawn as ptySpawn, type IPty } from 'node-pty';
+import { spawn as ptySpawn, type IPty, type IDisposable } from 'node-pty';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import logger from '../../core/logger.js';
@@ -311,13 +311,22 @@ export class SSHSessionManager extends EventEmitter {
     return new Promise((resolve) => {
       let output = '';
       let resolved = false;
+      let dataSubscription: IDisposable | null = null;
+      let checkInterval: NodeJS.Timeout;
+
+      const finalize = (result: { success: boolean; error?: string }) => {
+        if (resolved) return;
+        resolved = true;
+        clearInterval(checkInterval);
+        dataSubscription?.dispose();
+        resolve(result);
+      };
 
       const handleData = (data: string) => {
         if (resolved) return;
-        
+
         output += data;
 
-        // Auto-send password when password prompt detected
         if (/password[:\s]*$/i.test(output) || /password:\s*$/.test(output)) {
           if (session.target?.password) {
             session.ptyProcess.write(session.target.password + '\n');
@@ -325,44 +334,24 @@ export class SSHSessionManager extends EventEmitter {
           }
         }
 
-        // Auto-respond to host key confirmation
         if (/are you sure you want to continue connecting/i.test(output)) {
           session.ptyProcess.write('yes\n');
           output = '';
         }
 
-        // Detect shell prompt or session ready
         if (/\[READY\]/.test(output) || /\$\s*$/.test(output) || /#\s*$/.test(output) || />\s*$/.test(output)) {
-          resolved = true;
-          resolve({ success: true });
+          finalize({ success: true });
         }
       };
 
-      // If already connected, resolve immediately
-      if (session.isConnected) {
-        resolve({ success: true });
-        return;
-      }
+      dataSubscription = session.ptyProcess.onData(handleData);
 
-      // Listen for data
-      session.ptyProcess.onData(handleData);
-      
-      // Also check periodically if session is still connected
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         if (resolved) {
-          clearInterval(checkInterval);
           return;
         }
-        if (session.isConnected) {
-          resolved = true;
-          clearInterval(checkInterval);
-          resolve({ success: true });
-        }
-        // If session is NOT connected and process has exited, fail
         if (!session.isConnected && session.state === 'closed') {
-          resolved = true;
-          clearInterval(checkInterval);
-          resolve({ success: false, error: 'Session process exited unexpectedly' });
+          finalize({ success: false, error: 'Session process exited unexpectedly' });
         }
       }, 500);
     });

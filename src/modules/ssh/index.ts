@@ -7,9 +7,8 @@ import { createErrorResponse, ERROR_CODES, getErrorSuggestion } from '../../core
 import logger from '../../core/logger.js';
 
 // Import the 5 focused modules
-import { SSHSessionManager, type SSHConnectionTarget } from './ssh-session-manager.js';
+import { SSHSessionManager, type SSHConnectionTarget, type Session } from './ssh-session-manager.js';
 import { SSHCommandExecutor, type CommandResult } from './ssh-command-executor.js';
-import { SSHPromptDetector } from './ssh-prompt-detector.js';
 import { SSHFileTransferHandler, type FileTransferMethod } from './ssh-file-transfer-handler.js';
 import { SSHConnectionPoolWrapper } from './ssh-connection-pool-wrapper.js';
 
@@ -226,10 +225,9 @@ const sshProcessKillSchema = z.object({
 
 
 /**
- * Main SSH Module - orchestrates 5 focused sub-modules
+ * Main SSH Module - orchestrates 4 focused sub-modules
  * - ssh-session-manager: Session lifecycle
  * - ssh-command-executor: Command execution
- * - ssh-prompt-detector: Prompt detection
  * - ssh-file-transfer-handler: File operations
  * - ssh-connection-pool-wrapper: Connection pooling
  */
@@ -248,7 +246,6 @@ export default class SshModule implements IUnifiedPlugin {
   // ===== COMPONENTS =====
   private sessionManager!: SSHSessionManager;
   private commandExecutor!: SSHCommandExecutor;
-  private promptDetector!: SSHPromptDetector;
   private fileTransferHandler!: SSHFileTransferHandler;
   private poolWrapper!: SSHConnectionPoolWrapper;
 
@@ -290,7 +287,6 @@ export default class SshModule implements IUnifiedPlugin {
     // Initialize all 5 sub-modules
     this.sessionManager = new SSHSessionManager();
     this.commandExecutor = new SSHCommandExecutor();
-    this.promptDetector = new SSHPromptDetector();
     this.fileTransferHandler = new SSHFileTransferHandler(this.commandExecutor);
     this.poolWrapper = new SSHConnectionPoolWrapper();
 
@@ -666,12 +662,6 @@ export default class SshModule implements IUnifiedPlugin {
       }
       // ===== END STREAMING ====
 
-      // 5. Detect interactive prompts
-      const promptInfo =
-        !commandCompletedNormally && session.outputBuffer
-          ? this.promptDetector.detectInteractivePrompts(session.outputBuffer)
-          : { detected: false };
-
       // 6. Build response
       const response: Record<string, unknown> = {
         session_id: sessionId,
@@ -697,12 +687,6 @@ export default class SshModule implements IUnifiedPlugin {
 
       if (output) {
         response.output = output;
-      }
-
-      if (promptInfo.detected) {
-        response.awaiting_input = true;
-        response.prompt_type = promptInfo.type;
-        response.prompt_text = promptInfo.prompt;
       }
 
       const outputText = this.formatSshOperateText(response);
@@ -1066,12 +1050,15 @@ ${buffer || '(empty)'}`;
     
     let filtered = sessions;
     if (args.session_id) {
-      filtered = filtered.filter(s => s.id === args.session_id);
+      filtered = filtered.filter((s) => s.id === args.session_id);
     }
     if (args.command_pattern) {
       const pattern = args.command_pattern || '';
-      filtered = filtered.filter(s => s.lastCommand ? s.lastCommand.includes(pattern) : false);
+      filtered = filtered.filter((s) => (s.lastCommand ? s.lastCommand.includes(pattern) : false));
     }
+
+    const statusFilter = args.status_filter || 'all';
+    filtered = filtered.filter((s) => this.matchesStatusFilter(s, statusFilter));
 
     const limit = args.limit || 50;
     const offset = args.offset || 0;
@@ -1109,24 +1096,25 @@ ${buffer || '(empty)'}`;
       throw new Error(`No PTY process found for session ${args.session_id}`);
     }
 
-    // Send signal to the process
-    const signalMap: Record<string, string> = {
-      'TERM': '\x03',
-      'KILL': '\x09',
-      'INT': '\x03',
-      'HUP': '\x01',
-      'USR1': '\x1b',
-      'USR2': '\x1c',
-    };
+    const pid = args.process_id;
+    if (pid <= 0) {
+      throw new Error('Invalid process ID provided.');
+    }
 
-    const signal = args.force ? '\x09' : (signalMap[args.signal] || '\x03');
-    session.ptyProcess.write(signal);
+    const signalLabel = args.force ? 'KILL' : args.signal;
+    const killCmd = `kill -${signalLabel} ${pid}`;
+
+    const result = await this.commandExecutor.executeCommand(session, killCmd, 5000);
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to send ${signalLabel} to PID ${pid}: ${result.output || 'unknown error'}`);
+    }
 
     return {
-      content: [{ type: 'text', text: `Signal ${args.signal} sent to session ${args.session_id}` }],
+      content: [{ type: 'text', text: `Signal ${signalLabel} sent to PID ${pid} (session ${args.session_id})` }],
       structuredContent: {
         session_id: args.session_id,
-        signal: args.signal,
+        signal: signalLabel,
+        process_id: pid,
         forced: args.force,
       },
     };
@@ -1221,14 +1209,21 @@ ${buffer || '(empty)'}`;
       lines.push(String(response.output));
     }
 
-    if (response.awaiting_input) {
-      lines.push('');
-      lines.push(`⚠️ Awaiting input: ${response.prompt_type} prompt detected.`);
-      lines.push(`Prompt: ${response.prompt_text}`);
-      lines.push(`Use ssh_operate with input parameter to respond.`);
-    }
-
     return lines.join('\n');
+  }
+
+  private matchesStatusFilter(session: Session, filter: 'running' | 'completed' | 'failed' | 'all'): boolean {
+    switch (filter) {
+      case 'running':
+        return session.isConnected && !session.isReady;
+      case 'completed':
+        return session.isConnected && session.isReady;
+      case 'failed':
+        return !session.isConnected;
+      case 'all':
+      default:
+        return true;
+    }
   }
 
   private cleanOutput(output: string): string {
