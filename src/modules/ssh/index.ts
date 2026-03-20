@@ -76,11 +76,6 @@ const sshTargetSchema = z
 
 type SSHConnectionTargetType = z.infer<typeof sshTargetSchema>;
 
-const sshNewSessionSchema = z.object({
-  session_id: z.string().min(1).describe('Unique identifier for the new session.'),
-  target: sshTargetSchema.describe('Remote connection details for this session.'),
-});
-
 const sshCloseSessionSchema = z.object({
   session_id: z.string().min(1).describe('Session ID to close.'),
 });
@@ -120,6 +115,14 @@ const sshOperateSchema = z.object({
     .boolean()
     .default(true)
     .describe('Whether to retrieve session output after operations.'),
+  create_session_only: z
+    .boolean()
+    .default(false)
+    .describe('If true, only create the session without executing any command. Returns session info after creation.'),
+  interactive: z
+    .boolean()
+    .default(false)
+    .describe('If true, keep session open for interactive use (implies create_session_only if no command provided).'),
   output_delay_ms: z
     .number()
     .int()
@@ -291,7 +294,6 @@ export default class SshModule implements IUnifiedPlugin {
     this.poolWrapper = new SSHConnectionPoolWrapper();
 
     // Register all tools
-    this.registerSshNewSession(context);
     this.registerSshOperate(context);
     this.registerSshListSessions(context);
     this.registerSshCloseSession(context);
@@ -326,21 +328,6 @@ export default class SshModule implements IUnifiedPlugin {
 
   // ===== TOOL REGISTRATION =====
 
-  private registerSshNewSession(context: UnifiedModuleContext): void {
-    const deregister = context.moduleManager.registerToolExecution(
-      'ssh_new_session',
-      async (rawArgs: any) => {
-        const args = sshNewSessionSchema.parse(rawArgs);
-        return this.handleSshNewSession(args, context);
-      },
-      'ssh_new_session',
-      'Create a new SSH session backed by a persistent PTY.',
-      sshNewSessionSchema,
-      this.manifest.id
-    );
-    this.deregisterFns.push(deregister);
-  }
-
   private registerSshOperate(context: UnifiedModuleContext): void {
     const deregister = context.moduleManager.registerToolExecution(
       'ssh_operate',
@@ -349,7 +336,7 @@ export default class SshModule implements IUnifiedPlugin {
         return this.handleSshOperate(args, context);
       },
       'ssh_operate',
-      'Unified SSH operations: create sessions, send input, get output with automatic position tracking. Combines ssh_new_session, ssh_execute, and ssh_get_buffer into a single streamlined interface.',
+      'Unified SSH operations: create sessions, send input, get output with automatic position tracking. Can create new sessions (with target), reuse existing sessions (with session_id), or just create sessions without executing commands (create_session_only). Combines ssh_new_session, ssh_execute, and ssh_get_buffer into a single streamlined interface.',
       sshOperateSchema,
       this.manifest.id
     );
@@ -476,69 +463,6 @@ export default class SshModule implements IUnifiedPlugin {
 
   // ===== TOOL HANDLERS =====
 
-  private async handleSshNewSession(
-    args: z.infer<typeof sshNewSessionSchema>,
-    context: UnifiedModuleContext
-  ) {
-    try {
-      const existingSession = this.sessionManager.getSession(args.session_id);
-      if (existingSession) {
-        throw new Error(`Session ${args.session_id} already exists. Close it before recreating.`);
-      }
-
-      const session = await this.sessionManager.createSession(args.session_id, args.target);
-
-      // Wait for SSH connection to establish
-      await this.sleep(1500);
-
-      // Check if process exited (connection failed)
-      if (!session.isConnected) {
-        const bufferError = session.outputBuffer || '';
-        let errorMsg = `SSH connection failed - could not connect to ${args.target.host}:${args.target.port}.`;
-
-        if (bufferError.includes('permission denied') || bufferError.includes('Permission denied')) {
-          errorMsg += ' Authentication failed. Check username, password or SSH key.';
-        } else if (bufferError.includes('connection refused') || bufferError.includes('Connection refused')) {
-          errorMsg += ' SSH service may not be running on the remote host.';
-        } else if (bufferError.includes('no route') || bufferError.includes('No route')) {
-          errorMsg += ' Network issue - check host address.';
-        } else if (bufferError.includes('name or service not known') || bufferError.includes('Could not resolve')) {
-          errorMsg += ' Could not resolve hostname.';
-        } else if (bufferError) {
-          errorMsg += ` Server said: ${bufferError.substring(0, 200)}`;
-        }
-
-        await this.sessionManager.closeSession(args.session_id);
-        throw new Error(errorMsg);
-      }
-
-      const label = ` (remote: ${args.target.user ? `${args.target.user}@` : ''}${args.target.host}:${args.target.port})`;
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Created session ${args.session_id}${label}. Session is ready for commands.`,
-          },
-        ],
-        structuredContent: {
-          session_id: args.session_id,
-          target: args.target,
-          status: 'ready',
-        },
-      };
-    } catch (error) {
-      context.logger.error('ssh_new_session failed', {
-        component: this.manifest.id,
-        error,
-        sessionId: args.session_id,
-      });
-      return this.handleError(error, context, {
-        toolName: 'ssh_new_session',
-        sessionId: args.session_id,
-      });
-    }
-  }
-
   private async handleSshOperate(
     args: z.infer<typeof sshOperateSchema>,
     context: UnifiedModuleContext
@@ -549,7 +473,7 @@ export default class SshModule implements IUnifiedPlugin {
       let session = this.sessionManager.getSession(sessionId);
 
       // 1. Resolve session
-      if (session) {
+      if (session && sessionId) {
         if (!session.isConnected) {
           try {
             await this.sessionManager.closeSession(sessionId!);
@@ -565,6 +489,10 @@ export default class SshModule implements IUnifiedPlugin {
         return t && typeof t === 'object' && typeof t.host === 'string' && t.host.length > 0;
       };
 
+      // Determine if we should create a session only (no command execution)
+      const createSessionOnly = args.create_session_only || 
+        (args.interactive && !args.command && !args.input);
+
       // 2. Create new session if needed
       if (!session) {
         if (hasValidTarget(args.target)) {
@@ -574,29 +502,74 @@ export default class SshModule implements IUnifiedPlugin {
           await this.sleep(1000);
 
           if (!session.isConnected) {
+            const output = session.outputBuffer || '';
             await this.sessionManager.closeSession(newSessionId);
+            if (output) {
+              throw new Error(`SSH connection failed to ${args.target.host}: ${output.slice(-500)}`);
+            }
             throw new Error(`SSH connection failed to ${args.target.host}. Process exited.`);
           }
 
           sessionId = newSessionId;
           sessionCreated = true;
         } else if (sessionId) {
-          const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
-          if (defaultSession && defaultSession.isConnected) {
-            session = defaultSession;
-            sessionId = DEFAULT_SESSION_ID;
+          // Only session_id provided - try to find existing session
+          const existingSession = this.sessionManager.getSession(sessionId);
+          if (existingSession && existingSession.isConnected) {
+            session = existingSession;
+          } else if (existingSession) {
+            throw new Error(`Session "${sessionId}" exists but is not connected. Provide target to recreate.`);
           } else {
             throw new Error(`Session "${sessionId}" not found. Provide target to create new session.`);
           }
         } else {
+          // No session_id and no target - try default session
           const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
           if (defaultSession && defaultSession.isConnected) {
             session = defaultSession;
             sessionId = DEFAULT_SESSION_ID;
+          } else if (createSessionOnly) {
+            throw new Error('No active session. Provide session_id or target to create new session.');
           } else {
             throw new Error('No active session. Provide session_id or target.');
           }
         }
+      }
+
+      // If create_session_only is true, return session info without executing command
+      if (createSessionOnly && session) {
+        const target = session.target;
+        const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
+        
+        const response: Record<string, unknown> = {
+          session_id: sessionId,
+          success: true,
+          session_created: sessionCreated,
+          interactive: args.interactive,
+          response_level: args.response_level || 'standard',
+        };
+
+        if (sessionCreated && hasValidTarget(args.target)) {
+          response.target = {
+            host: args.target.host,
+            port: args.target.port,
+            user: args.target.user,
+          };
+        }
+
+        const outputText = args.interactive 
+          ? `Session ${sessionId} created and ready for interactive use.\nTarget: ${targetStr}\nUse ssh_operate with session_id to send commands.`
+          : `Session ${sessionId} created successfully.\nTarget: ${targetStr}`;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: outputText,
+            },
+          ],
+          structuredContent: response,
+        };
       }
 
       let commandOutput = '';
