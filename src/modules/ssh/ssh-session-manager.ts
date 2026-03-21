@@ -41,6 +41,8 @@ export interface Session {
   isReady: boolean;
   isConnected: boolean;
   lastCommand: string;
+  lastCommandOutput: string;
+  lastCommandBufferPos: number;
   target?: SSHConnectionTarget;
 }
 
@@ -129,6 +131,8 @@ export class SSHSessionManager extends EventEmitter {
         isReady: false,  // Wait for connection to be established before marking as ready
         isConnected: true,
         lastCommand: '',
+        lastCommandOutput: '',
+        lastCommandBufferPos: 0,
         target,
       };
 

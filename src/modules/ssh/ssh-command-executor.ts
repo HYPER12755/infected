@@ -15,6 +15,9 @@ export interface CommandResult {
   exitCode: number;
   durationMs: number;
   completedNormally: boolean;
+  timedOut: boolean;
+  partial: boolean;
+  bufferStartPos: number;
 }
 
 /**
@@ -99,9 +102,19 @@ export class SSHCommandExecutor {
         throw error;
       }
 
+      // Check if there was a previous background command that finished
+      if (!session.isReady && session.lastCommand) {
+        const buffer = session.outputBuffer || '';
+        // Check if the previous command has finished (has exit code)
+        if (/exit\s*(\d+)/i.test(buffer) || /\(exit\s*(\d+)\)/i.test(buffer)) {
+          session.isReady = true;
+          session.lastCommand = '';
+        }
+      }
+
       // Check and set busy state atomically to prevent race conditions
       if (!session.isReady) {
-        throw new Error(`Session ${session.id} is busy executing: ${session.lastCommand}`);
+        throw new Error(`Session is busy executing: ${session.lastCommand || 'previous command'}`);
       }
 
       // Set isReady to false BEFORE executing to prevent race conditions
@@ -120,20 +133,35 @@ export class SSHCommandExecutor {
         session.ptyProcess.write(`${command}\n`);
 
         const startTime = Date.now();
+        let lastBufferSize = bufferStartPos;
+        let stableCount = 0;
 
-        // Wait fixed short delay for command to complete
-        await this.sleep(500);
-
-        // Check if session is still connected
-        if (!session.isConnected) {
-          session.isReady = true;
-          throw new SSHError(
-            `Session ${session.id} disconnected during command execution`,
-            { code: SSHErrorCode.DISCONNECTED, severity: ErrorSeverity.HIGH, retryable: true }
-          );
+        // Poll for output until timeout
+        while (Date.now() - startTime < validTimeout) {
+          await this.sleep(200);
+          
+          // Check if session disconnected
+          if (!session.isConnected) {
+            session.isReady = true;
+            throw new SSHError(
+              `Session ${session.id} disconnected during command execution`,
+              { code: SSHErrorCode.DISCONNECTED, severity: ErrorSeverity.HIGH, retryable: true }
+            );
+          }
+          
+          // Check if output has stabilized (command likely finished)
+          if (session.outputBuffer.length === lastBufferSize) {
+            stableCount++;
+            if (stableCount >= 2) {
+              break; // Output stable, command likely done
+            }
+          } else {
+            stableCount = 0;
+            lastBufferSize = session.outputBuffer.length;
+          }
         }
 
-        // Capture ALL output in buffer since command was sent
+        // Capture output
         const currentBuffer = session.outputBuffer;
         let commandOutput = '';
         
@@ -141,22 +169,38 @@ export class SSHCommandExecutor {
           commandOutput = currentBuffer.substring(bufferStartPos);
         }
 
-        // Try to extract exit code from buffer (look for common patterns)
+        // Check if we timed out
+        const timedOut = Date.now() - startTime >= validTimeout;
+        
+        // Try to extract exit code from buffer
         let exitCode = 0;
         const exitCodeMatch = commandOutput.match(/exit[_\s]?code[:\s]*(\d+)/i) 
           || commandOutput.match(/(?:^|\n)\s*(\d+)\s*$/);
         
         if (exitCodeMatch) {
           exitCode = parseInt(exitCodeMatch[1], 10);
+        } else if (timedOut) {
+          // No exit code found and timed out - command may still be running
+          exitCode = -1; // Indicate unknown
         }
 
-        session.isReady = true;
+        // If timed out, don't mark session as ready - command is still running
+        // This prevents new commands from interrupting the background process
+        if (!timedOut) {
+          session.isReady = true;
+        } else {
+          // Mark as busy but allow reading buffer
+          session.isReady = false;
+          // Store the background command info
+          session.lastCommand = command;
+        }
 
         const cleaned = this.cleanOutput(commandOutput);
         const durationMs = Date.now() - startTime;
 
         // Add to history
-        const historyLines = [`$ ${command}`, cleaned || '(no output)', `(exit ${exitCode})`].join('\n');
+        const status = timedOut ? 'partial' : 'complete';
+        const historyLines = [`$ ${command}`, cleaned || '(no output)', `(exit ${exitCode}) [${status}]`].join('\n');
         this.appendHistory(session, historyLines);
 
         this.loggingContext.debug('Command executed', {
@@ -165,13 +209,25 @@ export class SSHCommandExecutor {
           command: command.substring(0, 100),
           exitCode,
           durationMs,
+          timedOut,
         });
+
+        if (timedOut) {
+          // Note: command continues running in background
+          this.loggingContext.debug('Command timed out but continues in background', {
+            sessionId: session.id,
+            command: command.substring(0, 50),
+          });
+        }
 
         return {
           output: cleaned,
           exitCode,
           durationMs,
-          completedNormally: true,
+          completedNormally: !timedOut,
+          timedOut,
+          partial: timedOut,
+          bufferStartPos,
         };
       } catch (error) {
         session.isReady = true;
@@ -299,6 +355,14 @@ export class SSHCommandExecutor {
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
+      .split('\n')
+      .filter(line => line.trim() !== '')
+      .filter((line, idx, arr) => {
+        if (idx === 0) return false;
+        if (idx > 0 && line === arr[idx - 1]) return false;
+        return true;
+      })
+      .join('\n')
       .trim();
   }
 

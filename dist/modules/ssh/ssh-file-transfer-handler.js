@@ -200,18 +200,13 @@ export class SSHFileTransferHandler {
                     }
                     throw new Error(`Failed to access remote file: ${output || 'Unknown error'}`);
                 }
-                const outputLines = cleanedOutput.trim().split('\n').filter((l) => l.trim());
-                const lastLine = outputLines[outputLines.length - 1]?.trim() || '';
-                if (lastLine === 'FILE_NOT_FOUND' || lastLine === '') {
-                    throw new Error(`Remote file not found: ${remotePath}`);
+                const allNumbers = cleanedOutput.match(/\d+/g);
+                if (!allNumbers || allNumbers.length === 0) {
+                    throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${cleanedOutput}`);
                 }
-                const numericMatch = lastLine.match(/(\d+)/);
-                if (!numericMatch) {
-                    throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${sizeResult.output}`);
-                }
-                const fileSize = parseInt(numericMatch[1], 10);
+                const fileSize = Math.max(...allNumbers.map(n => parseInt(n, 10)));
                 if (Number.isNaN(fileSize) || fileSize <= 0) {
-                    throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${sizeResult.output}`);
+                    throw new Error(`Failed to determine remote file size for ${remotePath}. Output: ${cleanedOutput}`);
                 }
                 if (fileSize > MAX_FILE_SIZE) {
                     throw new Error(`Remote file (${(fileSize / 1024 / 1024).toFixed(2)}MB) exceeds the ${(MAX_FILE_SIZE /

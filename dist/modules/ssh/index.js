@@ -6,7 +6,6 @@ import logger from '../../core/logger.js';
 // Import the 5 focused modules
 import { SSHSessionManager } from './ssh-session-manager.js';
 import { SSHCommandExecutor } from './ssh-command-executor.js';
-import { SSHPromptDetector } from './ssh-prompt-detector.js';
 import { SSHFileTransferHandler } from './ssh-file-transfer-handler.js';
 import { SSHConnectionPoolWrapper } from './ssh-connection-pool-wrapper.js';
 const DEFAULT_SESSION_ID = 'default';
@@ -36,10 +35,6 @@ const sshTargetSchema = z
     identityFile: obj.identity_file || obj.identityFile,
 }))
     .describe('Connection target used to spawn an SSH client session to a remote host.');
-const sshNewSessionSchema = z.object({
-    session_id: z.string().min(1).describe('Unique identifier for the new session.'),
-    target: sshTargetSchema.describe('Remote connection details for this session.'),
-});
 const sshCloseSessionSchema = z.object({
     session_id: z.string().min(1).describe('Session ID to close.'),
 });
@@ -47,16 +42,20 @@ const TerminalDimensionsSchema = z.object({
     width: z.number().int().min(1).max(500).default(120).describe('Terminal width in characters.'),
     height: z.number().int().min(1).max(100).default(30).describe('Terminal height in rows.'),
 }).describe('Terminal dimensions for PTY.');
-const sshOperateSchema = z.object({
+const sshOperateBaseSchema = z.object({
+    terminal_id: z
+        .string()
+        .optional()
+        .describe('Existing terminal/session ID to use. If not provided, creates new session when command is specified.'),
     session_id: z
         .string()
         .optional()
-        .describe('Session ID to use. If session exists, use it. If not found, create new session (requires target).'),
+        .describe('Session ID to use (alias for terminal_id). If session exists, use it. If not found, create new session (requires target).'),
     session_name: z
         .string()
         .optional()
         .describe('Name for new session when creating one. If not provided, a random ID will be generated.'),
-    target: z.union([sshTargetSchema, z.object({}).strip()]).optional().describe('SSH connection target. Used to create new session if session_id not provided or not found.'),
+    target: z.union([sshTargetSchema, z.object({}).strip()]).optional().describe('SSH connection target. Used to create new session if terminal_id/session_id not provided or not found.'),
     shell_type: z
         .enum(['bash', 'zsh', 'fish', 'cmd', 'powershell'])
         .optional()
@@ -68,7 +67,7 @@ const sshOperateSchema = z.object({
     input: z
         .string()
         .optional()
-        .describe('Input to send to the session (alternative to command).'),
+        .describe('Input to send to the session (alternative to command). Can be partial input or complete command.'),
     execute: z
         .boolean()
         .default(true)
@@ -77,6 +76,14 @@ const sshOperateSchema = z.object({
         .boolean()
         .default(true)
         .describe('Whether to retrieve session output after operations.'),
+    create_session_only: z
+        .boolean()
+        .default(false)
+        .describe('If true, only create the session without executing any command. Returns session info after creation.'),
+    interactive: z
+        .boolean()
+        .default(false)
+        .describe('If true, keep session open for interactive use (implies create_session_only if no command provided).'),
     output_delay_ms: z
         .number()
         .int()
@@ -87,7 +94,11 @@ const sshOperateSchema = z.object({
     strip_ansi: z
         .boolean()
         .default(true)
-        .describe('Strip ANSI/control sequences from output.'),
+        .describe('When true, strips ANSI/control sequences from terminal output text.'),
+    include_ansi: z
+        .boolean()
+        .default(false)
+        .describe('Include ANSI codes in output.'),
     output_id: z
         .string()
         .optional()
@@ -95,12 +106,21 @@ const sshOperateSchema = z.object({
     dimensions: TerminalDimensionsSchema.optional().describe('Terminal dimensions for PTY.'),
     working_directory: z.string().optional().describe('Working directory for command execution.'),
     environment_variables: z.record(z.string(), z.string()).optional().describe('Environment variables.'),
-    control_codes: z.boolean().default(false).describe('Interpret input as control codes (e.g., \n, \t, \x03 for Ctrl+C).'),
+    control_codes: z.boolean().default(false).describe('Interpret input as control codes (e.g., \\n, \\t, \\x03 for Ctrl+C).'),
     send_to: z.string().optional().describe('Program guard target for input routing.'),
-    force_input: z.boolean().default(false).describe('Force input even if unread output exists.'),
+    force_input: z.boolean().default(false).describe('Force input even if unread output exists. Default: false (input rejected if unread output exists).'),
     output_lines: z.number().int().min(1).max(1000).default(20).describe('Number of output lines to retrieve.'),
-    include_ansi: z.boolean().default(false).describe('Include ANSI control codes in output.'),
     response_level: z.enum(['minimal', 'standard', 'full']).default('standard').describe('Response detail level.'),
+    return_session_info: z.boolean().default(true).describe('Include session information in response.'),
+});
+const sshOperateSchema = sshOperateBaseSchema
+    .transform((data) => ({
+    ...data,
+    session_id: data.terminal_id || data.session_id,
+}))
+    .refine((data) => data.session_id || data.command || data.create_session_only || data.target, {
+    message: 'Provide session_id, command, or target',
+    path: ['terminal_id', 'session_id', 'command', 'target'],
 });
 const sshBufferSchema = z.object({
     session_id: z
@@ -113,6 +133,10 @@ const sshBufferSchema = z.object({
     format: z.enum(['text', 'json']).optional().default('text').describe('Return format: text or JSON.'),
     filter: z.enum(['all', 'last_command', 'since_last']).optional().default('all').describe('Filter buffer content.'),
     pattern: z.string().optional().describe('Filter buffer by command pattern (substring match).'),
+    filter_command: z.string().optional().describe('Filter to show only output for specific command.'),
+    last_command: z.boolean().optional().default(false).describe('Show only last command output.'),
+    search: z.string().optional().describe('Search for text in output.'),
+    start_after: z.string().optional().describe('Start output after this text.'),
 });
 const transferMethodSchema = z
     .enum(['scp', 'sftp', 'ftp'])
@@ -171,10 +195,9 @@ const sshProcessKillSchema = z.object({
     force: z.boolean().default(false).describe('Force immediate termination (sends KILL).'),
 });
 /**
- * Main SSH Module - orchestrates 5 focused sub-modules
+ * Main SSH Module - orchestrates 4 focused sub-modules
  * - ssh-session-manager: Session lifecycle
  * - ssh-command-executor: Command execution
- * - ssh-prompt-detector: Prompt detection
  * - ssh-file-transfer-handler: File operations
  * - ssh-connection-pool-wrapper: Connection pooling
  */
@@ -225,11 +248,9 @@ export default class SshModule {
         // Initialize all 5 sub-modules
         this.sessionManager = new SSHSessionManager();
         this.commandExecutor = new SSHCommandExecutor();
-        this.promptDetector = new SSHPromptDetector();
         this.fileTransferHandler = new SSHFileTransferHandler(this.commandExecutor);
         this.poolWrapper = new SSHConnectionPoolWrapper();
         // Register all tools
-        this.registerSshNewSession(context);
         this.registerSshOperate(context);
         this.registerSshListSessions(context);
         this.registerSshCloseSession(context);
@@ -260,18 +281,11 @@ export default class SshModule {
         }
     }
     // ===== TOOL REGISTRATION =====
-    registerSshNewSession(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_new_session', async (rawArgs) => {
-            const args = sshNewSessionSchema.parse(rawArgs);
-            return this.handleSshNewSession(args, context);
-        }, 'ssh_new_session', 'Create a new SSH session backed by a persistent PTY.', sshNewSessionSchema, this.manifest.id);
-        this.deregisterFns.push(deregister);
-    }
     registerSshOperate(context) {
         const deregister = context.moduleManager.registerToolExecution('ssh_operate', async (rawArgs) => {
             const args = sshOperateSchema.parse(rawArgs);
             return this.handleSshOperate(args, context);
-        }, 'ssh_operate', 'Unified SSH operations: create sessions, send input, get output with automatic position tracking. Combines ssh_new_session, ssh_execute, and ssh_get_buffer into a single streamlined interface.', sshOperateSchema, this.manifest.id);
+        }, 'ssh_operate', 'Unified SSH operations: create sessions, send input, get output with automatic position tracking. Can create new sessions (with target), reuse existing sessions (with session_id), or just create sessions without executing commands (create_session_only). Combines ssh_new_session, ssh_execute, and ssh_get_buffer into a single streamlined interface.', sshOperateSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshListSessions(context) {
@@ -328,207 +342,204 @@ export default class SshModule {
         this.deregisterFns.push(deregister);
     }
     // ===== TOOL HANDLERS =====
-    async handleSshNewSession(args, context) {
-        try {
-            const existingSession = this.sessionManager.getSession(args.session_id);
-            if (existingSession) {
-                throw new Error(`Session ${args.session_id} already exists. Close it before recreating.`);
-            }
-            const session = await this.sessionManager.createSession(args.session_id, args.target);
-            // Wait for SSH connection to establish
-            await this.sleep(1500);
-            // Check if process exited (connection failed)
-            if (!session.isConnected) {
-                const bufferError = session.outputBuffer || '';
-                let errorMsg = `SSH connection failed - could not connect to ${args.target.host}:${args.target.port}.`;
-                if (bufferError.includes('permission denied') || bufferError.includes('Permission denied')) {
-                    errorMsg += ' Authentication failed. Check username, password or SSH key.';
-                }
-                else if (bufferError.includes('connection refused') || bufferError.includes('Connection refused')) {
-                    errorMsg += ' SSH service may not be running on the remote host.';
-                }
-                else if (bufferError.includes('no route') || bufferError.includes('No route')) {
-                    errorMsg += ' Network issue - check host address.';
-                }
-                else if (bufferError.includes('name or service not known') || bufferError.includes('Could not resolve')) {
-                    errorMsg += ' Could not resolve hostname.';
-                }
-                else if (bufferError) {
-                    errorMsg += ` Server said: ${bufferError.substring(0, 200)}`;
-                }
-                await this.sessionManager.closeSession(args.session_id);
-                throw new Error(errorMsg);
-            }
-            const label = ` (remote: ${args.target.user ? `${args.target.user}@` : ''}${args.target.host}:${args.target.port})`;
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: `Created session ${args.session_id}${label}. Session is ready for commands.`,
-                    },
-                ],
-                structuredContent: {
-                    session_id: args.session_id,
-                    target: args.target,
-                    status: 'ready',
-                },
-            };
-        }
-        catch (error) {
-            context.logger.error('ssh_new_session failed', {
-                component: this.manifest.id,
-                error,
-                sessionId: args.session_id,
-            });
-            return this.handleError(error, context, {
-                toolName: 'ssh_new_session',
-                sessionId: args.session_id,
-            });
-        }
-    }
     async handleSshOperate(args, context) {
         try {
+            const shouldStripAnsi = args.strip_ansi !== undefined ? args.strip_ansi : !args.include_ansi;
             let sessionId = args.session_id;
+            let sessionInfo = null;
             let sessionCreated = false;
-            let session = this.sessionManager.getSession(sessionId);
-            // 1. Resolve session
-            if (session) {
-                if (!session.isConnected) {
-                    try {
-                        await this.sessionManager.closeSession(sessionId);
-                    }
-                    catch {
-                        /* ignore */
-                    }
-                    session = null;
-                }
-            }
-            // Helper to check if target has valid SSH connection info
+            let inputRejected = false;
+            let rejectionReason = '';
+            let unreadOutputInfo = null;
             const hasValidTarget = (t) => {
-                return t && typeof t === 'object' && typeof t.host === 'string' && t.host.length > 0;
+                return t !== null && t !== undefined && typeof t === 'object' && typeof t.host === 'string' && t.host.length > 0;
             };
-            // 2. Create new session if needed
-            if (!session) {
-                if (hasValidTarget(args.target)) {
-                    const newSessionId = sessionId || `session_${Date.now()}`;
-                    session = await this.sessionManager.createSession(newSessionId, args.target);
-                    await this.sleep(1000);
-                    if (!session.isConnected) {
-                        await this.sessionManager.closeSession(newSessionId);
-                        throw new Error(`SSH connection failed to ${args.target.host}. Process exited.`);
-                    }
-                    sessionId = newSessionId;
-                    sessionCreated = true;
+            const createSessionOnly = args.create_session_only ||
+                (args.interactive && !args.command && !args.input);
+            if (hasValidTarget(args.target)) {
+                if (sessionId) {
+                    console.warn(`[SSH] Both session_id and target provided. Target will override session_id "${sessionId}". Use target=null to use existing session.`);
                 }
-                else if (sessionId) {
-                    const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
-                    if (defaultSession && defaultSession.isConnected) {
-                        session = defaultSession;
-                        sessionId = DEFAULT_SESSION_ID;
+                const newSessionId = args.session_id || args.session_name || `session_${Date.now()}`;
+                sessionInfo = await this.sessionManager.createSession(newSessionId, args.target);
+                await this.sleep(1000);
+                if (!sessionInfo.isConnected) {
+                    const output = sessionInfo.outputBuffer || '';
+                    await this.sessionManager.closeSession(newSessionId);
+                    const targetPassword = args.target.password;
+                    const authType = targetPassword ? 'password' : 'key';
+                    const targetUser = String(args.target.user || '');
+                    const targetHost = String(args.target.host || '');
+                    if (/permission denied/i.test(output)) {
+                        if (authType === 'key') {
+                            throw new Error(`SSH key auth failed: ${targetUser}@${targetHost} (Permission denied)`);
+                        }
+                        else {
+                            throw new Error(`SSH password auth failed: ${targetUser}@${targetHost} (Incorrect password)`);
+                        }
                     }
-                    else {
-                        throw new Error(`Session "${sessionId}" not found. Provide target to create new session.`);
+                    if (/password/i.test(output) && !targetPassword) {
+                        throw new Error(`SSH auth failed: Password required for ${targetUser}@${targetHost}`);
                     }
+                    const port = args.target.port || 22;
+                    if (output) {
+                        throw new Error(`SSH connection failed: ${targetHost}:${port}`);
+                    }
+                    throw new Error(`SSH connection failed: ${targetHost}:${port}`);
+                }
+                sessionId = newSessionId;
+                sessionCreated = true;
+                if (args.command) {
+                    const commandResult = await this.commandExecutor.executeCommand(sessionInfo, args.command, DEFAULT_TIMEOUT_MS);
+                    sessionInfo.lastCommandOutput = commandResult.output;
+                    sessionInfo.lastCommandBufferPos = commandResult.bufferStartPos;
+                }
+            }
+            else if (sessionId) {
+                const existingSession = this.sessionManager.getSession(sessionId);
+                if (existingSession && existingSession.isConnected) {
+                    sessionInfo = existingSession;
+                }
+                else if (existingSession) {
+                    throw new Error('Session not connected. Provide target to recreate.');
                 }
                 else {
-                    const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
-                    if (defaultSession && defaultSession.isConnected) {
-                        session = defaultSession;
-                        sessionId = DEFAULT_SESSION_ID;
+                    throw new Error(`Session "${sessionId}" not found`);
+                }
+                const inputToSend = args.input || args.command;
+                if (typeof inputToSend === 'string' && inputToSend.length > 0) {
+                    const effectiveForceInput = args.force_input || args.control_codes;
+                    if (!effectiveForceInput) {
+                        const fullBuffer = sessionInfo.outputBuffer || '';
+                        if (fullBuffer.trim().length > 0) {
+                            inputRejected = true;
+                            rejectionReason = 'Unread output exists. Use force_input=true';
+                            unreadOutputInfo = this.buildOutputInfo(fullBuffer, 1000, !shouldStripAnsi);
+                        }
                     }
-                    else {
-                        throw new Error('No active session. Provide session_id or target.');
+                    if (!inputRejected) {
+                        const commandResult = await this.commandExecutor.executeCommand(sessionInfo, inputToSend, DEFAULT_TIMEOUT_MS);
+                        sessionInfo.lastCommandOutput = commandResult.output;
+                        sessionInfo.lastCommandBufferPos = commandResult.bufferStartPos;
                     }
                 }
             }
-            let commandOutput = '';
-            let exitCode;
-            let commandCompletedNormally = true;
-            const executionStartTime = Date.now();
-            // 3. Execute command or send input
-            const inputToSend = args.command || args.input;
-            if (inputToSend) {
-                const timeout = DEFAULT_TIMEOUT_MS;
-                const result = await this.commandExecutor.executeCommand(session, inputToSend, timeout);
-                commandOutput = result.output || '';
-                exitCode = result.exitCode;
-                commandCompletedNormally = result.completedNormally ?? true;
-            }
-            // 4. Get output
-            let output = null;
-            if (args.get_output !== false && session) {
-                if (commandOutput) {
-                    output = args.strip_ansi !== false ? this.cleanOutput(commandOutput) : commandOutput;
+            else {
+                const defaultSession = this.sessionManager.getSession(DEFAULT_SESSION_ID);
+                if (defaultSession && defaultSession.isConnected) {
+                    sessionInfo = defaultSession;
+                    sessionId = DEFAULT_SESSION_ID;
                 }
                 else {
-                    const delayMs = args.output_delay_ms || 500;
-                    if (delayMs > 0) {
-                        await this.sleep(delayMs);
-                    }
-                    const contentSource = session.historyLog || session.outputBuffer;
-                    output = args.strip_ansi !== false ? this.cleanOutput(contentSource) : contentSource;
-                }
-                if (output && args.output_lines) {
-                    const lines = output.split('\n');
-                    if (lines.length > args.output_lines) {
-                        output = lines.slice(-args.output_lines).join('\n');
-                    }
+                    throw new Error('No active session. Provide session_id or target.');
                 }
             }
-            // ===== STREAMING: Emit SSH execution updates =====
-            if (this.streamingEnabled && args.output_id) {
-                const executionDuration = Date.now() - executionStartTime;
-                if (commandOutput) {
-                    this.emitSSHStreamUpdate({
-                        type: 'output',
-                        executionId: args.output_id,
-                        sessionId: sessionId,
-                        data: commandOutput,
-                        isStderr: false,
-                        timestamp: Date.now(),
-                    });
+            if (createSessionOnly && sessionInfo) {
+                const target = sessionInfo.target;
+                const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
+                const response = {
+                    session_id: sessionId,
+                    success: true,
+                    strip_ansi: shouldStripAnsi,
+                    session_created: sessionCreated,
+                    interactive: args.interactive,
+                    response_level: args.response_level || 'standard',
+                };
+                if (sessionCreated && hasValidTarget(args.target)) {
+                    response.target = {
+                        host: String(args.target.host || ''),
+                        port: Number(args.target.port) || 22,
+                        user: String(args.target.user || ''),
+                    };
                 }
-                this.emitSSHStreamUpdate({
-                    type: 'complete',
-                    executionId: args.output_id,
-                    sessionId: sessionId,
-                    exitCode: exitCode || 0,
-                    duration: executionDuration,
-                    timestamp: Date.now(),
-                });
+                const outputText = args.interactive
+                    ? `Session ${sessionId} created and ready for interactive use.\nTarget: ${targetStr}\nUse ssh_operate with session_id to send commands.`
+                    : `Session ${sessionId} created successfully.\nTarget: ${targetStr}`;
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: outputText,
+                        },
+                    ],
+                    structuredContent: response,
+                };
             }
-            // ===== END STREAMING ====
-            // 5. Detect interactive prompts
-            const promptInfo = !commandCompletedNormally && session.outputBuffer
-                ? this.promptDetector.detectInteractivePrompts(session.outputBuffer)
-                : { detected: false };
-            // 6. Build response
+            if (args.output_delay_ms > 0) {
+                await this.sleep(args.output_delay_ms);
+            }
+            let outputData = null;
+            if (args.get_output !== false && sessionInfo) {
+                let outputSource = sessionInfo.lastCommandOutput || '';
+                if (!outputSource && sessionInfo.outputBuffer) {
+                    outputSource = sessionInfo.outputBuffer;
+                }
+                outputData = this.buildOutputInfo(outputSource, args.output_lines || 20, !shouldStripAnsi);
+                sessionInfo.lastCommandOutput = '';
+            }
+            const inputToSend = args.input || args.command;
             const response = {
                 session_id: sessionId,
-                success: true,
-                response_level: args.response_level || 'standard',
+                success: !inputRejected,
+                strip_ansi: shouldStripAnsi,
             };
-            if (sessionCreated) {
-                response.session_created = true;
-                response.target = hasValidTarget(args.target)
-                    ? {
-                        host: args.target.host,
-                        port: args.target.port,
-                        user: args.target.user,
-                    }
-                    : undefined;
-            }
             if (inputToSend) {
                 response.command = inputToSend;
-                response.exit_code = exitCode;
             }
-            if (output) {
-                response.output = output;
+            if (inputRejected) {
+                response.input_rejected = true;
+                response.reason = rejectionReason;
+                if (unreadOutputInfo) {
+                    response.unread_output = unreadOutputInfo.output;
+                    response.unread_output_info = {
+                        line_count: unreadOutputInfo.line_count,
+                        total_lines: unreadOutputInfo.total_lines,
+                        has_more: unreadOutputInfo.has_more,
+                        start_line: unreadOutputInfo.start_line,
+                        next_start_line: unreadOutputInfo.next_start_line,
+                    };
+                }
             }
-            if (promptInfo.detected) {
-                response.awaiting_input = true;
-                response.prompt_type = promptInfo.type;
-                response.prompt_text = promptInfo.prompt;
+            if (sessionInfo && args.return_session_info !== false) {
+                response.session_info = {
+                    id: sessionInfo.id,
+                    is_connected: sessionInfo.isConnected,
+                    is_ready: sessionInfo.isReady,
+                    last_command: sessionInfo.lastCommand,
+                    created: sessionInfo.created,
+                };
+            }
+            if (sessionCreated && hasValidTarget(args.target)) {
+                response.target = {
+                    host: String(args.target.host || ''),
+                    port: Number(args.target.port) || 22,
+                    user: String(args.target.user || ''),
+                };
+            }
+            if (outputData) {
+                response.output = outputData.output;
+                response.output_info = {
+                    line_count: outputData.line_count,
+                    total_lines: outputData.total_lines,
+                    has_more: outputData.has_more,
+                    start_line: outputData.start_line,
+                    next_start_line: outputData.next_start_line,
+                };
+            }
+            if (args.response_level === 'minimal') {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: outputData?.output || '',
+                        },
+                    ],
+                    structuredContent: {
+                        session_id: sessionId,
+                        success: !inputRejected,
+                        output: outputData?.output || null,
+                    },
+                };
             }
             const outputText = this.formatSshOperateText(response);
             return {
@@ -600,7 +611,7 @@ export default class SshModule {
         try {
             const session = this.sessionManager.getSession(args.session_id);
             if (!session) {
-                throw new Error(`Session ${args.session_id} not found.`);
+                throw new Error(`Session "${args.session_id}" not found`);
             }
             await this.sessionManager.closeSession(args.session_id);
             return {
@@ -623,7 +634,7 @@ export default class SshModule {
         try {
             const session = this.sessionManager.getSession(args.session_id);
             if (!session) {
-                const message = `Session ${args.session_id} not found. Call ssh_new_session before inspecting buffers.`;
+                const message = `Session "${args.session_id}" not found`;
                 context.logger.warn('ssh_get_buffer: session missing', {
                     component: this.manifest.id,
                     sessionId: args.session_id,
@@ -654,9 +665,32 @@ export default class SshModule {
                     }
                 }
             }
+            if (args.filter_command) {
+                const cmdIndex = contentSource.lastIndexOf(args.filter_command);
+                if (cmdIndex >= 0) {
+                    buffer = contentSource.substring(cmdIndex + args.filter_command.length);
+                }
+            }
+            if (args.last_command && session.lastCommand) {
+                const cmdIndex = contentSource.lastIndexOf(session.lastCommand);
+                if (cmdIndex >= 0) {
+                    buffer = contentSource.substring(cmdIndex + session.lastCommand.length);
+                }
+            }
+            if (args.start_after) {
+                const startIndex = buffer.indexOf(args.start_after);
+                if (startIndex >= 0) {
+                    buffer = buffer.substring(startIndex + args.start_after.length);
+                }
+            }
             if (args.pattern) {
                 const lines = buffer.split('\n');
                 buffer = lines.filter(line => line.toLowerCase().includes(args.pattern.toLowerCase())).join('\n');
+            }
+            if (args.search) {
+                const searchLower = args.search.toLowerCase();
+                const lines = buffer.split('\n');
+                buffer = lines.filter(line => line.toLowerCase().includes(searchLower)).join('\n');
             }
             const shouldClean = args.clean !== false;
             buffer = shouldClean ? this.cleanOutput(buffer) : buffer;
@@ -683,6 +717,10 @@ export default class SshModule {
                     buffer: buffer,
                     filter: args.filter,
                     pattern: args.pattern || null,
+                    filter_command: args.filter_command || null,
+                    last_command_filter: args.last_command || null,
+                    search: args.search || null,
+                    start_after: args.start_after || null,
                 };
                 return {
                     content: [
@@ -730,7 +768,7 @@ ${buffer || '(empty)'}`;
         try {
             const session = this.sessionManager.getSession(args.session_id);
             if (!session) {
-                throw new Error(`Session ${args.session_id} not found. Create it with ssh_new_session before uploading files.`);
+                throw new Error(`Session "${args.session_id}" not found`);
             }
             const localPath = path.resolve(process.cwd(), args.local_path);
             const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
@@ -767,7 +805,7 @@ ${buffer || '(empty)'}`;
         try {
             const session = this.sessionManager.getSession(args.session_id);
             if (!session) {
-                throw new Error(`Session ${args.session_id} not found. Create it with ssh_new_session before downloading files.`);
+                throw new Error(`Session "${args.session_id}" not found`);
             }
             const remoteTarget = this.fileTransferHandler.resolveRemotePath(args.remote_path, session);
             const localPath = path.resolve(process.cwd(), args.local_path);
@@ -803,7 +841,7 @@ ${buffer || '(empty)'}`;
     async handleSshGetSessionInfo(args, context) {
         const session = this.sessionManager.getSession(args.session_id);
         if (!session) {
-            throw new Error(`Session ${args.session_id} not found.`);
+            throw new Error(`Session "${args.session_id}" not found`);
         }
         const info = {
             session_id: session.id,
@@ -827,12 +865,14 @@ ${buffer || '(empty)'}`;
         const sessions = this.sessionManager.listSessions();
         let filtered = sessions;
         if (args.session_id) {
-            filtered = filtered.filter(s => s.id === args.session_id);
+            filtered = filtered.filter((s) => s.id === args.session_id);
         }
         if (args.command_pattern) {
             const pattern = args.command_pattern || '';
-            filtered = filtered.filter(s => s.lastCommand ? s.lastCommand.includes(pattern) : false);
+            filtered = filtered.filter((s) => (s.lastCommand ? s.lastCommand.includes(pattern) : false));
         }
+        const statusFilter = args.status_filter || 'all';
+        filtered = filtered.filter((s) => this.matchesStatusFilter(s, statusFilter));
         const limit = args.limit || 50;
         const offset = args.offset || 0;
         const paginated = filtered.slice(offset, offset + limit);
@@ -856,27 +896,27 @@ ${buffer || '(empty)'}`;
     async handleSshProcessKill(args, context) {
         const session = this.sessionManager.getSession(args.session_id);
         if (!session) {
-            throw new Error(`Session ${args.session_id} not found.`);
+            throw new Error(`Session "${args.session_id}" not found`);
         }
         if (!session.ptyProcess) {
-            throw new Error(`No PTY process found for session ${args.session_id}`);
+            throw new Error('No PTY process found');
         }
-        // Send signal to the process
-        const signalMap = {
-            'TERM': '\x03',
-            'KILL': '\x09',
-            'INT': '\x03',
-            'HUP': '\x01',
-            'USR1': '\x1b',
-            'USR2': '\x1c',
-        };
-        const signal = args.force ? '\x09' : (signalMap[args.signal] || '\x03');
-        session.ptyProcess.write(signal);
+        const pid = args.process_id;
+        if (pid <= 0) {
+            throw new Error('Invalid process ID');
+        }
+        const signalLabel = args.force ? 'KILL' : args.signal;
+        const killCmd = `kill -${signalLabel} ${pid}`;
+        const result = await this.commandExecutor.executeCommand(session, killCmd, 5000);
+        if (result.exitCode !== 0) {
+            throw new Error(`Failed to send ${signalLabel} to PID ${pid}`);
+        }
         return {
-            content: [{ type: 'text', text: `Signal ${args.signal} sent to session ${args.session_id}` }],
+            content: [{ type: 'text', text: `Signal ${signalLabel} sent to PID ${pid} (session ${args.session_id})` }],
             structuredContent: {
                 session_id: args.session_id,
-                signal: args.signal,
+                signal: signalLabel,
+                process_id: pid,
                 forced: args.force,
             },
         };
@@ -929,42 +969,76 @@ ${buffer || '(empty)'}`;
         });
     }
     formatSshOperateText(response) {
-        const lines = [];
-        const level = response.response_level || 'standard';
-        if (level === 'full') {
-            if (response.session_created) {
-                const target = response.target;
-                if (target) {
-                    lines.push(`Created session: ${response.session_id}`);
-                    lines.push(`Target: ${target.user ? `${target.user}@` : ''}${target.host}:${target.port}`);
-                }
-            }
-            else {
-                lines.push(`Session: ${response.session_id}`);
-            }
+        const sessionId = String(response.session_id || 'unknown');
+        const success = response.success === true;
+        const inputRejected = response.inputRejected === true || response.input_rejected === true;
+        const reason = response.reason || response.reason;
+        const outputRaw = String(response.output || '');
+        const shouldStripAnsi = response.strip_ansi !== false;
+        const output = shouldStripAnsi ? this.cleanOutput(outputRaw) : outputRaw;
+        const outputInfo = response.output_info;
+        const hasMore = outputInfo?.has_more === true;
+        const lineCount = outputInfo?.line_count;
+        const partial = response.partial === true;
+        const lines = [`session_id: ${sessionId}`, `success: ${success}`];
+        lines.push(`strip_ansi: ${shouldStripAnsi}`);
+        if (inputRejected) {
+            lines.push('input_rejected: true');
         }
-        else if (level === 'standard') {
-            lines.push(`Session: ${response.session_id}`);
+        if (reason) {
+            lines.push(`reason: ${reason}`);
         }
-        if (response.command && level !== 'minimal') {
-            lines.push(`Command: ${response.command}`);
-            if (response.exit_code !== undefined) {
-                lines.push(`Exit code: ${response.exit_code}`);
-            }
+        if (lineCount !== undefined) {
+            lines.push(`line_count: ${lineCount}`);
         }
-        if (response.output) {
-            if (level !== 'minimal') {
-                lines.push('');
-            }
-            lines.push(String(response.output));
+        if (outputInfo && Object.keys(outputInfo).length > 0) {
+            lines.push(`has_more: ${hasMore}`);
         }
-        if (response.awaiting_input) {
-            lines.push('');
-            lines.push(`⚠️ Awaiting input: ${response.prompt_type} prompt detected.`);
-            lines.push(`Prompt: ${response.prompt_text}`);
-            lines.push(`Use ssh_operate with input parameter to respond.`);
+        if (partial) {
+            lines.push('partial: true');
+            lines.push('note: Command may still be running. Use ssh_get_buffer for full output.');
+        }
+        const command = response.command;
+        if (command) {
+            lines.push(`command: ${command}`);
+        }
+        if (output) {
+            lines.push('', output);
         }
         return lines.join('\n');
+    }
+    matchesStatusFilter(session, filter) {
+        switch (filter) {
+            case 'running':
+                return session.isConnected && !session.isReady;
+            case 'completed':
+                return session.isConnected && session.isReady;
+            case 'failed':
+                return !session.isConnected;
+            case 'all':
+            default:
+                return true;
+        }
+    }
+    buildOutputInfo(fullBuffer, maxLines, includeAnsi) {
+        let content = fullBuffer;
+        if (!includeAnsi) {
+            content = this.cleanOutput(content);
+        }
+        const allLines = content.split('\n');
+        const totalLines = allLines.length;
+        const startLine = Math.max(0, totalLines - maxLines);
+        const hasMore = totalLines > maxLines;
+        const outputLines = hasMore ? allLines.slice(startLine) : allLines;
+        const output = outputLines.join('\n');
+        return {
+            output,
+            line_count: outputLines.length,
+            total_lines: totalLines,
+            has_more: hasMore,
+            start_line: startLine,
+            next_start_line: hasMore ? startLine + maxLines : totalLines,
+        };
     }
     cleanOutput(output) {
         if (!output)
