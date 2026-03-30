@@ -79,6 +79,12 @@ export const ShellExecuteParamsSchema = ShellExecuteParamsBaseSchema.refine((dat
     message: 'input_data and input_output_id cannot be specified simultaneously.',
     path: ['input_data', 'input_output_id'],
 });
+export const ShellExecuteStreamingParamsSchema = ShellExecuteParamsBaseSchema.extend({
+    output_id: z
+        .string()
+        .min(1)
+        .describe('Required output identifier for streaming results (used by SSE/WS subscribers).'),
+}).strict();
 export const ShellGetExecutionParamsSchema = z.object({
     execution_id: z
         .string()

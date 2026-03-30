@@ -132,6 +132,16 @@ Clients know it's done!
 
 ---
 
+## 🎯 STREAMING ENDPOINTS
+
+| Transport | Method | URL | Purpose | Backup guidance |
+|-----------|--------|-----|---------|-----------------|
+| SSE (HTTP) | `GET` | `/streaming/sse/:outputId` | Subscribe to buffered SSE chunks, heartbeats, and the completion event for the execution tied to that `output_id`. | Search for “streaming router SSE” or review `STREAMING_IMPLEMENTATION_SUMMARY.md` if the path is renamed. |
+| WebSocket | `WS` | `/api/stream` | Bi-directional WebSocket transport; after executing with `output_id`, send `{ type: 'subscribe', executionId }` to receive live output. | Fall back to `/streaming/sse/:outputId` or search for `websocketTransportFactory` when repainting the router. |
+| Tool-backed HTTP | `POST` | `/tools/shell_execute_streaming` & `/tools/ssh_execute_streaming` | Optional wrappers that start shell/SSH commands with streaming enabled and return `{ execution_id, streaming_enabled: true }`. | Look at `STREAMING_IMPLEMENTATION_SUMMARY.md` and `STREAMING_INTEGRATION_PATCHES.md` if the helper names change. |
+
+Reuse the same `output_id` in the execute request and the streaming subscription so the router can correlate the chunks with the running process.
+
 ## 💻 CLIENT-SIDE IMPLEMENTATION
 
 ### **What Client-Side Should Have:**
@@ -925,6 +935,27 @@ setOutput(prev => prev + char); // Too many re-renders!
 - [ ] Responsive UI for mobile
 
 ---
+
+## 📉 INDUSTRY BENCHMARK COMPARISON
+
+- Searched recent write-ups covering real-time streaming trade-offs (pub/sub, SSE, WebSocket, and streaming logs) to compare our design with modern guidance.
+
+### Architecture vs durable pub/sub logs
+- Modern sources such as ["Real-Time Data Streaming Architectures with Kafka and Pub/Sub Best Practices" (IASET paper)](https://www.iaset.us/download/archives/04-03-2025-1741080557-6-%20IJCSE-17.%20IJCSE%20-%20REAL-TIME%20DATA%20STREAMING%20ARCHITECTURES%20WITH%20KAFKA%20AND%20PUB-SUB%20BEST%20PRACTICES%20AND%20USE%20CASES.pdf?utm_source=openai)
+  (alternative: search for the paper title plus "IASET" if the PDF link breaks) highlight persistent append-only logs, replayability, and hybrid speed/batch layers. Our code (ProcessManager + StreamPublisher + RealtimeStreamSubscriber) keeps everything in-memory, so there is no durable log, no replay, and no easy multi-node scaling — which is fine for short-lived shells, but it means we can’t recover or replay historic streams like Kafka/Pulsar systems can.
+
+### Transport patterns and resilience
+- Comparing to FastAPI/WebSocket/Redis guides such as ["Real-Time Apps with FastAPI WebSockets and Redis Pub/Sub" (Johal)](https://johal.in/real-time-apps-with-fastapi-websockets-and-redis-pub-sub-integration-patterns-2025/?utm_source=openai)
+  (alternative: search the title plus "Johal" or "FastAPI WebSockets Redis Pub/Sub 2025"), we see the expectation for hybrid push transports (WebSocket with SSE fallback), heartbeat/backpressure handling, and Redis-style fan-out. Our SSE router (`/streaming/sse/:outputId`) can serve this role, but we still lack global fan-out (buffers are per execution in a single process), structured backpressure handling, and the Redis-style multi-instance delivery guarantees.
+
+### Fault tolerance and delivery guarantees
+- The FastAPI/Redis and ["Websocket and Real-Time Implementing Live Features in 2025" (Lueurexterne blog)](https://blog.lueurexterne.com/en/blog/websocket-and-real-time-implementing-live-features-in-2025/?utm_source=openai)
+  (alternative: search for the article title plus "Lueurexterne"), and other streaming tutorials emphasize heartbeats, reconnection logic, retries, and durable queues. Our heartbeat is currently a fixed timer, there is no replay once a buffer rotates, and there are no retries after failures, so fault-tolerant delivery is weaker than the industry norm.
+
+### Pub/Sub insight
+- The Kafka/IASET paper above (search keywords as noted) and similar materials insist on immutable, append-only logs, message ordering guarantees, and explicit retry/replay support. StreamPublisher still writes to RAM, so if the process restarts we lose intermediate chunks — we do not have durable ledgers, ordering enforcement across restarts, nor replayability.
+
+**Conclusion:** We stream over SSE in-process today, but compared to industrial benchmarks we lack distributed durable pub/sub plumbing, structured backpressure handling, and replay/failover guarantees. Those gaps are the key blockers before labeling the system "production-grade" in the broader streaming ecosystem.
 
 ## 🎯 SUMMARY
 

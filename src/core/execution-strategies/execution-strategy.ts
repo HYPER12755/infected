@@ -19,6 +19,8 @@ export interface ExecutionStrategyConfig {
   environmentVariables?: EnvironmentVariables;
   /** Input data to send via stdin */
   inputData?: string;
+  /** Callback invoked when the strategy reports completion (background/async flows) */
+  onComplete?: (executionId: string, result: StrategyExecutionResult) => void;
 }
 
 /**
@@ -31,6 +33,7 @@ export interface StrategyExecutionResult {
   duration: number; // milliseconds
   signalReceived?: string;
   outputTruncated: boolean;
+  processId?: number;
   error?: Error;
 }
 

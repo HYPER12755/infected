@@ -73,6 +73,7 @@ export class BackgroundStrategy
       let stdout = '';
       let stderr = '';
       let outputTruncated = false;
+      let completionNotified = false;
 
       // Prepare environment variables
       const env = getSafeEnvironment(
@@ -94,6 +95,21 @@ export class BackgroundStrategy
       }
 
       logger.debug(`[BackgroundStrategy] Started background process ${pid} for execution ${executionId}`);
+
+      const notifyCompletion = (code: number | null) => {
+        if (completionNotified) return;
+        completionNotified = true;
+        const duration = Date.now() - startTime;
+        const exitCode = code ?? -1;
+        this.config.onComplete?.(executionId, {
+          exitCode,
+          stdout: sanitizeString(stdout),
+          stderr: sanitizeString(stderr),
+          duration,
+          outputTruncated,
+          processId: pid,
+        });
+      };
 
       // Track process in map for output collection
       this.processMap.set(pid, { stdout, stderr, startTime });
@@ -163,12 +179,15 @@ export class BackgroundStrategy
             logger.debug(`[BackgroundStrategy] Cleaning up background process ${pid} after TTL`);
           }, this.config.historyTTLMs);
         }
+
+        notifyCompletion(code ?? null);
       });
 
       this.childProcess.on('error', (error) => {
         clearTimeout(this.timeoutHandle);
         this.processMap.delete(pid);
         logger.error(`[BackgroundStrategy] Background process ${pid} error:`, error);
+        notifyCompletion(-1);
       });
 
       // Return immediately with process info
@@ -180,6 +199,7 @@ export class BackgroundStrategy
         stderr: '', // Not available yet
         duration,
         outputTruncated: false,
+        processId: pid,
       });
     });
   }

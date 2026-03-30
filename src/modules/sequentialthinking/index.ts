@@ -29,7 +29,7 @@ export class SequentialThinkingModule implements Module {
     });
 
     this.deregisterFunctions.push(server.registerTool( // Store deregister function
-      "sequentialthinking",
+      "SequentialThinking",
       {
         title: "Sequential Thinking",
         description: `A detailed tool for dynamic and reflective problem-solving through thoughts.
@@ -85,7 +85,12 @@ You should:
 8. Verify the hypothesis based on the Chain of Thought steps
 9. Repeat the process until satisfied with the solution
 10. Provide a single, ideally correct answer as the final output
-11. Only set nextThoughtNeeded to false when truly done and a satisfactory answer is reached`,
+11. Only set nextThoughtNeeded to false when truly done and a satisfactory answer is reached
+
+Typical use cases:
+- Plan multi-step implementations before coding or deploying
+- Debug sequences where each step depends on earlier insights
+- Validate complex hypotheses before delivering a final recommendation`,
         inputSchema: SequentialThinkingArgsSchema,
         outputSchema: {
           thoughtNumber: z.number(),

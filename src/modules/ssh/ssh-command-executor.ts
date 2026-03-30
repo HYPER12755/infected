@@ -15,6 +15,9 @@ export interface CommandResult {
   exitCode: number;
   durationMs: number;
   completedNormally: boolean;
+  timedOut: boolean;
+  partial: boolean;
+  bufferStartPos: number;
 }
 
 /**
@@ -67,6 +70,7 @@ export class SSHCommandExecutor {
   }
   /**
    * Executes a command in an SSH session
+   * Simplified approach: send command, wait fixed delay, capture output
    */
   async executeCommand(
     session: Session,
@@ -98,92 +102,105 @@ export class SSHCommandExecutor {
         throw error;
       }
 
-      if (!session.isReady) {
-        throw new Error(`Session ${session.id} is busy executing: ${session.lastCommand}`);
+      // Check if there was a previous background command that finished
+      if (!session.isReady && session.lastCommand) {
+        const buffer = session.outputBuffer || '';
+        // Check if the previous command has finished (has exit code)
+        if (/exit\s*(\d+)/i.test(buffer) || /\(exit\s*(\d+)\)/i.test(buffer)) {
+          session.isReady = true;
+          session.lastCommand = '';
+        }
       }
 
-      const validTimeout = Math.min(Math.max(timeout, 1000), MAX_TIMEOUT_MS);
+      // Check and set busy state atomically to prevent race conditions
+      if (!session.isReady) {
+        throw new Error(`Session is busy executing: ${session.lastCommand || 'previous command'}`);
+      }
 
-      session.lastCommand = command;
+      // Set isReady to false BEFORE executing to prevent race conditions
       session.isReady = false;
-      session.outputBuffer = '';
 
-      // Use session ID + timestamp for unique markers to avoid collision
-      const timestamp = `${session.id}-${Date.now()}`;
-      const startMarker = `===START${timestamp}===`;
-      const endMarker = `===END${timestamp}===`;
-      const exitMarker = `===EXIT${timestamp}===`;
+      // Use 10 second timeout for safety (shorter than before)
+      const SAFETY_TIMEOUT_MS = 10000;
+      const validTimeout = Math.min(Math.max(timeout, 1000), Math.min(SAFETY_TIMEOUT_MS, MAX_TIMEOUT_MS));
+
+      // Capture buffer position before sending command
+      const bufferStartPos = session.outputBuffer.length;
+      session.lastCommand = command;
 
       try {
-        // Wait for PTY to stabilize before sending commands
-        await this.sleep(100);
-
-        // Send a newline first to ensure we're at a clean prompt
-        session.ptyProcess.write('\n');
-        await this.sleep(150);
-
-        // Write start marker
-        session.ptyProcess.write(`echo '${startMarker}'\n`);
-        await this.sleep(100);
-
-        // Write the actual command
+        // Send the command
         session.ptyProcess.write(`${command}\n`);
-        await this.sleep(100);
-
-        // Write exit code marker
-        session.ptyProcess.write(`echo '${exitMarker}'$?\n`);
-        await this.sleep(100);
-
-        // Write end marker
-        session.ptyProcess.write(`echo '${endMarker}'\n`);
-        await this.sleep(100);
 
         const startTime = Date.now();
-        let foundEnd = false;
+        let lastBufferSize = bufferStartPos;
         let stableCount = 0;
 
-        // Poll for end marker
+        // Poll for output until timeout
         while (Date.now() - startTime < validTimeout) {
-          if (session.outputBuffer.includes(endMarker)) {
-            await this.sleep(200);
-            const prevBuffer = session.outputBuffer;
-            await this.sleep(150);
-            if (session.outputBuffer === prevBuffer || stableCount > 3) {
-              foundEnd = true;
-              break;
-            }
-            stableCount++;
+          await this.sleep(200);
+          
+          // Check if session disconnected
+          if (!session.isConnected) {
+            session.isReady = true;
+            throw new SSHError(
+              `Session ${session.id} disconnected during command execution`,
+              { code: SSHErrorCode.DISCONNECTED, severity: ErrorSeverity.HIGH, retryable: true }
+            );
           }
-          await this.sleep(50);
+          
+          // Check if output has stabilized (command likely finished)
+          if (session.outputBuffer.length === lastBufferSize) {
+            stableCount++;
+            if (stableCount >= 2) {
+              break; // Output stable, command likely done
+            }
+          } else {
+            stableCount = 0;
+            lastBufferSize = session.outputBuffer.length;
+          }
         }
 
-        session.isReady = true;
-
-        if (!foundEnd) {
-          throw new SSHError(
-          `Command timeout after ${validTimeout}ms. Output may still be streaming.`,
-          { code: SSHErrorCode.TIMEOUT, severity: ErrorSeverity.HIGH, retryable: true }
-        );
+        // Capture output
+        const currentBuffer = session.outputBuffer;
+        let commandOutput = '';
+        
+        if (currentBuffer.length > bufferStartPos) {
+          commandOutput = currentBuffer.substring(bufferStartPos);
         }
 
-        const buffer = session.outputBuffer;
-        const startIdx = buffer.lastIndexOf(startMarker);
-        const endIdx = buffer.lastIndexOf(endMarker);
-        let segment = buffer;
-
-        if (startIdx >= 0 && endIdx > startIdx) {
-          segment = buffer.substring(startIdx + startMarker.length, endIdx);
+        // Check if we timed out
+        const timedOut = Date.now() - startTime >= validTimeout;
+        
+        // Try to extract exit code from buffer
+        let exitCode = 0;
+        const exitCodeMatch = commandOutput.match(/exit[_\s]?code[:\s]*(\d+)/i) 
+          || commandOutput.match(/(?:^|\n)\s*(\d+)\s*$/);
+        
+        if (exitCodeMatch) {
+          exitCode = parseInt(exitCodeMatch[1], 10);
+        } else if (timedOut) {
+          // No exit code found and timed out - command may still be running
+          exitCode = -1; // Indicate unknown
         }
 
-        const filtered = this.filterCommandOutput(segment, command, startMarker, endMarker, exitMarker);
-        const cleaned = this.cleanOutput(filtered);
-        const exitMatch = buffer.match(new RegExp(`${this.escapeRegex(exitMarker)}(\\d+)`));
-        const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : 0;
+        // If timed out, don't mark session as ready - command is still running
+        // This prevents new commands from interrupting the background process
+        if (!timedOut) {
+          session.isReady = true;
+        } else {
+          // Mark as busy but allow reading buffer
+          session.isReady = false;
+          // Store the background command info
+          session.lastCommand = command;
+        }
 
+        const cleaned = this.cleanOutput(commandOutput);
         const durationMs = Date.now() - startTime;
 
         // Add to history
-        const historyLines = [`$ ${command}`, cleaned || '(no output)', `(exit ${exitCode})`].join('\n');
+        const status = timedOut ? 'partial' : 'complete';
+        const historyLines = [`$ ${command}`, cleaned || '(no output)', `(exit ${exitCode}) [${status}]`].join('\n');
         this.appendHistory(session, historyLines);
 
         this.loggingContext.debug('Command executed', {
@@ -192,13 +209,25 @@ export class SSHCommandExecutor {
           command: command.substring(0, 100),
           exitCode,
           durationMs,
+          timedOut,
         });
+
+        if (timedOut) {
+          // Note: command continues running in background
+          this.loggingContext.debug('Command timed out but continues in background', {
+            sessionId: session.id,
+            command: command.substring(0, 50),
+          });
+        }
 
         return {
           output: cleaned,
           exitCode,
           durationMs,
-          completedNormally: true,
+          completedNormally: !timedOut,
+          timedOut,
+          partial: timedOut,
+          bufferStartPos,
         };
       } catch (error) {
         session.isReady = true;
@@ -326,6 +355,14 @@ export class SSHCommandExecutor {
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
+      .split('\n')
+      .filter(line => line.trim() !== '')
+      .filter((line, idx, arr) => {
+        if (idx === 0) return false;
+        if (idx > 0 && line === arr[idx - 1]) return false;
+        return true;
+      })
+      .join('\n')
       .trim();
   }
 

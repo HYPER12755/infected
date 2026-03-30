@@ -98,6 +98,27 @@ export function httpStreamTransportFactory(mcpServer) {
     let sharedTransport;
     let connectionPromise = null;
     const pendingMetadata = [];
+    // Mutex to serialize client initializations
+    let initializationLock = false;
+    const initializationQueue = [];
+    const waitForInitializationLock = () => {
+        return new Promise((resolve) => {
+            if (!initializationLock) {
+                initializationLock = true;
+                resolve();
+                return;
+            }
+            initializationQueue.push(resolve);
+        });
+    };
+    const releaseInitializationLock = () => {
+        initializationLock = false;
+        const next = initializationQueue.shift();
+        if (next) {
+            initializationLock = true;
+            next();
+        }
+    };
     const createNewTransport = () => {
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
@@ -165,6 +186,11 @@ export function httpStreamTransportFactory(mcpServer) {
         }
         return transport;
     };
+    // Track if the server has been initialized
+    let serverInitialized = false;
+    // Note: We use a shared transport for the MCP server connection,
+    // but each client session gets its own sessionId for tracking.
+    // The StreamableHTTPServerTransport handles session multiplexing internally.
     const initializeTransport = async (req) => {
         const clientInfo = clientSnapshotFromRequest(req);
         const metadataMethod = req.method ?? 'POST';
@@ -187,10 +213,51 @@ export function httpStreamTransportFactory(mcpServer) {
     const handleMcpPost = async (req, res) => {
         const requestedSession = extractSessionId(req);
         const isInitialization = !requestedSession && isInitializeRequest(req.body);
+        // For existing sessions, use the session-specific transport
         let transport = requestedSession ? transportMap[requestedSession] : undefined;
         let currentSessionId = requestedSession;
         if (!transport && isInitialization) {
-            ({ transport } = await initializeTransport(req));
+            // Wait for the initialization lock to serialize client connections
+            await waitForInitializationLock();
+            try {
+                // Check if server was already initialized while waiting
+                if (serverInitialized && sharedTransport) {
+                    // Server already initialized, use the shared transport
+                    // The client will get its own session ID via response headers
+                    transport = sharedTransport;
+                    currentSessionId = transport.sessionId;
+                }
+                else {
+                    // First initialization - connect the transport
+                    transport = await ensureTransportConnected();
+                    serverInitialized = true;
+                    if (transport.sessionId) {
+                        transportMap[transport.sessionId] = transport;
+                        currentSessionId = transport.sessionId;
+                        const clientInfo = clientSnapshotFromRequest(req);
+                        const metadata = {
+                            ip: req.ip ?? 'unknown',
+                            userAgent: normalizeHeaderValue(req.headers['user-agent']),
+                            host: normalizeHeaderValue(req.headers['host']),
+                            origin: normalizeHeaderValue(req.headers['origin']),
+                            apiKey: maskApiKey(normalizeHeaderValue(req.headers['x-api-key'])),
+                            createdAt: new Date().toISOString(),
+                            method: req.method ?? 'POST',
+                            path: req.path ?? '/mcp',
+                            ...clientInfo,
+                        };
+                        sessionMetadata.set(transport.sessionId, metadata);
+                        logger.info('New MCP client session registered', {
+                            component: 'http-transport',
+                            sessionId: transport.sessionId,
+                            ...metadata,
+                        });
+                    }
+                }
+            }
+            finally {
+                releaseInitializationLock();
+            }
         }
         if (!transport) {
             if (requestedSession) {
@@ -211,6 +278,28 @@ export function httpStreamTransportFactory(mcpServer) {
             await transport.handleRequest(req, res, req.body);
         }
         catch (error) {
+            // Handle the "Server already initialized" error gracefully
+            // This can happen when multiple clients try to initialize concurrently
+            if (error?.message?.includes('Server already initialized') ||
+                error?.message?.includes('Already connected to a transport')) {
+                logger.warn('Concurrent initialization attempt detected', {
+                    component: 'http-transport',
+                    sessionId: currentSessionId,
+                    clientInfo: clientSnapshotFromRequest(req),
+                });
+                // Return the existing session ID to the client
+                res.setHeader('Mcp-Session-Id', transport.sessionId || 'shared');
+                res.status(200).json({
+                    jsonrpc: '2.0',
+                    result: {
+                        protocolVersion: '2024-11-05',
+                        capabilities: {},
+                        serverInfo: { name: 'infected', version: '1.0.0' }
+                    },
+                    id: req.body?.id
+                });
+                return;
+            }
             logger.error('Failed handling HTTP MCP request', { error });
             if (!res.headersSent) {
                 respondJsonRpcError(res, 500, -32603, `Internal error: ${error.message}`, req.body?.id);

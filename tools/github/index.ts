@@ -132,8 +132,8 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
   }
 
   private registerGenericTool(context: UnifiedModuleContext): void {
-    const toolId = 'gh_';
-    const toolTitle = 'gh_';
+    const toolId = 'Gh';
+    const toolTitle = 'Gh';
     const description =
       "Run generic 'gh' commands through a single tool. Provide 'subcommand' or 'subcommands' plus optional args, flag map entries, or raw flags so you can include '--visibility=public' and other options.";
 
@@ -186,8 +186,8 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
     commandName: string,
     commandDescription: string
   ): void {
-    const toolId = `git_${this.sanitizeName(commandName)}`;
-    const toolTitle = `git_${this.sanitizeName(commandName)}`;
+    const toolId = `Git${this.capitalizeFirst(commandName)}`;
+    const toolTitle = `Git${this.capitalizeFirst(commandName)}`;
     const description = `Run 'git ${commandName}' with args/subcommands/flags as needed. ${commandDescription}`;
 
     const inputSchema =
@@ -232,8 +232,8 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
   }
 
   private registerGenericGitTool(context: UnifiedModuleContext): void {
-    const toolId = 'git_';
-    const toolTitle = 'git_';
+    const toolId = 'Git';
+    const toolTitle = 'Git';
     const description =
       "Run arbitrary 'git' commands via subcommand/subcommands plus args/flags/flagMap. Useful for anything beyond the targeted helpers.";
 
@@ -719,6 +719,10 @@ class GithubCommandsPlugin implements IUnifiedPlugin {
 
   private sanitizeName(name: string): string {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  private capitalizeFirst(name: string): string {
+    return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
   }
 }
 

@@ -3,8 +3,14 @@
   "transport": "http",
   // List of modules to load. Agents can use tools from these modules.
   "modules": ["shell", "filesystem", "memory", "sequentialthinking", "fetch"],
-  // Port for HTTP/SSE transport.
+  // Base port for HTTP/SSE transport.
   "port": 3001,
+  // Transport-specific ports (HTTP and SSE share the same port, WebSocket uses separate)
+  "transportPorts": {
+    "httpPort": 3001,
+    "ssePort": 3001,
+    "wsPort": 3002
+  },
   // Directory where external tools are automatically discovered.
   "toolsDir": "./tools",
   // Directory where external plugins are automatically discovered.
@@ -27,6 +33,11 @@
     "domainWhitelist": [],
     // Prevent 'fetch' tools from accessing local network resources. Set to false for agents needing local access.
     "blockLocalNetwork": false
+  },
+  "streaming": {
+    // Fine-tune the streaming router that backs SSE subscriptions.
+    "pollIntervalMs": 100,
+    "heartbeatIntervalMs": 15000
   },
   "plugins": [
     // Define external plugins to load, with optional plugin-specific configurations.

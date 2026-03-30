@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises"; // Use node:fs/promises
-import { createReadStream } from "node:fs"; // Use node:fs for createReadStream
 import * as path from "node:path"; // Use node:path
 import { z } from "zod";
 import { minimatch } from "minimatch";
@@ -13,6 +12,7 @@ export class FilesystemModule {
         this.name = 'filesystem';
         this.allowedDirectories = [];
         this.deregisterFunctions = []; // Store SDK tool handles/deregister functions
+        this.rootsRequestWarned = false;
     }
     async register(server, config) {
         // Check if config.shell is defined before accessing its properties
@@ -45,9 +45,6 @@ export class FilesystemModule {
             head: z.number().optional().describe('If provided, returns only the first N lines of the file'),
             start_line: z.number().int().min(1).optional().describe('Line number to start reading from (1-indexed)'),
             end_line: z.number().int().min(1).optional().describe('Line number to end reading at (1-indexed, inclusive)')
-        });
-        const ReadMediaFileArgsSchema = z.object({
-            path: z.string()
         });
         const ReadMultipleFilesArgsSchema = z.object({
             paths: z
@@ -99,20 +96,6 @@ export class FilesystemModule {
         // Reads a file as a stream of buffers, concatenates them, and then encodes
         // the result to a Base64 string. This is a memory-efficient way to handle
         // binary data from a stream before the final encoding.
-        async function readFileAsBase64Stream(filePath) {
-            return new Promise((resolve, reject) => {
-                const stream = createReadStream(filePath);
-                const chunks = [];
-                stream.on('data', (chunk) => {
-                    chunks.push(chunk);
-                });
-                stream.on('end', () => {
-                    const finalBuffer = Buffer.concat(chunks);
-                    resolve(finalBuffer.toString('base64'));
-                });
-                stream.on('error', (err) => reject(err));
-            });
-        }
         // Helper function - kept for potential future use but not currently applied
         // function formatContentWithLineNumbers(content: string): string {
         //   const lines = content.split('\n');
@@ -182,14 +165,14 @@ export class FilesystemModule {
                 structuredContent: { content: content }
             };
         };
-        this.deregisterFunctions.push(server.registerTool("read_file", {
+        this.deregisterFunctions.push(server.registerTool("ReadFile", {
             title: "Read File (Deprecated)",
-            description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
+            description: "Read the complete contents of a file as text. DEPRECATED: Use ReadTextFile instead. Use this only for legacy compatibility when ReadTextFile signatures are unavailable.",
             inputSchema: ReadTextFileArgsSchemaDeprecated.shape,
             outputSchema: { content: z.string() },
             annotations: { readOnlyHint: true }
         }, readFileDeprecatedHandler));
-        this.deregisterFunctions.push(server.registerTool("read_text_file", {
+        this.deregisterFunctions.push(server.registerTool("ReadTextFile", {
             title: "Read Text File",
             description: "Read the complete contents of a file from the file system as text. " +
                 "Handles various text encodings and provides detailed error messages " +
@@ -208,51 +191,7 @@ export class FilesystemModule {
             outputSchema: { content: z.string() },
             annotations: { readOnlyHint: true }
         }, readTextFileHandler));
-        this.deregisterFunctions.push(server.registerTool("read_media_file", {
-            title: "Read Media File",
-            description: "Read an image or audio file. Returns the base64 encoded data and MIME type. " +
-                "Only works within allowed directories.",
-            inputSchema: {
-                path: z.string()
-            },
-            outputSchema: {
-                content: z.array(z.object({
-                    type: z.enum(["image", "audio", "blob"]),
-                    data: z.string(),
-                    mimeType: z.string()
-                }))
-            },
-            annotations: { readOnlyHint: true }
-        }, async (args) => {
-            const validPath = await validatePath(args.path);
-            const extension = path.extname(validPath).toLowerCase();
-            const mimeTypes = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".webp": "image/webp",
-                ".bmp": "image/bmp",
-                ".svg": "image/svg+xml",
-                ".mp3": "audio/mpeg",
-                ".wav": "audio/wav",
-                ".ogg": "audio/ogg",
-                ".flac": "audio/flac",
-            };
-            const mimeType = mimeTypes[extension] || "application/octet-stream";
-            const data = await readFileAsBase64Stream(validPath);
-            const type = mimeType.startsWith("image/")
-                ? "image"
-                : mimeType.startsWith("audio/")
-                    ? "audio"
-                    : "blob";
-            const contentItem = { type: type, data, mimeType };
-            return {
-                content: [contentItem],
-                structuredContent: { content: [contentItem] }
-            };
-        }));
-        this.deregisterFunctions.push(server.registerTool("read_multiple_files", {
+        this.deregisterFunctions.push(server.registerTool("ReadMultipleFiles", {
             title: "Read Multiple Files",
             description: "Read the contents of multiple files simultaneously. This is more " +
                 "efficient than reading files one by one when you need to analyze " +
@@ -275,12 +214,12 @@ export class FilesystemModule {
                     const ext = filePath.toLowerCase().split('.').pop();
                     const binaryExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg', 'mp3', 'mp4', 'wav', 'ogg', 'zip', 'tar', 'gz', 'rar', '7z', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
                     if (ext && binaryExtensions.includes(ext)) {
-                        return `${filePath}: Error - Binary file detected (${ext}). Use read_media_file tool for images/audio, or download the file directly.`;
+                        return `${filePath}: Error - Binary file detected (${ext}). Download it via a file-transfer tool instead.`;
                     }
                     const content = await readFileContent(validPath);
                     // Check for binary content (null bytes)
                     if (content.includes('\0')) {
-                        return `${filePath}: Error - Binary file detected. Contains null bytes. Use read_media_file tool for media files.`;
+                        return `${filePath}: Error - Binary file detected. Contains null bytes. Download it via a file-transfer tool instead.`;
                     }
                     return `${filePath}:\n${content}\n`;
                 }
@@ -295,13 +234,14 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("write_file", {
+        this.deregisterFunctions.push(server.registerTool("WriteFile", {
             title: "Write File",
             description: "Create a new file or completely overwrite an existing file with new content. " +
                 "Will create parent directories if they don't exist. " +
                 "Use with caution as it will overwrite existing files without warning. " +
                 "Handles text content with proper encoding. Only works within allowed directories. " +
-                "Use 'base_dir' parameter to specify the base directory for relative paths.",
+                "Use 'base_dir' parameter to specify the base directory for relative paths. " +
+                "Use this when patching configurations, deploying generated artifacts, or bootstrapping new scripts.",
             inputSchema: {
                 path: z.string().min(1, "File path cannot be empty"),
                 content: z.string(),
@@ -349,11 +289,11 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("edit_file", {
+        this.deregisterFunctions.push(server.registerTool("EditFile", {
             title: "Edit File",
             description: "Make line-based edits to a text file. Each edit replaces exact line sequences " +
                 "with new content. Returns a git-style diff showing the changes made. " +
-                "Only works within allowed directories.",
+                "Only works within allowed directories. Use this to apply targeted patches or scripted replacements before committing changes.",
             inputSchema: {
                 path: z.string(),
                 edits: z.array(z.object({
@@ -372,7 +312,7 @@ export class FilesystemModule {
                 structuredContent: { content: result }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("create_directory", {
+        this.deregisterFunctions.push(server.registerTool("CreateDirectory", {
             title: "Create Directory",
             description: "Create a new directory or ensure a directory exists. Can create multiple " +
                 "nested directories in one operation. If the directory already exists, " +
@@ -392,12 +332,12 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("list_directory", {
+        this.deregisterFunctions.push(server.registerTool("ListDirectory", {
             title: "List Directory",
             description: "Get a detailed listing of all files and directories in a specified path. " +
                 "Results clearly distinguish between files and directories with [FILE] and [DIR] " +
                 "prefixes. This tool is essential for understanding directory structure and " +
-                "finding specific files within a directory. Only works within allowed directories.",
+                "finding specific files within a directory. Only works within allowed directories. Use it to inspect workspace contents before editing files or verifying new paths.",
             inputSchema: {
                 path: z.string()
             },
@@ -414,12 +354,12 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("list_directory_with_sizes", {
+        this.deregisterFunctions.push(server.registerTool("ListDirectoryWithSizes", {
             title: "List Directory with Sizes",
             description: "Get a detailed listing of all files and directories in a specified path, including sizes. " +
                 "Results clearly distinguish between files and directories with [FILE] and [DIR] " +
                 "prefixes. This tool is essential for understanding directory structure and " +
-                "finding specific files within a directory. Only works within allowed directories.",
+                "finding specific files within a directory. Only works within allowed directories. Use it to identify large files before cleanup or to verify size-based inventories.",
             inputSchema: {
                 path: z.string(),
                 sortBy: z.enum(["name", "size"]).optional().default("name").describe("Sort entries by name or size")
@@ -476,12 +416,12 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("directory_tree", {
+        this.deregisterFunctions.push(server.registerTool("DirectoryTree", {
             title: "Directory Tree",
             description: "Get a recursive tree view of files and directories as a JSON structure. " +
                 "Each entry includes 'name', 'type' (file/directory), and 'children' for directories. " +
                 "Files have no children array, while directories always have a children array (which may be empty). " +
-                "The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
+                "The output is formatted with 2-space indentation for readability. Only works within allowed directories. Use it to audit nested configurations or plan repository reorganizations.",
             inputSchema: {
                 path: z.string(),
                 excludePatterns: z.array(z.string()).optional().default([])
@@ -542,12 +482,12 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("move_file", {
+        this.deregisterFunctions.push(server.registerTool("MoveFile", {
             title: "Move File",
             description: "Move or rename files and directories. Can move files between directories " +
                 "and rename them in a single operation. Use overwrite=true to replace existing files. " +
                 "Works across different directories and can be used for simple renaming within " +
-                "the same directory. Both source and destination must be within allowed directories.",
+                "the same directory. Both source and destination must be within allowed directories. Use it to reorganize repository layouts, promote build artifacts, or rename config files before commits.",
             inputSchema: {
                 source: z.string(),
                 destination: z.string(),
@@ -582,13 +522,13 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("search_files", {
+        this.deregisterFunctions.push(server.registerTool("SearchFiles", {
             title: "Search Files",
             description: "Recursively search for files and directories matching a pattern. " +
                 "The patterns should be glob-style patterns that match paths relative to the working directory. " +
                 "Use pattern like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. " +
                 "Returns full paths to all matching items. Great for finding files when you don't know their exact location. " +
-                "Only searches within allowed directories.",
+                "Only searches within allowed directories. Use it when you only remember partial paths (e.g., find configuration files or log folders) before running edits.",
             inputSchema: {
                 path: z.string(),
                 pattern: z.string(),
@@ -620,12 +560,12 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("get_file_info", {
+        this.deregisterFunctions.push(server.registerTool("GetFileInfo", {
             title: "Get File Info",
             description: "Retrieve detailed metadata about a file or directory. Returns comprehensive " +
                 "information including size, creation time, last modified time, permissions, " +
                 "and type. This tool is perfect for understanding file characteristics " +
-                "without reading the actual content. Only works within allowed directories.",
+                "without reading the actual content. Only works within allowed directories. Use it to inspect metadata before editing files or verifying permissions.",
             inputSchema: {
                 path: z.string()
             },
@@ -642,7 +582,7 @@ export class FilesystemModule {
                 structuredContent: { content: text }
             };
         }));
-        this.deregisterFunctions.push(server.registerTool("list_allowed_directories", {
+        this.deregisterFunctions.push(server.registerTool("ListAllowedDirectories", {
             title: "List Allowed Directories",
             description: "Returns the list of directories that this server is allowed to access. " +
                 "Subdirectories within these allowed directories are also accessible. " +
@@ -684,7 +624,14 @@ export class FilesystemModule {
                     }
                 }
                 catch (error) {
-                    logger.error("Failed to request initial roots from client:", error instanceof Error ? error.message : String(error));
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (!this.rootsRequestWarned) {
+                        logger.warn("Failed to request initial roots from client:", message);
+                        this.rootsRequestWarned = true;
+                    }
+                    else {
+                        logger.debug("Failed to request initial roots from client (suppressed warning):", message);
+                    }
                 }
             }
             else {

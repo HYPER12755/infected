@@ -105,12 +105,12 @@ export class MemoryModule implements Module {
     const memoryFilePath = await ensureMemoryFilePath(config.memory?.filePath);
     const knowledgeGraphManager = new KnowledgeGraphManager(memoryFilePath);
 
-    // Register create_entities tool
+    // Register CreateEntities tool
     this.deregisterFunctions.push(server.registerTool(
-      "create_entities",
+      "CreateEntities",
       {
         title: "Create Entities",
-        description: "Create multiple new entities in the knowledge graph",
+        description: "Create multiple new entities (with metadata/tags) in the knowledge graph to capture fresh concepts, files, or resources discovered during a session.",
         inputSchema: createEntitiesSchema,
         outputSchema: createEntitiesSchema
       },
@@ -123,12 +123,12 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register create_relations tool
+    // Register CreateRelations tool
     this.deregisterFunctions.push(server.registerTool(
-      "create_relations",
+      "CreateRelations",
       {
         title: "Create Relations",
-        description: "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
+        description: "Create multiple relationships between entities using active-voice descriptions so facts stay readable; useful when linking related incidents, files, or observations together.",
         inputSchema: createRelationsSchema,
         outputSchema: createRelationsSchema
       },
@@ -141,12 +141,12 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register add_observations tool
+    // Register AddObservations tool
     this.deregisterFunctions.push(server.registerTool(
-      "add_observations",
+      "AddObservations",
       {
         title: "Add Observations",
-        description: "Add new observations to existing entities in the knowledge graph",
+        description: "Add observations (timestamped facts) to existing entities so you can record outcomes, CLI outputs, or follow-up notes without redefining the entity.",
         inputSchema: observationInputSchema,
         outputSchema: observationResultsSchema
       },
@@ -159,18 +159,18 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register delete_entities tool
+    // Register DeleteEntities tool
     this.deregisterFunctions.push(server.registerTool(
-      "delete_entities",
+      "DeleteEntities",
       {
         title: "Delete Entities",
-        description: "Delete multiple entities and their associated relations from the knowledge graph",
+        description: "Delete multiple entities and their associated relations to clean up outdated or erroneous records before rebuilding your knowledge base.",
         inputSchema: deleteEntitiesSchema,
         outputSchema: deleteSuccessSchema
       },
       createZodToolHandler(deleteEntitiesSchema, async (args) => {
         const result = await knowledgeGraphManager.deleteEntities(args.entityNames);
-        const message = result.notFound.length > 0 
+        const message = result.notFound.length > 0
           ? `Deleted ${result.deleted.length} entities. Not found: ${result.notFound.join(', ')}`
           : `Deleted ${result.deleted.length} entities successfully`;
         return {
@@ -180,18 +180,18 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register delete_observations tool
+    // Register DeleteObservations tool
     this.deregisterFunctions.push(server.registerTool(
-      "delete_observations",
+      "DeleteObservations",
       {
         title: "Delete Observations",
-        description: "Delete specific observations from entities in the knowledge graph",
+        description: "Remove precise observations from entities when that data is stale or incorrect, keeping the graph focused on current facts.",
         inputSchema: deleteObservationsSchema,
         outputSchema: deleteSuccessSchema
       },
       createZodToolHandler(deleteObservationsSchema, async (args) => {
         const result = await knowledgeGraphManager.deleteObservations(args.deletions);
-        const message = result.notFound.length > 0 
+        const message = result.notFound.length > 0
           ? `Deleted observations from ${result.deleted.length} entities. Entities not found: ${result.notFound.join(', ')}`
           : `Deleted observations from ${result.deleted.length} entities successfully`;
         return {
@@ -201,18 +201,18 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register delete_relations tool
+    // Register DeleteRelations tool
     this.deregisterFunctions.push(server.registerTool(
-      "delete_relations",
+      "DeleteRelations",
       {
         title: "Delete Relations",
-        description: "Delete multiple relations from the knowledge graph",
+        description: "Delete multiple relations to prune incorrect links or simplify the graph before adding corrected connections.",
         inputSchema: deleteRelationsSchema,
         outputSchema: deleteSuccessSchema
       },
       createZodToolHandler(deleteRelationsSchema, async (args) => {
         const result = await knowledgeGraphManager.deleteRelations(args.relations);
-        const message = result.notFound.length > 0 
+        const message = result.notFound.length > 0
           ? `Deleted ${result.deleted.length} relations. Not found: ${result.notFound.length}`
           : `Deleted ${result.deleted.length} relations successfully`;
         return {
@@ -222,12 +222,12 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register read_graph tool
+    // Register ReadGraph tool
     this.deregisterFunctions.push(server.registerTool(
-      "read_graph",
+      "ReadGraph",
       {
         title: "Read Graph",
-        description: "Read the entire knowledge graph",
+        description: "Read the entire knowledge graph snapshot (entities, relations, observations) for auditing, backups, or exporting summaries.",
         inputSchema: emptySchema,
         outputSchema: graphSchema
       },
@@ -240,12 +240,12 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register search_nodes tool
+    // Register SearchNodes tool
     this.deregisterFunctions.push(server.registerTool(
-      "search_nodes",
+      "SearchNodes",
       {
         title: "Search Nodes",
-        description: "Search for nodes in the knowledge graph based on a query",
+        description: "Search for nodes by natural-language query, type, or keyword to locate relevant facts and then load their context into the current reasoning chain.",
         inputSchema: searchNodesSchema,
         outputSchema: graphSchema
       },
@@ -258,12 +258,12 @@ export class MemoryModule implements Module {
       })
     ));
 
-    // Register open_nodes tool
+    // Register OpenNodes tool
     this.deregisterFunctions.push(server.registerTool(
-      "open_nodes",
+      "OpenNodes",
       {
         title: "Open Nodes",
-        description: "Open specific nodes in the knowledge graph by their names",
+        description: "Open named nodes to fetch their full details and connected observations before editing or referencing them in the current task.",
         inputSchema: openNodesSchema,
         outputSchema: graphSchema
       },

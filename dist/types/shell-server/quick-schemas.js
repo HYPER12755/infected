@@ -60,7 +60,7 @@ const TerminalOperateParamsBaseSchema = z.object({
         .int()
         .min(0)
         .max(10000)
-        .default(500)
+        .default(5000)
         .describe('Delay in milliseconds before retrieving output (allows command to complete)'),
     output_lines: z
         .number()

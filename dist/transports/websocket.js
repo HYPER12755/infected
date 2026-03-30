@@ -5,15 +5,40 @@ import { createServer } from 'node:http';
 import logger from '../core/logger.js';
 // Custom WebSocket Transport for MCP that implements the Transport interface
 class WebSocketMcpTransport {
+    // Public getter for onmessage to check if it's set
+    get hasOnmessage() {
+        return !!this._onmessage;
+    }
     constructor(sessionId, ws) {
         this._connected = false;
         this.sessionId = sessionId;
         this.ws = ws;
+        // Set up WebSocket message handler
         ws.on('message', (data) => {
             try {
                 const message = JSON.parse(data.toString());
+                logger.info('WebSocket message received from client', {
+                    component: 'websocket-transport',
+                    sessionId,
+                    method: message.method,
+                    id: message.id,
+                    hasOnMessage: !!this._onmessage
+                });
+                // Forward message to MCP server via onmessage handler
                 if (this._onmessage) {
+                    logger.debug('Forwarding message to MCP server', {
+                        component: 'websocket-transport',
+                        sessionId,
+                        id: message.id
+                    });
                     this._onmessage(message);
+                }
+                else {
+                    logger.warn('No onmessage handler set - message dropped', {
+                        component: 'websocket-transport',
+                        sessionId,
+                        id: message.id
+                    });
                 }
             }
             catch (error) {
@@ -26,32 +51,70 @@ class WebSocketMcpTransport {
         });
         ws.on('close', () => {
             this._connected = false;
+            logger.info('WebSocket connection closed', {
+                component: 'websocket-transport',
+                sessionId
+            });
             if (this._onclose) {
                 this._onclose();
             }
         });
         ws.on('error', (error) => {
+            logger.error('WebSocket error', {
+                component: 'websocket-transport',
+                sessionId,
+                error: error instanceof Error ? error.message : String(error)
+            });
             if (this._onerror) {
                 this._onerror(error);
             }
         });
         this._connected = true;
+        logger.debug('WebSocketMcpTransport constructed', {
+            component: 'websocket-transport',
+            sessionId
+        });
     }
     async start() {
-        // Already started when constructed
+        logger.info('WebSocket transport started', {
+            component: 'websocket-transport',
+            sessionId: this.sessionId
+        });
     }
     async send(message, _options) {
         return new Promise((resolve, reject) => {
             if (this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify(message), (err) => {
-                    if (err)
+                const data = JSON.stringify(message);
+                logger.debug('WebSocket sending message', {
+                    component: 'websocket-transport',
+                    sessionId: this.sessionId,
+                    id: message.id,
+                    method: message.method,
+                    hasError: !!message.error,
+                    hasResult: !!message.result
+                });
+                this.ws.send(data, (err) => {
+                    if (err) {
+                        logger.error('WebSocket send error', {
+                            component: 'websocket-transport',
+                            sessionId: this.sessionId,
+                            error: err.message
+                        });
                         reject(err);
-                    else
+                    }
+                    else {
                         resolve();
+                    }
                 });
             }
             else {
-                reject(new Error('WebSocket not connected'));
+                const err = new Error('WebSocket not connected');
+                logger.error('WebSocket not connected', {
+                    component: 'websocket-transport',
+                    sessionId: this.sessionId,
+                    readyState: this.ws.readyState
+                });
+                reject(err);
             }
         });
     }
@@ -113,6 +176,12 @@ export function websocketTransportFactory(mcpServer) {
                     const ip = req.socket.remoteAddress || 'unknown';
                     const userAgent = normalizeHeaderValue(req.headers['user-agent']);
                     const origin = normalizeHeaderValue(req.headers['origin']);
+                    logger.info('New WebSocket connection', {
+                        component: 'websocket-transport',
+                        sessionId,
+                        ip,
+                        origin
+                    });
                     const transport = new WebSocketMcpTransport(sessionId, ws);
                     const sessionInfo = {
                         id: sessionId,
@@ -125,14 +194,33 @@ export function websocketTransportFactory(mcpServer) {
                         lastActivityAt: new Date().toISOString()
                     };
                     sessions.set(sessionId, { info: sessionInfo, transport });
+                    // Set up session cleanup
+                    transport.onclose = () => {
+                        sessions.delete(sessionId);
+                        logger.info('WebSocket MCP session closed', {
+                            component: 'websocket-transport',
+                            sessionId
+                        });
+                    };
+                    transport.onerror = (error) => {
+                        logger.error('WebSocket transport error', {
+                            component: 'websocket-transport',
+                            sessionId,
+                            error: error.message
+                        });
+                    };
+                    // Start the transport first
+                    await transport.start();
                     // Connect transport to MCP server
+                    // This sets up the MCP protocol handler which will set transport._onmessage
                     try {
                         await mcpServer.connect(transport);
-                        logger.info('WebSocket MCP session connected', {
+                        logger.info('WebSocket MCP session connected to server', {
                             component: 'websocket-transport',
                             sessionId,
                             ip,
-                            userAgent
+                            userAgent,
+                            onmessageSet: transport.hasOnmessage
                         });
                     }
                     catch (error) {
@@ -148,52 +236,23 @@ export function websocketTransportFactory(mcpServer) {
                         ws.close();
                         return;
                     }
-                    // Send initialized notification
+                    // Wait a bit for MCP server to set up its message handlers
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    logger.info('Checking onmessage handler after connection', {
+                        component: 'websocket-transport',
+                        sessionId,
+                        onmessageSet: transport.hasOnmessage
+                    });
+                    // Send initialized notification to client
                     ws.send(JSON.stringify({
                         jsonrpc: '2.0',
                         method: 'notifications/initialized',
                         params: { sessionId }
                     }));
-                    // Set up message handler from MCP server
-                    transport.onmessage = async (message) => {
-                        try {
-                            sessionInfo.lastActivityAt = new Date().toISOString();
-                            // Handle batch messages
-                            if (Array.isArray(message)) {
-                                for (const msg of message) {
-                                    await processMessage(msg, transport, sessionId);
-                                }
-                            }
-                            else {
-                                await processMessage(message, transport, sessionId);
-                            }
-                        }
-                        catch (error) {
-                            logger.error('Error processing WebSocket message', {
-                                component: 'websocket-transport',
-                                sessionId,
-                                error: error instanceof Error ? error.message : String(error)
-                            });
-                            ws.send(JSON.stringify({
-                                jsonrpc: '2.0',
-                                error: { code: -32603, message: 'Internal error' }
-                            }));
-                        }
-                    };
-                    transport.onclose = () => {
-                        sessions.delete(sessionId);
-                        logger.info('WebSocket MCP session closed', {
-                            component: 'websocket-transport',
-                            sessionId
-                        });
-                    };
-                    transport.onerror = (error) => {
-                        logger.error('WebSocket transport error', {
-                            component: 'websocket-transport',
-                            sessionId,
-                            error: error.message
-                        });
-                    };
+                    logger.info('WebSocket session ready', {
+                        component: 'websocket-transport',
+                        sessionId
+                    });
                 });
                 wss.on('error', (error) => {
                     logger.error('WebSocket server error', {
@@ -223,43 +282,6 @@ export function websocketTransportFactory(mcpServer) {
                 reject(error);
             }
         });
-    };
-    // Process individual JSON-RPC message
-    const processMessage = async (msg, transport, sessionId) => {
-        // For JSON-RPC notifications (no id), handle via MCP server notification
-        if (!('id' in msg) || msg.id === undefined) {
-            if (msg.method) {
-                await mcpServer.server.notification({
-                    method: msg.method,
-                    params: msg.params || {}
-                });
-            }
-            return;
-        }
-        // For requests with id, process through MCP server
-        try {
-            // Cast to any to work around type complexity
-            const result = await mcpServer.server.request({ method: msg.method || '', params: msg.params || {} }, null, { id: msg.id });
-            // Send response
-            await transport.send({
-                jsonrpc: '2.0',
-                id: msg.id,
-                result
-            });
-        }
-        catch (error) {
-            // MCP server threw an error - format as JSON-RPC error
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            await transport.send({
-                jsonrpc: '2.0',
-                id: msg.id,
-                error: {
-                    code: -32603,
-                    message: 'Internal error',
-                    data: errorMessage
-                }
-            });
-        }
     };
     const closeAllSessions = async () => {
         for (const { transport } of sessions.values()) {

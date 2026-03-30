@@ -5,12 +5,12 @@ import os from 'node:os';
 import logger from './core/logger.js';
 import { randomBytes } from 'node:crypto';
 import { ServiceContainer } from './core/service-container.js';
-import { createStdioTransport } from './transports/stdio.js';
 import { httpStreamTransportFactory } from './transports/http.js';
 import { SSETransportFactory } from './transports/sse.js';
 import { websocketTransportFactory } from './transports/websocket.js';
 import { authenticationMiddleware, authorizationMiddleware, setAuthConfig } from './auth/index.js';
 import { generateRandomTokens } from './auth/random-token-generator.js';
+import { streamingRouter } from './transports/streaming.js';
 const startTime = Date.now();
 export class InfectedServer {
     constructor() {
@@ -257,47 +257,49 @@ export class InfectedServer {
         this.app.get('/messages', (req, res) => {
             res.status(200).json({ messages: [] });
         });
-        if (this.config.transport === 'http') {
-            logger.info('Creating HTTP stream transport...');
-            const { httpStreamRouter } = httpStreamTransportFactory(this.server);
-            this.app.use(httpStreamRouter);
-            logger.debug('HTTP stream router mounted');
-            this.app.listen(this.config.port, () => {
-                logger.info(`HTTP Server listening on port ${this.config.port}`, { transport: 'http', port: this.config.port, host: '0.0.0.0' });
-            }).on('error', (err) => {
-                logger.error(`HTTP Server failed to start: ${err.message}`, { port: this.config.port, error: err.code });
-                process.exit(1);
+        const { streaming, transportPorts } = this.config;
+        const httpPort = transportPorts?.httpPort ?? this.config.port;
+        const ssePort = transportPorts?.ssePort ?? this.config.port;
+        const wsPort = transportPorts?.wsPort ?? (this.config.port + 1);
+        // Mount all available transports simultaneously
+        // HTTP Stream transport (primary) - MCP standard protocol
+        logger.info('Creating HTTP stream transport...', { port: httpPort });
+        const { httpStreamRouter } = httpStreamTransportFactory(this.server);
+        this.app.use(httpStreamRouter);
+        logger.debug('HTTP stream router mounted');
+        // SSE transport - for real-time streaming events
+        logger.info('Creating SSE transport...', { port: ssePort });
+        const { sseRouter } = SSETransportFactory(this.server);
+        this.app.use(sseRouter);
+        logger.debug('SSE router mounted');
+        // Streaming router - for process output streaming
+        logger.info('Mounting streaming router for process output...');
+        this.app.use('/streaming', streamingRouter(this.processManager, streaming));
+        logger.debug('Streaming router mounted');
+        // WebSocket transport - separate server for WebSocket connections
+        logger.info('Creating WebSocket transport...', { port: wsPort });
+        const { router: wsRouter, initializeWebSocket } = websocketTransportFactory(this.server);
+        this.app.use(wsRouter);
+        logger.debug('WebSocket router mounted');
+        // Start main HTTP server for HTTP Stream, SSE, and streaming endpoints
+        this.app.listen(httpPort, () => {
+            logger.info(`Server listening on port ${httpPort} with transports: http (MCP), sse (events), streaming (process output)`, {
+                transport: 'multi',
+                port: httpPort,
+                host: '0.0.0.0',
+                ssePort,
+                streamingPath: '/streaming'
             });
-        }
-        else if (this.config.transport === 'sse') {
-            logger.info('Creating SSE transport...');
-            const { sseRouter } = SSETransportFactory(this.server);
-            this.app.use(sseRouter);
-            logger.debug('SSE router mounted');
-            this.app.listen(this.config.port, () => {
-                logger.info(`SSE Server listening on port ${this.config.port}`, { transport: 'sse', port: this.config.port, host: '0.0.0.0' });
-            }).on('error', (err) => {
-                logger.error(`SSE Server failed to start: ${err.message}`, { port: this.config.port, error: err.code });
-                process.exit(1);
-            });
-        }
-        else if (this.config.transport === 'stdio') {
-            logger.info('Initializing STDIO transport...');
-            this.transport = createStdioTransport();
-            await this.server.connect(this.transport);
-            logger.info('STDIO transport connected and ready');
-        }
-        else if (this.config.transport === 'websocket') {
-            logger.info('Creating WebSocket transport...');
-            const { router, initializeWebSocket } = websocketTransportFactory(this.server);
-            this.app.use(router);
-            logger.debug('WebSocket router mounted');
-            await initializeWebSocket(this.config.port);
-            logger.info(`WebSocket Server listening on port ${this.config.port}`, { transport: 'websocket', port: this.config.port, host: '0.0.0.0' });
-        }
-        else {
-            throw new Error(`Unsupported transport: ${this.config.transport}`);
-        }
+        }).on('error', (err) => {
+            logger.error(`Server failed to start: ${err.message}`, { port: httpPort, error: err.code });
+            process.exit(1);
+        });
+        // Initialize WebSocket server on separate port
+        await initializeWebSocket(wsPort);
+        logger.info(`WebSocket server listening on port ${wsPort}`, {
+            transport: 'websocket',
+            port: wsPort
+        });
     }
     async cleanup() {
         logger.info('Cleaning up server...');

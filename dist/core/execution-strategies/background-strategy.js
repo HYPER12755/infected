@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { ExecutionStrategy, } from './execution-strategy.js';
-import { getSafeEnvironment } from '../../utils/shell-helpers.js';
+import { getSafeEnvironment, sanitizeString } from '../../utils/shell-helpers.js';
 import logger from '../logger.js';
 /**
  * Background execution strategy.
@@ -49,6 +49,7 @@ export class BackgroundStrategy extends ExecutionStrategy {
             let stdout = '';
             let stderr = '';
             let outputTruncated = false;
+            let completionNotified = false;
             // Prepare environment variables
             const env = getSafeEnvironment(process.env, this.config.environmentVariables);
             // Spawn process with detached flag for true background execution
@@ -63,6 +64,21 @@ export class BackgroundStrategy extends ExecutionStrategy {
                 return reject(new Error('Failed to spawn process'));
             }
             logger.debug(`[BackgroundStrategy] Started background process ${pid} for execution ${executionId}`);
+            const notifyCompletion = (code) => {
+                if (completionNotified)
+                    return;
+                completionNotified = true;
+                const duration = Date.now() - startTime;
+                const exitCode = code ?? -1;
+                this.config.onComplete?.(executionId, {
+                    exitCode,
+                    stdout: sanitizeString(stdout),
+                    stderr: sanitizeString(stderr),
+                    duration,
+                    outputTruncated,
+                    processId: pid,
+                });
+            };
             // Track process in map for output collection
             this.processMap.set(pid, { stdout, stderr, startTime });
             // Don't write input for background processes (they shouldn't block)
@@ -123,11 +139,13 @@ export class BackgroundStrategy extends ExecutionStrategy {
                         logger.debug(`[BackgroundStrategy] Cleaning up background process ${pid} after TTL`);
                     }, this.config.historyTTLMs);
                 }
+                notifyCompletion(code ?? null);
             });
             this.childProcess.on('error', (error) => {
                 clearTimeout(this.timeoutHandle);
                 this.processMap.delete(pid);
                 logger.error(`[BackgroundStrategy] Background process ${pid} error:`, error);
+                notifyCompletion(-1);
             });
             // Return immediately with process info
             // The actual result (stdout/stderr/exitCode) will be available after process completion
@@ -138,6 +156,7 @@ export class BackgroundStrategy extends ExecutionStrategy {
                 stderr: '', // Not available yet
                 duration,
                 outputTruncated: false,
+                processId: pid,
             });
         });
     }

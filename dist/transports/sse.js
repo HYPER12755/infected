@@ -116,6 +116,43 @@ export function SSETransportFactory(mcpServer) {
             }
         }
     });
+    router.post('/sse', async (req, res) => {
+        const sessionId = extractSessionId(req);
+        if (!sessionId || !transportMap.has(sessionId)) {
+            logger.error('Streamable HTTP POST received without valid sessionId', {
+                component: 'sse-transport',
+                sessionId,
+            });
+            res.status(400).json({
+                jsonrpc: '2.0',
+                error: {
+                    code: -32600,
+                    message: 'Invalid or missing sessionId',
+                },
+                id: null,
+            });
+            return;
+        }
+        const transport = transportMap.get(sessionId);
+        try {
+            await transport.handlePostMessage(req, res, req.body);
+        }
+        catch (error) {
+            logger.error('Failed to dispatch Streamable HTTP request via SSE transport', {
+                component: 'sse-transport',
+                sessionId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+            res.status(500).json({
+                jsonrpc: '2.0',
+                error: {
+                    code: -32603,
+                    message: 'Internal server error',
+                },
+                id: null,
+            });
+        }
+    });
     router.post('/messages', async (req, res) => {
         const sessionId = extractSessionId(req);
         if (!sessionId || !transportMap.has(sessionId)) {

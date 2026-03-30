@@ -9,6 +9,7 @@ import { MCPShellError, ResourceNotFoundError } from '../../utils/shell-errors.j
 import {
   ShellExecuteParamsSchema,
   ShellExecuteParamsInputSchema,
+  ShellExecuteStreamingParamsSchema,
   ShellGetExecutionParamsSchema,
   ProcessListParamsSchema,
   ProcessKillParamsSchema,
@@ -454,10 +455,12 @@ export class ShellModule implements Module {
     });
 
     this.deregisterFunctions.push(server.registerTool(
-      'shell_execute',
+      'ShellExecute',
       {
         title: 'Shell Execute',
-        description: 'Executes a shell command on the host system with enhanced real-time output and execution control.',
+        description:
+          'Executes a shell command on the host system with streaming output, adaptive/foreground/background execution modes, and workdir/env overrides. ' +
+          'Supports execution_id/output_id tracking, allowlist enforcement, and optional progress tokens so you can watch builds, deployments, diagnostics, or long-running processes while capturing exit codes and status metadata.',
         inputSchema: ShellExecuteParamsInputSchema.shape,
       },
       async (rawArgs: unknown, extra: ToolRequestExtra) => {
@@ -480,7 +483,7 @@ export class ShellModule implements Module {
 
         try {
           const executionInfo = await this.shellTools.executeShell(args);
-          
+
           // Store execution context for progress streaming
           if (executionInfo.execution_id) {
             const execId = executionInfo.execution_id as string;
@@ -489,23 +492,23 @@ export class ShellModule implements Module {
               progressToken
             });
           }
-          
-          logger.info(`shell_execute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
-          const text = formatShellToolText('shell_execute', executionInfo);
+
+          logger.info(`ShellExecute command completed. ID: ${executionInfo.execution_id}, Status: ${executionInfo.status}`);
+          const text = formatShellToolText('ShellExecute', executionInfo);
           return {
             content: [{ type: 'text', text }],
             structuredContent: executionInfo,
           };
         } catch (error) {
           if (error instanceof MCPShellError) {
-            logger.error(`shell_execute failed: ${error.message}`, { details: error.details });
+            logger.error(`ShellExecute failed: ${error.message}`, { details: error.details });
             return {
               content: [{ type: 'text', text: `Error: ${error.message}` }],
               structuredContent: { error: error.message, details: error.details },
               isError: true,
             };
           }
-          logger.error(`An unexpected error occurred during shell_execute: ${error}`);
+          logger.error(`An unexpected error occurred during ShellExecute: ${error}`);
           return {
             content: [{ type: 'text', text: `Error: An unexpected error occurred: ${error instanceof Error ? error.message : String(error)}` }],
             structuredContent: { error: `An unexpected error occurred: ${error instanceof Error ? error.message : String(error)}` },
@@ -514,13 +517,55 @@ export class ShellModule implements Module {
         }
       },
     ));
-    logger.info('  ShellModule: shell_execute tool registered.');
+    logger.info('  ShellModule: ShellExecute tool registered.');
+
+    if (process.env.MCP_SHELL_ENABLE_STREAMING !== 'false') {
+      this.deregisterFunctions.push(server.registerTool(
+        'ShellExecuteStreaming',
+        {
+          title: 'Shell Execute Streaming',
+          description:
+            'Execute a shell command and stream output via SSE/WebSocket. Returns the output_id that subscribers can follow.',
+          inputSchema: ShellExecuteStreamingParamsSchema.shape,
+        },
+        async (rawArgs: unknown) => {
+          const args = ShellExecuteStreamingParamsSchema.parse(rawArgs);
+          try {
+            const result = await this.shellTools.executeShellStreaming({
+              command: args.command,
+              working_directory: args.working_directory,
+              timeout_seconds: args.timeout_seconds,
+              capture_stderr: args.capture_stderr,
+              output_id: args.output_id,
+            });
+            return {
+              content: [{
+                type: 'text',
+                text: `Streaming execution launched (output_id: ${result.output_id})`,
+              }],
+              structuredContent: result,
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.error(`ShellExecuteStreaming error: ${message}`);
+            return {
+              content: [{ type: 'text', text: `Error: ${message}` }],
+              structuredContent: { error: message },
+              isError: true,
+            };
+          }
+        },
+      ));
+      logger.info('  ShellModule: ShellExecuteStreaming tool registered.');
+    }
 
     this.deregisterFunctions.push(server.registerTool(
-      'process_get_execution',
+      'ProcessGetExecution',
       {
         title: 'Get Execution Details',
-        description: 'Retrieves detailed information about a specific command execution.',
+        description:
+          'Retrieve metadata (status, exit code, timestamps) plus stdout/stderr references and output IDs for a given execution_id. ' +
+          'Use it to poll completion, display last output, or chain follow-up commands once a previous execution finishes.',
         inputSchema: ShellGetExecutionParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
@@ -532,20 +577,22 @@ export class ShellModule implements Module {
           throw new ResourceNotFoundError('execution', args.execution_id);
         }
         const structuredContent = executionInfo as unknown as Record<string, unknown>;
-        const text = formatShellToolText('process_get_execution', executionInfo);
+        const text = formatShellToolText('ProcessGetExecution', executionInfo);
         return {
           content: [{ type: 'text', text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: process_get_execution tool registered.');
+    logger.info('  ShellModule: ProcessGetExecution tool registered.');
 
     this.deregisterFunctions.push(server.registerTool(
-      'process_list_executions',
+      'ProcessListExecutions',
       {
         title: 'List Command Executions',
-        description: 'Lists active and completed command executions with filtering and pagination.',
+        description:
+          'List active, queued, and recently completed shell executions with status, pid, brief command previews, and pagination controls. ' +
+          'Ideal for dashboards, monitoring parallel work, or choosing an execution_id before fetching detailed output.',
         inputSchema: ProcessListParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
@@ -559,20 +606,22 @@ export class ShellModule implements Module {
           session_id: args.session_id,
         });
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('process_list_executions', result);
+        const text = formatShellToolText('ProcessListExecutions', result);
         return {
           content: [{ type: 'text', text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: process_list_executions tool registered.');
+    logger.info('  ShellModule: ProcessListExecutions tool registered.');
 
     this.deregisterFunctions.push(server.registerTool(
-      'process_kill',
+      'ProcessKill',
       {
         title: 'Kill Process',
-        description: 'Sends a signal to terminate a running process by its process ID.',
+        description:
+          'Send a signal (default SIGTERM) to a running execution_id or PID to stop runaway commands. ' +
+          'Use this when long-running jobs misbehave or you need to cancel pending work gracefully before retrying.',
         inputSchema: ProcessKillParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
@@ -582,20 +631,22 @@ export class ShellModule implements Module {
           signal: args.signal,
           force: args.force,
         });
-        const text = formatShellToolText('process_kill', result);
+        const text = formatShellToolText('ProcessKill', result);
         return {
           content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
     ));
-    logger.info('  ShellModule: process_kill tool registered.');
+    logger.info('  ShellModule: ProcessKill tool registered.');
 
     this.deregisterFunctions.push(server.registerTool(
-      'shell_set_default_workdir',
+      'ShellSetDefaultWorkdir',
       {
         title: 'Set Default Working Directory',
-        description: 'Sets the default working directory for subsequent shell commands.',
+        description:
+          'Update the default working directory that future ShellExecute calls inherit, including terminal sessions. ' +
+          'Use it when you switch contexts (repos, builds, artifact folders) so commands no longer need explicit absolute paths.',
         inputSchema: ShellSetDefaultWorkdirParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
@@ -603,14 +654,14 @@ export class ShellModule implements Module {
         const result = await this.shellTools.setDefaultWorkingDirectory({
           working_directory: args.working_directory,
         });
-        const text = formatShellToolText('shell_set_default_workdir', result);
+        const text = formatShellToolText('ShellSetDefaultWorkdir', result);
         return {
           content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
     ));
-    logger.info('  ShellModule: shell_set_default_workdir tool registered.');
+    logger.info('  ShellModule: ShellSetDefaultWorkdir tool registered.');
 
     // ===============================================
     // Terminal Management Tools
@@ -618,85 +669,93 @@ export class ShellModule implements Module {
 
     // Unified Terminal Operations (create + send + get output)
     this.deregisterFunctions.push(server.registerTool(
-      'terminal_operate',
+      'TerminalOperate',
       {
         title: 'Terminal Operate',
-        description: 'Unified terminal operations: create sessions, send input, get output with automatic position tracking. Combines terminal_create, terminal_send_input, and terminal_get_output into a single streamlined interface. USE THIS for interactive sessions like "apt upgrade" that ask for yes/no.',
+        description:
+          'Manage PTY-backed interactive terminal sessions: create terminals, send input, resize dimensions, capture buffered output, and stream updates. ' +
+          'Supports commands, input, execute flags, output_delay/output_lines, output_id streaming, and interactive sessions (e.g., installers, package managers) that require real-time control.',
         inputSchema: TerminalOperateParamsInputSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalOperateParamsSchema.parse(rawArgs);
         const result = await this.shellTools.terminalOperate(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('terminal_operate', result);
+        const text = formatShellToolText('TerminalOperate', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: terminal_operate tool registered.');
+    logger.info('  ShellModule: TerminalOperate tool registered.');
 
     // List terminal sessions
     this.deregisterFunctions.push(server.registerTool(
-      'terminal_list',
+      'TerminalList',
       {
         title: 'List Terminal Sessions',
-        description: 'Lists all active terminal sessions with their IDs, status, and metadata.',
+        description:
+          'List active terminal sessions with status, shell_type, labels, and terminal IDs. ' +
+          'Use it before sending input to confirm which session is busy and to clean up idle terminals.',
         inputSchema: TerminalListParamsSchema,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalListParamsSchema.parse(rawArgs);
         const result = await this.shellTools.listTerminals(args);
-        const text = formatShellToolText('terminal_list', result);
+        const text = formatShellToolText('TerminalList', result);
         return {
           content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
     ));
-    logger.info('  ShellModule: terminal_list tool registered.');
+    logger.info('  ShellModule: TerminalList tool registered.');
 
     // Get terminal info
     this.deregisterFunctions.push(server.registerTool(
-      'terminal_get_info',
+      'TerminalGetInfo',
       {
         title: 'Get Terminal Info',
-        description: 'Get detailed information about a specific terminal session.',
+        description:
+          'Return metadata for a terminal (dimensions, busy flag, working directory, last command, buffer stats). ' +
+          'Helpful when you need to know whether a session is ready before sending new input or closing it.',
         inputSchema: TerminalGetParamsSchema,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalGetParamsSchema.parse(rawArgs);
         const result = await this.shellTools.getTerminal(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('terminal_get_info', result);
+        const text = formatShellToolText('TerminalGetInfo', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: terminal_get_info tool registered.');
+    logger.info('  ShellModule: TerminalGetInfo tool registered.');
 
     // Close terminal
     this.deregisterFunctions.push(server.registerTool(
-      'terminal_close',
+      'TerminalClose',
       {
         title: 'Close Terminal',
-        description: 'Closes an active terminal session.',
+        description:
+          'Close an interactive terminal session gracefully (or forcefully) to release PTY resources. ' +
+          'Use after finishing interactive tasks to avoid orphaned terminals.',
         inputSchema: TerminalCloseParamsSchema,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = TerminalCloseParamsSchema.parse(rawArgs);
         const result = await this.shellTools.closeTerminal(args);
-        const text = formatShellToolText('terminal_close', result);
+        const text = formatShellToolText('TerminalClose', result);
         return {
           content: [{ type: 'text', text }],
           structuredContent: result,
         };
       }
     ));
-    logger.info('  ShellModule: terminal_close tool registered.');
+    logger.info('  ShellModule: TerminalClose tool registered.');
 
     // ===============================================
     // File Management & Cleanup Tools
@@ -704,129 +763,141 @@ export class ShellModule implements Module {
 
     // List execution outputs
     this.deregisterFunctions.push(server.registerTool(
-      'list_execution_outputs',
+      'ListExecutionOutputs',
       {
         title: 'List Execution Outputs',
-        description: 'Lists all output files generated by command executions.',
+        description:
+          'List recorded stdout/stderr blobs, trimmed files, and streaming outputs with output_id, size, execution_id, and timestamps. ' +
+          'Use it to discover logs or artifacts to read/download for follow-up analysis.',
         inputSchema: FileListParamsSchema,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = FileListParamsSchema.parse(rawArgs);
         const result = await this.shellTools.listFiles(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('list_execution_outputs', result);
+        const text = formatShellToolText('ListExecutionOutputs', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: list_execution_outputs tool registered.');
+    logger.info('  ShellModule: ListExecutionOutputs tool registered.');
 
     // Read execution output
     this.deregisterFunctions.push(server.registerTool(
-      'read_execution_output',
+      'ReadExecutionOutput',
       {
         title: 'Read Execution Output',
-        description: 'Reads a specific execution output file by output_id.',
+        description:
+          'Read console output files produced by shell executions (stdout/stderr) with offsets, lengths, and optional tail/head. ' +
+          'Useful for showing logs in UI, downloading long outputs, or tailing the most recent lines.',
         inputSchema: FileReadParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = FileReadParamsSchema.parse(rawArgs);
         const result = await this.shellTools.readFile(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('read_execution_output', result);
+        const text = formatShellToolText('ReadExecutionOutput', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: read_execution_output tool registered.');
+    logger.info('  ShellModule: ReadExecutionOutput tool registered.');
 
     // Delete execution outputs
     this.deregisterFunctions.push(server.registerTool(
-      'delete_execution_outputs',
+      'DeleteExecutionOutputs',
       {
         title: 'Delete Execution Outputs',
-        description: 'Deletes one or more execution output files.',
+        description:
+          'Delete stored execution outputs (stdout/stderr files, trimmed logs) using filters or explicit identifiers. ' +
+          'Use this to reclaim disk space after artifacts have been processed.',
         inputSchema: FileDeleteParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = FileDeleteParamsSchema.parse(rawArgs);
         const result = await this.shellTools.deleteFiles(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('delete_execution_outputs', result);
+        const text = formatShellToolText('DeleteExecutionOutputs', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: delete_execution_outputs tool registered.');
+    logger.info('  ShellModule: DeleteExecutionOutputs tool registered.');
 
     // Cleanup suggestions
     this.deregisterFunctions.push(server.registerTool(
-      'get_cleanup_suggestions',
+      'GetCleanupSuggestions',
       {
         title: 'Get Cleanup Suggestions',
-        description: 'Get automatic cleanup suggestions for output file management.',
+        description:
+          'Analyze stored outputs and suggest candidates for deletion based on age, size, or completion status. ' +
+          'Ideal for planning automated cleanup runs before hitting storage limits.',
         inputSchema: CleanupSuggestionsParamsSchema,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = CleanupSuggestionsParamsSchema.parse(rawArgs);
         const result = await this.shellTools.getCleanupSuggestions(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('get_cleanup_suggestions', result);
+        const text = formatShellToolText('GetCleanupSuggestions', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: get_cleanup_suggestions tool registered.');
+    logger.info('  ShellModule: GetCleanupSuggestions tool registered.');
 
     // Auto cleanup
     this.deregisterFunctions.push(server.registerTool(
-      'perform_auto_cleanup',
+      'PerformAutoCleanup',
       {
         title: 'Perform Auto Cleanup',
-        description: 'Perform automatic cleanup of old output files based on age and retention policies.',
+        description:
+          'Execute cleanup routines that delete execution outputs matching TTL/size filters and summarize what was removed. ' +
+          'Use this as a periodic housekeeping step to keep log storage bounded.',
         inputSchema: AutoCleanupParamsSchema,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = AutoCleanupParamsSchema.parse(rawArgs);
         const result = await this.shellTools.performAutoCleanup(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('perform_auto_cleanup', result);
+        const text = formatShellToolText('PerformAutoCleanup', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: perform_auto_cleanup tool registered.');
+    logger.info('  ShellModule: PerformAutoCleanup tool registered.');
 
     // Command history query
     this.deregisterFunctions.push(server.registerTool(
-      'command_history_query',
+      'CommandHistoryQuery',
       {
         title: 'Command History Query',
-        description: 'Query command history with filtering, pagination, and analytics.',
+        description:
+          'Search past shell commands with filters for query text, status, session, and time ranges while returning paginated results. ' +
+          'Use it to reproduce previous work, audit activity, or reuse commands in new contexts.',
         inputSchema: CommandHistoryQueryParamsSchema.shape,
       },
       async (rawArgs: unknown, _extra: ToolRequestExtra) => {
         const args = CommandHistoryQueryParamsSchema.parse(rawArgs);
         const result = await this.shellTools.queryCommandHistory(args);
         const structuredContent = result as unknown as Record<string, unknown>;
-        const text = formatShellToolText('command_history_query', result);
+        const text = formatShellToolText('CommandHistoryQuery', result);
         return {
           content: [{ type: 'text' as const, text }],
           structuredContent,
         };
       }
     ));
-    logger.info('  ShellModule: command_history_query tool registered.');
+    logger.info('  ShellModule: CommandHistoryQuery tool registered.');
   }
 
   async shutdown(): Promise<void> {

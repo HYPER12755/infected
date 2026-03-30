@@ -1,5 +1,6 @@
 import { spawn as ptySpawn } from 'node-pty';
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
 import { LoggingContext } from '../../core/logging/logging-context.js';
 import { CorrelationContext } from '../../core/logging/correlation-context.js';
 import { RetryStrategy } from '../../core/recovery/retry-strategy.js';
@@ -61,9 +62,11 @@ export class SSHSessionManager extends EventEmitter {
                 ptyProcess,
                 outputBuffer: '',
                 historyLog: '',
-                isReady: true,
+                isReady: false, // Wait for connection to be established before marking as ready
                 isConnected: true,
                 lastCommand: '',
+                lastCommandOutput: '',
+                lastCommandBufferPos: 0,
                 target,
             };
             // Set up data listener
@@ -76,6 +79,7 @@ export class SSHSessionManager extends EventEmitter {
             // Set up exit listener
             ptyProcess.onExit((e) => {
                 session.isConnected = false;
+                session.isReady = false; // Mark as not ready when session exits
                 session.state = 'closed';
                 this.loggingContext.warn(`SSH Session ${sessionId} exited with code=${e.exitCode}, signal=${e.signal}`, {
                     sessionId,
@@ -86,16 +90,36 @@ export class SSHSessionManager extends EventEmitter {
                     sessionId,
                     exitCode: e.exitCode,
                 });
-                // Remove from map after a delay to allow cleanup
-                setTimeout(() => {
-                    this.sessions.delete(sessionId);
-                }, 100);
+                // Don't delete from map immediately - let the caller handle cleanup
+                // This ensures session exists until caller explicitly closes it or times out
             });
             this.sessions.set(sessionId, session);
+            const readyResult = await this.waitForReady(session);
+            if (!readyResult.success) {
+                session.isConnected = false;
+                session.isReady = false;
+                session.state = 'error';
+                if (readyResult.error) {
+                    session.outputBuffer += `\n${readyResult.error}\n`;
+                }
+                // Clean up the PTY process but keep session in map for error reporting
+                try {
+                    ptyProcess.kill();
+                }
+                catch {
+                    // Ignore cleanup errors
+                }
+            }
+            else {
+                // Only mark as ready after successful connection
+                session.isReady = true;
+            }
             this.loggingContext.debug('SSH session created', {
                 sessionId,
                 connectionId,
                 target: `${target.user}@${target.host}:${target.port}`,
+                isReady: session.isReady,
+                isConnected: session.isConnected,
             });
             this.emit('session:created', {
                 sessionId,
@@ -190,9 +214,15 @@ export class SSHSessionManager extends EventEmitter {
     }
     // ===== PRIVATE METHODS =====
     buildSshArgs(target) {
-        const args = ['-tt', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no'];
+        const args = ['-tt', '-o', 'StrictHostKeyChecking=no'];
+        if (!target.password) {
+            args.push('-o', 'BatchMode=yes');
+        }
         if (target.identityFile) {
-            args.push('-i', target.identityFile);
+            const keyPath = target.identityFile.startsWith('~')
+                ? target.identityFile.replace('~', os.homedir())
+                : target.identityFile;
+            args.push('-i', keyPath);
         }
         if (target.port) {
             args.push('-p', String(target.port));
@@ -202,5 +232,73 @@ export class SSHSessionManager extends EventEmitter {
             args.push(...target.extraArgs);
         }
         return args;
+    }
+    async waitForReady(session) {
+        const WAIT_READY_TIMEOUT_MS = 25000;
+        return new Promise((resolve) => {
+            let output = '';
+            let resolved = false;
+            let dataSubscription = null;
+            let checkInterval;
+            let timeoutHandle;
+            const finalize = (result) => {
+                if (resolved)
+                    return;
+                resolved = true;
+                clearInterval(checkInterval);
+                clearTimeout(timeoutHandle);
+                dataSubscription?.dispose();
+                resolve(result);
+            };
+            timeoutHandle = setTimeout(() => {
+                if (session.isConnected && session.state === 'active') {
+                    finalize({ success: true });
+                }
+                else {
+                    finalize({ success: false, error: 'Timeout waiting for SSH session to be ready' });
+                }
+            }, WAIT_READY_TIMEOUT_MS);
+            const handleData = (data) => {
+                if (resolved)
+                    return;
+                output += data;
+                // Check for authentication failures first - these should fail fast
+                if (/permission denied/i.test(output) || /authentication fail/i.test(output) || /no route to host/i.test(output) || /connection refused/i.test(output)) {
+                    finalize({ success: false, error: `SSH authentication/connection failed: ${output.slice(-100)}` });
+                    return;
+                }
+                if (/password[:\s]*$/i.test(output) || /password:\s*$/.test(output)) {
+                    if (session.target?.password) {
+                        session.ptyProcess.write(session.target.password + '\n');
+                        output = '';
+                    }
+                    else {
+                        // No password provided but password prompt appeared - this is unexpected with BatchMode
+                        // It means key auth likely failed
+                        finalize({ success: false, error: 'Password prompt appeared but no password configured' });
+                        return;
+                    }
+                }
+                if (/are you sure you want to continue connecting/i.test(output)) {
+                    session.ptyProcess.write('yes\n');
+                    output = '';
+                }
+                // Check for shell prompts - more flexible regex to handle various prompt formats
+                // [READY] from our custom PS1, or standard prompts like user@host:path$, #, >
+                if (/\[READY\]/.test(output) || /\$[ \t]*$/m.test(output) || /#[ \t]*$/m.test(output) || />[ \t]*$/m.test(output) || /~\s*$/m.test(output)) {
+                    finalize({ success: true });
+                }
+            };
+            dataSubscription = session.ptyProcess.onData(handleData);
+            checkInterval = setInterval(() => {
+                if (resolved) {
+                    return;
+                }
+                // Check for session exit - but only if not already resolved
+                if (!session.isConnected && session.state === 'closed') {
+                    finalize({ success: false, error: 'Session process exited unexpectedly' });
+                }
+            }, 500);
+        });
     }
 }
