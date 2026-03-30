@@ -33,7 +33,7 @@ export default class SystemModule {
         this.deregisterFns = [];
     }
     registerSystemInfo(context) {
-        const deregister = context.moduleManager.registerToolExecution('get_system_info', async () => {
+        const deregister = context.moduleManager.registerToolExecution('GetSystemInfo', async () => {
             const cpus = os.cpus();
             const cpuModel = cpus.length > 0 ? cpus[0].model : 'Unknown';
             const cpuCount = cpus.length;
@@ -90,11 +90,12 @@ export default class SystemModule {
                     networkInterfaces: networks
                 }
             };
-        }, 'get_system_info', 'Get system information including OS, CPU, memory, and network details.', systemInfoSchema, this.manifest.id);
+        }, 'GetSystemInfo', 'Get system information (OS, CPU specs, memory usage, load averages, uptime, network interfaces). ' +
+            'Use it to capture host health before debugging or verifying the environment.', systemInfoSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerNetworkDiags(context) {
-        const deregister = context.moduleManager.registerToolExecution('network_diagnostics', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('NetworkDiagnostics', async (rawArgs) => {
             const args = networkDiagsSchema.parse(rawArgs);
             if (args.type === 'ping') {
                 return this.doPing(args.target || 'google.com');
@@ -109,7 +110,8 @@ export default class SystemModule {
                 content: [{ type: 'text', text: 'Unknown diagnostics type' }],
                 isError: true
             };
-        }, 'network_diagnostics', 'Run network diagnostics: ping, DNS lookup, or port check.', networkDiagsSchema, this.manifest.id);
+        }, 'NetworkDiagnostics', 'Run network diagnostics (ping, DNS lookup, port scan) with optional targets to validate connectivity and service availability. ' +
+            'Use it when troubleshooting remote hosts or verifying firewall changes.', networkDiagsSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     async doPing(target) {

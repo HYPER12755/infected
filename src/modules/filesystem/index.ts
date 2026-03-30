@@ -213,10 +213,10 @@ export class FilesystemModule implements Module {
     };
 
     this.deregisterFunctions.push(server.registerTool(
-      "read_file",
+      "ReadFile",
       {
         title: "Read File (Deprecated)",
-        description: "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
+        description: "Read the complete contents of a file as text. DEPRECATED: Use ReadTextFile instead. Use this only for legacy compatibility when ReadTextFile signatures are unavailable.",
         inputSchema: ReadTextFileArgsSchemaDeprecated.shape,
         outputSchema: { content: z.string() },
         annotations: { readOnlyHint: true }
@@ -225,7 +225,7 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "read_text_file",
+      "ReadTextFile",
       {
         title: "Read Text File",
         description:
@@ -250,7 +250,7 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "read_multiple_files",
+      "ReadMultipleFiles",
       {
         title: "Read Multiple Files",
         description:
@@ -306,7 +306,7 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "write_file",
+      "WriteFile",
       {
         title: "Write File",
         description:
@@ -314,7 +314,8 @@ export class FilesystemModule implements Module {
           "Will create parent directories if they don't exist. " +
           "Use with caution as it will overwrite existing files without warning. " +
           "Handles text content with proper encoding. Only works within allowed directories. " +
-          "Use 'base_dir' parameter to specify the base directory for relative paths.",
+          "Use 'base_dir' parameter to specify the base directory for relative paths. " +
+          "Use this when patching configurations, deploying generated artifacts, or bootstrapping new scripts.",
         inputSchema: {
           path: z.string().min(1, "File path cannot be empty"),
           content: z.string(),
@@ -364,13 +365,13 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "edit_file",
+      "EditFile",
       {
         title: "Edit File",
         description:
           "Make line-based edits to a text file. Each edit replaces exact line sequences " +
           "with new content. Returns a git-style diff showing the changes made. " +
-          "Only works within allowed directories.",
+          "Only works within allowed directories. Use this to apply targeted patches or scripted replacements before committing changes.",
         inputSchema: {
           path: z.string(),
           edits: z.array(z.object({
@@ -393,7 +394,7 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "create_directory",
+      "CreateDirectory",
       {
         title: "Create Directory",
         description:
@@ -419,14 +420,14 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "list_directory",
+      "ListDirectory",
       {
         title: "List Directory",
         description:
           "Get a detailed listing of all files and directories in a specified path. " +
           "Results clearly distinguish between files and directories with [FILE] and [DIR] " +
           "prefixes. This tool is essential for understanding directory structure and " +
-          "finding specific files within a directory. Only works within allowed directories.",
+          "finding specific files within a directory. Only works within allowed directories. Use it to inspect workspace contents before editing files or verifying new paths.",
         inputSchema: {
           path: z.string()
         },
@@ -447,14 +448,14 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "list_directory_with_sizes",
+      "ListDirectoryWithSizes",
       {
         title: "List Directory with Sizes",
         description:
           "Get a detailed listing of all files and directories in a specified path, including sizes. " +
           "Results clearly distinguish between files and directories with [FILE] and [DIR] " +
           "prefixes. This tool is essential for understanding directory structure and " +
-          "finding specific files within a directory. Only works within allowed directories.",
+          "finding specific files within a directory. Only works within allowed directories. Use it to identify large files before cleanup or to verify size-based inventories.",
         inputSchema: {
           path: z.string(),
           sortBy: z.enum(["name", "size"]).optional().default("name").describe("Sort entries by name or size")
@@ -526,14 +527,14 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "directory_tree",
+      "DirectoryTree",
       {
         title: "Directory Tree",
         description:
           "Get a recursive tree view of files and directories as a JSON structure. " +
           "Each entry includes 'name', 'type' (file/directory), and 'children' for directories. " +
           "Files have no children array, while directories always have a children array (which may be empty). " +
-          "The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
+          "The output is formatted with 2-space indentation for readability. Only works within allowed directories. Use it to audit nested configurations or plan repository reorganizations.",
         inputSchema: {
           path: z.string(),
           excludePatterns: z.array(z.string()).optional().default([])
@@ -611,14 +612,14 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "move_file",
+      "MoveFile",
       {
         title: "Move File",
         description:
           "Move or rename files and directories. Can move files between directories " +
           "and rename them in a single operation. Use overwrite=true to replace existing files. " +
           "Works across different directories and can be used for simple renaming within " +
-          "the same directory. Both source and destination must be within allowed directories.",
+          "the same directory. Both source and destination must be within allowed directories. Use it to reorganize repository layouts, promote build artifacts, or rename config files before commits.",
         inputSchema: {
           source: z.string(),
           destination: z.string(),
@@ -659,7 +660,7 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "search_files",
+      "SearchFiles",
       {
         title: "Search Files",
         description:
@@ -667,7 +668,7 @@ export class FilesystemModule implements Module {
           "The patterns should be glob-style patterns that match paths relative to the working directory. " +
           "Use pattern like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. " +
           "Returns full paths to all matching items. Great for finding files when you don't know their exact location. " +
-          "Only searches within allowed directories.",
+          "Only searches within allowed directories. Use it when you only remember partial paths (e.g., find configuration files or log folders) before running edits.",
         inputSchema: {
           path: z.string(),
           pattern: z.string(),
@@ -703,14 +704,14 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "get_file_info",
+      "GetFileInfo",
       {
         title: "Get File Info",
         description:
           "Retrieve detailed metadata about a file or directory. Returns comprehensive " +
           "information including size, creation time, last modified time, permissions, " +
           "and type. This tool is perfect for understanding file characteristics " +
-          "without reading the actual content. Only works within allowed directories.",
+          "without reading the actual content. Only works within allowed directories. Use it to inspect metadata before editing files or verifying permissions.",
         inputSchema: {
           path: z.string()
         },
@@ -731,7 +732,7 @@ export class FilesystemModule implements Module {
     ));
 
     this.deregisterFunctions.push(server.registerTool(
-      "list_allowed_directories",
+      "ListAllowedDirectories",
       {
         title: "List Allowed Directories",
         description:

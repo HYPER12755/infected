@@ -40,28 +40,28 @@ export default class SystemModule implements IUnifiedPlugin {
 
   private registerSystemInfo(context: UnifiedModuleContext): void {
     const deregister = context.moduleManager.registerToolExecution(
-      'get_system_info',
+      'GetSystemInfo',
       async () => {
         const cpus = os.cpus();
         const cpuModel = cpus.length > 0 ? cpus[0].model : 'Unknown';
         const cpuCount = cpus.length;
-        
+
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
         const usedMem = totalMem - freeMem;
-        
+
         const loadAvg = os.loadavg();
-        
+
         const uptime = os.uptime();
         const days = Math.floor(uptime / 86400);
         const hours = Math.floor((uptime % 86400) / 3600);
         const minutes = Math.floor((uptime % 3600) / 60);
-        
+
         const platform = os.platform();
         const release = os.release();
         const arch = os.arch();
         const hostname = os.hostname();
-        
+
         // Wrap networkInterfaces in try-catch to handle EACCES (permission denied)
         let networks: string[] = [];
         try {
@@ -105,8 +105,9 @@ export default class SystemModule implements IUnifiedPlugin {
           }
         };
       },
-      'get_system_info',
-      'Get system information including OS, CPU, memory, and network details.',
+      'GetSystemInfo',
+      'Get system information (OS, CPU specs, memory usage, load averages, uptime, network interfaces). ' +
+        'Use it to capture host health before debugging or verifying the environment.',
       systemInfoSchema,
       this.manifest.id
     );
@@ -115,10 +116,10 @@ export default class SystemModule implements IUnifiedPlugin {
 
   private registerNetworkDiags(context: UnifiedModuleContext): void {
     const deregister = context.moduleManager.registerToolExecution(
-      'network_diagnostics',
+      'NetworkDiagnostics',
       async (rawArgs: unknown) => {
         const args = networkDiagsSchema.parse(rawArgs);
-        
+
         if (args.type === 'ping') {
           return this.doPing(args.target || 'google.com');
         } else if (args.type === 'dns') {
@@ -126,14 +127,15 @@ export default class SystemModule implements IUnifiedPlugin {
         } else if (args.type === 'ports') {
           return this.doPortCheck(args.target || 'localhost');
         }
-        
+
         return {
           content: [{ type: 'text', text: 'Unknown diagnostics type' }],
           isError: true
         };
       },
-      'network_diagnostics',
-      'Run network diagnostics: ping, DNS lookup, or port check.',
+      'NetworkDiagnostics',
+      'Run network diagnostics (ping, DNS lookup, port scan) with optional targets to validate connectivity and service availability. ' +
+        'Use it when troubleshooting remote hosts or verifying firewall changes.',
       networkDiagsSchema,
       this.manifest.id
     );

@@ -45,6 +45,18 @@ export const ResourcesConfigSchema = z.object({
   enableMonitoring: z.boolean().default(true).describe("Enable resource monitoring."),
 }).optional().describe("Resource monitoring and limiting configuration.");
 
+export const StreamingConfigSchema = z.object({
+  pollIntervalMs: z.number().int().min(10).default(100).describe("Polling interval (ms) for delivering buffered streaming updates."),
+  heartbeatIntervalMs: z.number().int().min(1000).default(15000).describe("Heartbeat interval (ms) for SSE streaming connections to keep them alive."),
+}).default({}).describe("Configuration for the streaming router used by SSE endpoints.");
+
+// Transport ports configuration for running multiple transports simultaneously
+export const TransportPortsConfigSchema = z.object({
+  httpPort: z.number().int().min(MIN_PORT).max(MAX_PORT).default(3001).describe("HTTP stream transport port"),
+  ssePort: z.number().int().min(MIN_PORT).max(MAX_PORT).default(3001).describe("SSE transport port (same as HTTP for unified server)"),
+  wsPort: z.number().int().min(MIN_PORT).max(MAX_PORT).default(3002).describe("WebSocket transport port"),
+}).default({}).describe("Port configuration for different transport types. HTTP and SSE share the same port, WebSocket uses a separate port.");
+
 
 export const InfectedConfigSchema = z.object({
   transport: z.union([z.literal('stdio'), z.literal('http'), z.literal('sse'), z.literal('websocket')]).default('stdio'),
@@ -64,6 +76,8 @@ export const InfectedConfigSchema = z.object({
     blockLocalNetwork: z.boolean().default(false), // Changed default to false for agent autonomy
     allowInsecureTls: z.boolean().default(false).describe("Allow HTTPS requests with invalid/self-signed certificates."),
   }).default({}),
+  streaming: StreamingConfigSchema,
+  transportPorts: TransportPortsConfigSchema,
   plugins: z.array(z.object({
     name: z.string().describe("The name or path of the plugin."),
     config: z.record(z.string(), z.any()).optional().describe("Plugin-specific configuration."),

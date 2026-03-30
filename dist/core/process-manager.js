@@ -212,6 +212,9 @@ export class ProcessManager {
     findExecutionIdByOutputId(outputId) {
         return this.fileManager?.getExecutionIdByOutputId(outputId);
     }
+    resolveExecutionIdFromOutput(outputId) {
+        return this.findExecutionIdByOutputId(outputId);
+    }
     async initializeOutputDirectory() {
         await ensureDirectory(this.outputDir);
     }

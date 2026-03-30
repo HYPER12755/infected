@@ -1,4 +1,5 @@
 import logger from '../../core/logger.js'; // Use our central logger
+import { EventEmitter } from 'node:events';
 import { RemoteProcessService } from '../../core/remote-process-service.js'; // Adapted import
 import { MCPShellError } from '../../utils/shell-errors.js'; // Adapted import
 import { saveCriteria as _saveCriteria, getCriteriaStatus as _getCriteriaStatus } from '../../utils/criteria-manager.js'; // Adapted import // Disabled MCP tool functions
@@ -213,6 +214,70 @@ export class ShellTools {
         catch (error) {
             throw MCPShellError.fromError(error);
         }
+    }
+    async executeShellStreaming(params) {
+        if (!this.streamingEnabled) {
+            throw new MCPShellError('STREAMING_DISABLED', 'Shell streaming is disabled on this server.', 'SYSTEM');
+        }
+        if (!params.output_id) {
+            throw new MCPShellError('MISSING_OUTPUT_ID', 'output_id is required for streaming execution.', 'PARAM');
+        }
+        logger.info('executeShellStreaming started', {
+            command: params.command,
+            outputId: params.output_id,
+        });
+        const executionId = params.output_id;
+        const streaming = {
+            executionId,
+            command: params.command,
+            workingDirectory: params.working_directory || this.processManager.getDefaultWorkingDirectory(),
+            status: 'running',
+            startTime: Date.now(),
+            totalOutput: '',
+            outputChunks: [],
+            lastUpdate: Date.now(),
+            emitter: new EventEmitter(),
+        };
+        this.streamingExecutions.set(executionId, streaming);
+        const executionOptions = {
+            command: params.command,
+            executionMode: 'foreground',
+            timeoutSeconds: params.timeout_seconds ?? 300,
+            maxOutputSize: 50 * 1024 * 1024,
+            captureStderr: params.capture_stderr !== false,
+            createTerminal: false,
+        };
+        if (params.working_directory) {
+            executionOptions.workingDirectory = params.working_directory;
+        }
+        const executionInfo = await this.processManager.executeCommand(executionOptions);
+        streaming.status = executionInfo.exit_code === 0 ? 'completed' : 'failed';
+        streaming.exitCode = executionInfo.exit_code ?? 0;
+        streaming.totalOutput = `${executionInfo.stdout ?? ''}${executionInfo.stderr ?? ''}`;
+        streaming.lastUpdate = Date.now();
+        this.emitStreamUpdate({
+            type: 'complete',
+            executionId,
+            exitCode: streaming.exitCode,
+            duration: Date.now() - streaming.startTime,
+            timestamp: Date.now(),
+        });
+        logger.info('executeShellStreaming completed', {
+            executionId,
+            exitCode: streaming.exitCode,
+            duration: Date.now() - streaming.startTime,
+        });
+        setTimeout(() => {
+            this.streamingExecutions.delete(executionId);
+        }, 5000);
+        return {
+            execution_id: executionId,
+            command: params.command,
+            status: streaming.status,
+            streaming_enabled: true,
+            output_id: executionId,
+            message: `Streaming execution started. Subscribe to output_id: ${executionId}`,
+        };
     }
     async getExecution(params) {
         try {

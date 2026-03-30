@@ -2,6 +2,10 @@
 
 The Infected MCP Server documentation is organized by purpose and topic for easy navigation.
 
+## Link Resilience
+
+Whenever a document includes a hyperlink (internal or external), explicitly mention at least one alternative way to get the same information or perform the action in case the link does not work (e.g., a search tip, equivalent internal page, or fallback command). This ensures readers can continue progressing even if the linked target becomes unavailable.
+
 ## Directory Overview
 
 ### `/api/` - API Reference

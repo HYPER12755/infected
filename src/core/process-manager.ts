@@ -359,6 +359,10 @@ export class ProcessManager {
     return this.fileManager?.getExecutionIdByOutputId(outputId);
   }
 
+  resolveExecutionIdFromOutput(outputId: string): string | undefined {
+    return this.findExecutionIdByOutputId(outputId);
+  }
+
   private async initializeOutputDirectory(): Promise<void> {
     await ensureDirectory(this.outputDir);
   }

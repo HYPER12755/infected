@@ -95,6 +95,22 @@ export class ConfigManager {
             }
             envConfig.fetch = fetchEnv;
         }
+        if (process.env.STREAMING_POLL_INTERVAL_MS || process.env.STREAMING_HEARTBEAT_INTERVAL_MS) {
+            const streamingEnv = {};
+            if (process.env.STREAMING_POLL_INTERVAL_MS) {
+                const value = parseInt(process.env.STREAMING_POLL_INTERVAL_MS, 10);
+                if (!Number.isNaN(value)) {
+                    streamingEnv.pollIntervalMs = value;
+                }
+            }
+            if (process.env.STREAMING_HEARTBEAT_INTERVAL_MS) {
+                const value = parseInt(process.env.STREAMING_HEARTBEAT_INTERVAL_MS, 10);
+                if (!Number.isNaN(value)) {
+                    streamingEnv.heartbeatIntervalMs = value;
+                }
+            }
+            envConfig.streaming = streamingEnv;
+        }
         this.config = InfectedConfigSchema.parse({
             ...this.config, // Default values
             ...fileConfig,

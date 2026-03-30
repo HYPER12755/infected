@@ -282,63 +282,73 @@ export default class SshModule {
     }
     // ===== TOOL REGISTRATION =====
     registerSshOperate(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_operate', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshOperate', async (rawArgs) => {
             const args = sshOperateSchema.parse(rawArgs);
             return this.handleSshOperate(args, context);
-        }, 'ssh_operate', 'Unified SSH operations: create sessions, send input, get output with automatic position tracking. Can create new sessions (with target), reuse existing sessions (with session_id), or just create sessions without executing commands (create_session_only). Combines ssh_new_session, ssh_execute, and ssh_get_buffer into a single streamlined interface.', sshOperateSchema, this.manifest.id);
+        }, 'SshOperate', 'Unified SSH operations that can create or reuse sessions, execute commands, stream output, and handle interactive input in one request. ' +
+            'Supports targets, session_id, commands, input, output_id streaming, clean output, and create_session_only flows so a single call can manage session lifecycle and output retrieval. ' +
+            'Use it for deployments, package installs, troubleshooting prompts, or any flow where you want the server to open sessions and capture output with minimal orchestration.', sshOperateSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshListSessions(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_list_sessions', async () => this.handleListSessions(), 'ssh_list_sessions', 'List all active SSH sessions with metadata.', {}, this.manifest.id);
+        const deregister = context.moduleManager.registerToolExecution('SshListSessions', async () => this.handleListSessions(), 'SshListSessions', 'List all active SSH sessions with metadata (target, user, busy flag, creation time, last used, PTY size). ' +
+            'Use it before reusing session_ids or to display active sessions in monitoring dashboards.', {}, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshCloseSession(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_close_session', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshCloseSession', async (rawArgs) => {
             const args = sshCloseSessionSchema.parse(rawArgs);
             return this.handleCloseSession(args, context);
-        }, 'ssh_close_session', 'Close an SSH session and clean up its PTY.', sshCloseSessionSchema, this.manifest.id);
+        }, 'SshCloseSession', 'Close an SSH session gracefully (or forcefully) and clean up its PTY/buffer. ' +
+            'Use it when the remote workflow is finished to release resources and avoid stale terminals.', sshCloseSessionSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshBuffer(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_get_buffer', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshGetBuffer', async (rawArgs) => {
             const args = sshBufferSchema.parse(rawArgs);
             return this.handleGetBuffer(args, context);
-        }, 'ssh_get_buffer', 'Read the raw buffer for a specific SSH session.', sshBufferSchema, this.manifest.id);
+        }, 'SshGetBuffer', 'Read the current buffer for a session with optional cleaning, ANSI stripping, filtering, or clear-on-read behavior. ' +
+            'Use this to inspect output before sending new commands or to verify a remote job status without executing anything.', sshBufferSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshUploadFile(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_upload_file', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshUploadFile', async (rawArgs) => {
             const args = sshUploadSchema.parse(rawArgs);
             return this.handleUploadFile(args, context);
-        }, 'ssh_upload_file', 'Upload a local file into the remote session environment using SCP/SFTP/FTP (select transfer_method).', sshUploadSchema, this.manifest.id);
+        }, 'SshUploadFile', 'Upload a local file to the remote host via SCP (default), SFTP, or FTP transfer methods, validating paths and honoring the transfer_method override. ' +
+            'Use it for pushing scripts, configs, or deployments before running remote commands.', sshUploadSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshDownloadFile(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_download_file', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshDownloadFile', async (rawArgs) => {
             const args = sshDownloadSchema.parse(rawArgs);
             return this.handleDownloadFile(args, context);
-        }, 'ssh_download_file', 'Download a remote file through the session and save it locally via SCP/SFTP/FTP get/put.', sshDownloadSchema, this.manifest.id);
+        }, 'SshDownloadFile', 'Download a remote file via SCP/SFTP/FTP while validating remote paths and optional destination. ' +
+            'Use it when you need logs, artifacts, or configs from the remote host for inspection.', sshDownloadSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshGetSessionInfo(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_get_session_info', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshGetSessionInfo', async (rawArgs) => {
             const args = sshGetSessionInfoSchema.parse(rawArgs);
             return this.handleSshGetSessionInfo(args, context);
-        }, 'ssh_get_session_info', 'Get detailed information about a specific SSH session.', sshGetSessionInfoSchema, this.manifest.id);
+        }, 'SshGetSessionInfo', 'Return metadata for a session (target, busy flag, last command, timestamps, PTY dimensions, buffer length). ' +
+            'Use this before sending new commands to know if the session is ready or should be replaced.', sshGetSessionInfoSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshProcessList(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_process_list', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshProcessList', async (rawArgs) => {
             const args = sshProcessListSchema.parse(rawArgs);
             return this.handleSshProcessList(args, context);
-        }, 'ssh_process_list', 'List SSH session executions with filtering and pagination.', sshProcessListSchema, this.manifest.id);
+        }, 'SshProcessList', 'List executed commands across SSH sessions with filters for session_id, status, and command pattern plus pagination. ' +
+            'Use it to monitor remote jobs, check for stuck commands, or replay their output.', sshProcessListSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     registerSshProcessKill(context) {
-        const deregister = context.moduleManager.registerToolExecution('ssh_process_kill', async (rawArgs) => {
+        const deregister = context.moduleManager.registerToolExecution('SshProcessKill', async (rawArgs) => {
             const args = sshProcessKillSchema.parse(rawArgs);
             return this.handleSshProcessKill(args, context);
-        }, 'ssh_process_kill', 'Send a signal to terminate a running SSH process.', sshProcessKillSchema, this.manifest.id);
+        }, 'SshProcessKill', 'Send a signal (default SIGTERM) to terminate a running SSH process by PID or execution_id. ' +
+            'Use it to stop stuck remote commands before restarting them or cleaning up locks.', sshProcessKillSchema, this.manifest.id);
         this.deregisterFns.push(deregister);
     }
     // ===== TOOL HANDLERS =====

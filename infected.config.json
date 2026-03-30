@@ -24,6 +24,10 @@
     "blockLocalNetwork": false,
     "allowInsecureTls": false
   },
+  "streaming": {
+    "pollIntervalMs": 100,
+    "heartbeatIntervalMs": 15000
+  },
   "plugins": [
     {
       "name": "./plugins/example-plugin",
@@ -78,7 +82,7 @@
     "maxCPUPercent": 80,
     "maxFileHandles": 2048,
     "maxConnections": 50,
-    "monitoringIntervalMs": 5000,
+    "monitoringIntervalMs":5000,
     "thresholdPercent": 85,
     "cpuThresholdPercent": 80,
     "fileHandleThresholdPercent": 90,

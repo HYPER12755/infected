@@ -1,0 +1,117 @@
+# Gemini CLI - Infected MCP Server Configuration
+
+## Quick Setup
+
+Copy this file to your Gemini CLI config directory:
+
+```bash
+cp gemini-cli.config.json ~/.gemini/mcp.json
+# Or on Linux:
+cp gemini-cli.config.json ~/.config/gemini/mcp.json
+```
+
+## Configuration
+
+```json
+{
+  "mcpServers": {
+    "infected": {
+      "command": "node",
+      "args": [
+        "/root/sandbox/infected/dist/index.js"
+      ],
+      "cwd": "/root/sandbox/infected",
+      "env": {
+        "PORT": "3001",
+        "LOG_LEVEL": "info"
+      },
+      "description": "Infected MCP Server - Local process with real-time streaming support"
+    }
+  },
+  "streaming": {
+    "enabled": true,
+    "baseUrl": "http://localhost:3001",
+    "endpoint": "/streaming/sse"
+  }
+}
+```
+
+## Usage in Gemini CLI
+
+Start Gemini:
+```bash
+gemini
+```
+
+Then use the MCP server:
+
+```
+User: @infected Run "npm run build" and show me the output
+
+Gemini: [Calls ShellExecute tool via MCP]
+        [Streams output in real-time]
+        Build completed with exit code 0
+```
+
+## Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `ShellExecute` | Execute shell commands with streaming output |
+| `ShellExecuteStreaming` | Execute with explicit streaming mode |
+| `ProcessGetExecution` | Get execution status |
+| `ProcessListExecutions` | List all executions |
+| `ProcessKill` | Kill running process |
+| `ReadExecutionOutput` | Read completed output |
+| `ReadFile`, `WriteFile` | File operations |
+| `ListDirectory` | List directory contents |
+
+## Example Commands
+
+```
+@infected Execute: ls -la
+@infected Run: npm install
+@infected Execute: git status
+@infected Run: docker ps
+```
+
+## Server Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/mcp` | MCP HTTP Stream transport |
+| `/sse` | MCP SSE transport |
+| `/streaming/sse/{outputId}` | Real-time command output streaming |
+| `/health` | Health check |
+
+## Troubleshooting
+
+### Server not starting
+```bash
+cd /root/sandbox/infected
+npm start
+```
+
+### Check server health
+```bash
+curl http://localhost:3001/health
+```
+
+### Test client
+```bash
+npx tsx clients/test-client.ts "echo 'Hello'"
+```
+
+## Test Streaming
+
+Run this command to see real-time streaming:
+
+```bash
+npx tsx clients/test-client.ts "for i in \$(seq 1 100); do echo \$i; sleep 0.5; done"
+```
+
+You should see numbers 1-100 printed one by one with 0.5 second intervals.
+
+---
+
+**For more info:** See `clients/COMPLETE-GUIDE.md`

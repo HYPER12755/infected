@@ -107,6 +107,22 @@ export class ConfigManager {
         }
         envConfig.fetch = fetchEnv as InfectedConfig['fetch'];
     }
+    if (process.env.STREAMING_POLL_INTERVAL_MS || process.env.STREAMING_HEARTBEAT_INTERVAL_MS) {
+        const streamingEnv: Partial<InfectedConfig['streaming']> = {};
+        if (process.env.STREAMING_POLL_INTERVAL_MS) {
+            const value = parseInt(process.env.STREAMING_POLL_INTERVAL_MS, 10);
+            if (!Number.isNaN(value)) {
+                streamingEnv.pollIntervalMs = value;
+            }
+        }
+        if (process.env.STREAMING_HEARTBEAT_INTERVAL_MS) {
+            const value = parseInt(process.env.STREAMING_HEARTBEAT_INTERVAL_MS, 10);
+            if (!Number.isNaN(value)) {
+                streamingEnv.heartbeatIntervalMs = value;
+            }
+        }
+        envConfig.streaming = streamingEnv as InfectedConfig['streaming'];
+    }
 
 
     this.config = InfectedConfigSchema.parse({

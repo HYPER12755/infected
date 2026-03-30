@@ -16,7 +16,7 @@ class ExamplePlugin {
 
   async onLoad(context) {
     context.moduleManager.registerToolExecution(
-      'plugin.tool_greet',
+      'PluginToolGreet',
       async (args = {}) => {
         const name = typeof args.name === 'string' && args.name.trim() ? args.name.trim() : 'world';
         const message = `Hello, ${name}!`;
@@ -25,7 +25,7 @@ class ExamplePlugin {
           structuredContent: { message }
         };
       },
-      'example_plugin_greet',
+      'PluginToolGreet',
       'Returns a friendly greeting.',
       schema,
       this.manifest.id
