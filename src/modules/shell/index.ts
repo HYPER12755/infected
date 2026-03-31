@@ -254,6 +254,28 @@ function formatTerminalCloseText(result: unknown): string {
   return lines.join('\n');
 }
 
+function formatProcessKillText(result: unknown): string {
+  const data = asRecord(result);
+  const success = data['success'] === true;
+  const signalSent = asString(data['signal_sent']) || '';
+  const message = asString(data['message']) || '';
+  const lines = [`success: ${success}`];
+  if (signalSent) lines.push(`signal_sent: ${signalSent}`);
+  if (message) lines.push(`message: ${message}`);
+  return lines.join('\n');
+}
+
+function formatSetDefaultWorkdirText(result: unknown): string {
+  const data = asRecord(result);
+  const success = data['success'] === true;
+  const prev = asString(data['previous_working_directory']) || '';
+  const next = asString(data['new_working_directory']) || '';
+  const lines = [`success: ${success}`];
+  if (prev) lines.push(`previous: ${prev}`);
+  if (next) lines.push(`new: ${next}`);
+  return lines.join('\n');
+}
+
 function formatCommandHistoryText(result: unknown): string {
   const data = asRecord(result);
   if (data['success'] === false) {
@@ -298,31 +320,37 @@ function formatCommandHistoryText(result: unknown): string {
 }
 
 function formatShellToolText(toolName: string, result: unknown): string {
-  if (toolName === 'shell_execute' || toolName === 'process_get_execution') {
+  if (toolName === 'ShellExecute' || toolName === 'ProcessGetExecution') {
     return formatExecutionText(result);
   }
-  if (toolName === 'process_list_executions') {
+  if (toolName === 'ProcessListExecutions') {
     return formatProcessListText(result);
   }
-  if (toolName === 'list_execution_outputs') {
+  if (toolName === 'ListExecutionOutputs') {
     return formatListExecutionOutputsText(result);
   }
-  if (toolName === 'terminal_list') {
+  if (toolName === 'TerminalList') {
     return formatTerminalListText(result);
   }
-  if (toolName === 'terminal_get_info') {
+  if (toolName === 'TerminalGetInfo') {
     return formatTerminalInfoText(result);
   }
-  if (toolName === 'terminal_operate') {
+  if (toolName === 'TerminalOperate') {
     return formatTerminalOperateText(result);
   }
-  if (toolName === 'terminal_close') {
+  if (toolName === 'TerminalClose') {
     return formatTerminalCloseText(result);
   }
-  if (toolName === 'command_history_query') {
+  if (toolName === 'ProcessKill') {
+    return formatProcessKillText(result);
+  }
+  if (toolName === 'ShellSetDefaultWorkdir') {
+    return formatSetDefaultWorkdirText(result);
+  }
+  if (toolName === 'CommandHistoryQuery') {
     return formatCommandHistoryText(result);
   }
-  if (toolName === 'read_execution_output') {
+  if (toolName === 'ReadExecutionOutput') {
     const data = asRecord(result);
     const output =
       asString(data['content']) ||
@@ -332,6 +360,9 @@ function formatShellToolText(toolName: string, result: unknown): string {
     if (output) {
       return output;
     }
+  }
+  if (toolName === 'GetCleanupSuggestions' || toolName === 'PerformAutoCleanup' || toolName === 'DeleteExecutionOutputs') {
+    return toCompactPreview(result) || '(no output)';
   }
   const preview = toCompactPreview(result);
   return preview || '(no output)';

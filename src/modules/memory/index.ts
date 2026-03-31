@@ -233,8 +233,18 @@ export class MemoryModule implements Module {
       },
       createZodToolHandler(emptySchema, async () => {
         const graph = await knowledgeGraphManager.readGraph();
+        const entities = graph.entities || [];
+        const relations = graph.relations || [];
+        const lines: string[] = [`entities: ${entities.length}`, `relations: ${relations.length}`];
+        for (const entity of entities) {
+          const obs = entity.observations?.length || 0;
+          lines.push(`${entity.name} [${entity.entityType}] ${obs} observations`);
+        }
+        for (const rel of relations) {
+          lines.push(`${rel.from} --${rel.relationType}--> ${rel.to}`);
+        }
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(graph) }],
+          content: [{ type: "text" as const, text: lines.join('\n') }],
           structuredContent: { ...graph }
         };
       })
@@ -251,8 +261,18 @@ export class MemoryModule implements Module {
       },
       createZodToolHandler(searchNodesSchema, async (args) => {
         const graph = await knowledgeGraphManager.searchNodes(args.query);
+        const entities = graph.entities || [];
+        const relations = graph.relations || [];
+        const lines: string[] = [`entities: ${entities.length}`, `relations: ${relations.length}`];
+        for (const entity of entities) {
+          const obs = entity.observations?.length || 0;
+          lines.push(`${entity.name} [${entity.entityType}] ${obs} observations`);
+        }
+        for (const rel of relations) {
+          lines.push(`${rel.from} --${rel.relationType}--> ${rel.to}`);
+        }
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(graph) }],
+          content: [{ type: "text" as const, text: lines.join('\n') }],
           structuredContent: { ...graph }
         };
       })
@@ -269,8 +289,18 @@ export class MemoryModule implements Module {
       },
       createZodToolHandler(openNodesSchema, async (args) => {
         const graph = await knowledgeGraphManager.openNodes(args.names);
+        const entities = graph.entities || [];
+        const relations = graph.relations || [];
+        const lines: string[] = [`entities: ${entities.length}`, `relations: ${relations.length}`];
+        for (const entity of entities) {
+          const obs = entity.observations?.length || 0;
+          lines.push(`${entity.name} [${entity.entityType}] ${obs} observations`);
+        }
+        for (const rel of relations) {
+          lines.push(`${rel.from} --${rel.relationType}--> ${rel.to}`);
+        }
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(graph) }],
+          content: [{ type: "text" as const, text: lines.join('\n') }],
           structuredContent: { ...graph }
         };
       })

@@ -1108,13 +1108,21 @@ ${buffer || '(empty)'}`;
       throw new Error(`Session "${args.session_id}" not found`);
     }
 
+    const target = session.target;
+    const targetStr = target ? `${target.user ? `${target.user}@` : ''}${target.host}:${target.port}` : 'unknown';
+
+    const lines = [
+      `session_id: ${session.id}`,
+      `target: ${targetStr}`,
+      `connected: ${session.isConnected}`,
+      `ready: ${session.isReady}`,
+      `last_command: ${session.lastCommand || '(none)'}`,
+      `buffer_size: ${session.outputBuffer?.length || 0} chars`,
+    ];
+
     const info = {
       session_id: session.id,
-      target: session.target ? {
-        host: session.target.host,
-        port: session.target.port,
-        user: session.target.user,
-      } : null,
+      target: target ? { host: target.host, port: target.port, user: target.user } : null,
       is_connected: session.isConnected,
       is_ready: session.isReady,
       last_command: session.lastCommand,
@@ -1123,7 +1131,7 @@ ${buffer || '(empty)'}`;
     };
 
     return {
-      content: [{ type: 'text', text: JSON.stringify(info, null, 2) }],
+      content: [{ type: 'text', text: lines.join('\n') }],
       structuredContent: info,
     };
   }
@@ -1158,8 +1166,14 @@ ${buffer || '(empty)'}`;
       output_buffer_size: s.outputBuffer?.length || 0,
     }));
 
+    const lines: string[] = [`count: ${executions.length}`, `total: ${filtered.length}`];
+    for (const exec of executions) {
+      const cmd = exec.command.length > 60 ? `${exec.command.slice(0, 57)}...` : exec.command;
+      lines.push(`${exec.session_id} | ${exec.status}${cmd ? ` | ${cmd}` : ''}`);
+    }
+
     return {
-      content: [{ type: 'text', text: JSON.stringify(executions, null, 2) }],
+      content: [{ type: 'text', text: lines.join('\n') }],
       structuredContent: {
         total: filtered.length,
         limit,
